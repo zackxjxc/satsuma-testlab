@@ -12,6 +12,7 @@
 #include "satsuma/core/id.hpp"
 #include "satsuma/core/json_io.hpp"
 #include "satsuma/core/path.hpp"
+#include "satsuma/core/rpc_protocol.hpp"
 #include "satsuma/core/sha256.hpp"
 #include "satsuma/core/task.hpp"
 
@@ -110,6 +111,39 @@ void test_protocol_round_trip() {
         "execution result exit code changed during JSON round trip");
 }
 
+// 验证 RPC 请求的版本、实验室和状态边界。
+void test_rpc_protocol_validation() {
+    satsuma::AgentHello hello;
+    hello.lab_id = "test_lab";
+    hello.vm_id = "client";
+    hello.session_id = "session_1";
+    hello.boot_id = "boot_1";
+    hello.request_id = "request_1";
+    hello.agent_version = "0.1.0";
+    satsuma::validate_rpc_request(hello, "test_lab");
+
+    expect_error(
+        [&hello] {
+            satsuma::AgentHello invalid = hello;
+            invalid.protocol_version = 2;
+            satsuma::validate_rpc_request(invalid, "test_lab");
+        },
+        "incompatible RPC protocol version was accepted");
+
+    satsuma::AgentStatus status;
+    status.lab_id = hello.lab_id;
+    status.vm_id = hello.vm_id;
+    status.session_id = hello.session_id;
+    status.boot_id = hello.boot_id;
+    status.request_id = "request_2";
+    status.status = "idle";
+    satsuma::validate_rpc_request(status, "test_lab");
+    status.status = "unknown";
+    expect_error(
+        [&status] { satsuma::validate_rpc_request(status, "test_lab"); },
+        "unknown Agent status was accepted");
+}
+
 }  // namespace
 
 // 顺序运行核心测试，并清理本次专用临时目录。
@@ -119,6 +153,7 @@ int main() {
     try {
         test_file_primitives(root);
         test_protocol_round_trip();
+        test_rpc_protocol_validation();
         std::filesystem::remove_all(root);
         std::cout << "SatsumaCoreTests passed\n";
         return 0;
