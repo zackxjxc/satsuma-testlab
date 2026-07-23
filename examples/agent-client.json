@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "protocol_version": 1,
+  "lab_id": "local_windows_lab",
+  "vm_id": "client",
+  "shared_root": "\\\\vmware-host\\Shared Folders\\vm-share",
+  "local_work_root": "C:\\Satsuma\\work",
+  "poll_interval_ms": 1000
+}

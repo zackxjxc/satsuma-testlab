@@ -1,0 +1,15 @@
+{
+  "$schema": "../schemas/task.schema.json",
+  "schema_version": 1,
+  "name": "hello-vm",
+  "artifacts": [],
+  "steps": [
+    {
+      "id": "hello_client",
+      "vm": "client",
+      "type": "echo",
+      "message": "hello from Satsuma",
+      "timeout_seconds": 10
+    }
+  ]
+}

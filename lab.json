@@ -1,0 +1,33 @@
+{
+  "$schema": "schemas/lab.schema.json",
+  "schema_version": 1,
+  "lab_id": "local_windows_lab",
+  "provider": {
+    "type": "vmware_workstation",
+    "vmrun": "C:\\Program Files\\VMware\\VMware Workstation\\vmrun.exe"
+  },
+  "host": {
+    "listen": "192.168.250.1:37100",
+    "archive_root": "D:\\Satsuma\\archive"
+  },
+  "shared_folder": {
+    "host_root": "D:\\vm-share",
+    "guest_root": "\\\\vmware-host\\Shared Folders\\vm-share"
+  },
+  "vms": [
+    {
+      "id": "client",
+      "role": "client",
+      "vmx": "D:\\VM\\Client\\Client.vmx",
+      "agent_version": "0.1.0",
+      "management_ip": "192.168.250.11"
+    },
+    {
+      "id": "gateway",
+      "role": "gateway",
+      "vmx": "D:\\VM\\Gateway\\Gateway.vmx",
+      "agent_version": "0.1.0",
+      "management_ip": "192.168.250.12"
+    }
+  ]
+}
