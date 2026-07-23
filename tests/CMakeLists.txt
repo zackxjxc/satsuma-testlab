@@ -79,6 +79,7 @@ add_test(
         "-DHOST_EXE=$<TARGET_FILE:SatsumaHost>"
         "-DVM_EXE=$<TARGET_FILE:SatsumaVM>"
         "-DFIXTURE_EXE=$<TARGET_FILE:SatsumaTestFixture>"
+        "-DVMRUN_EXE=$<TARGET_FILE:SatsumaFakeVmrun>"
         "-DTEST_ROOT=${CMAKE_CURRENT_BINARY_DIR}/host-vm-flow"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/host_vm_flow.cmake"
 )

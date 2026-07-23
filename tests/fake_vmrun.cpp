@@ -23,13 +23,17 @@ int wmain(const int argc, wchar_t* argv[]) {
         ((std::filesystem::path(argv[2]).filename() == L"Soft VM.vmx" &&
           std::wstring(argv[3]) == L"soft") ||
          (std::filesystem::path(argv[2]).filename() == L"Hard VM.vmx" &&
-          std::wstring(argv[3]) == L"hard"))) {
+          std::wstring(argv[3]) == L"hard") ||
+         (std::filesystem::path(argv[2]).filename() == L"Client VM.vmx" &&
+          std::wstring(argv[3]) == L"soft"))) {
         return 0;
     }
     if (argc == 4 &&
         std::wstring(argv[1]) == L"revertToSnapshot" &&
-        std::filesystem::path(argv[2]).filename() == L"Snapshot VM.vmx" &&
-        std::wstring(argv[3]) == L"Clean Base") {
+        ((std::filesystem::path(argv[2]).filename() == L"Snapshot VM.vmx" &&
+          std::wstring(argv[3]) == L"Clean Base") ||
+         (std::filesystem::path(argv[2]).filename() == L"Client VM.vmx" &&
+          std::wstring(argv[3]) == L"clean"))) {
         return 0;
     }
     std::cerr << "unsupported fake vmrun command\n";

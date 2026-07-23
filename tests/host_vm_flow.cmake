@@ -1,5 +1,9 @@
 # 在本机目录中模拟共享文件夹并验证完整 Host/VM 流程。
-if(NOT DEFINED HOST_EXE OR NOT DEFINED VM_EXE OR NOT DEFINED FIXTURE_EXE OR NOT DEFINED TEST_ROOT)
+if(NOT DEFINED HOST_EXE OR
+   NOT DEFINED VM_EXE OR
+   NOT DEFINED FIXTURE_EXE OR
+   NOT DEFINED VMRUN_EXE OR
+   NOT DEFINED TEST_ROOT)
     message(FATAL_ERROR "Host/VM integration test arguments are incomplete")
 endif()
 
@@ -10,6 +14,11 @@ file(TO_CMAKE_PATH "${TEST_ROOT}/share" share_path)
 file(TO_CMAKE_PATH "${TEST_ROOT}/local" local_path)
 file(TO_CMAKE_PATH "${TEST_ROOT}/archive" archive_path)
 file(TO_CMAKE_PATH "${FIXTURE_EXE}" fixture_path)
+file(TO_CMAKE_PATH "${VMRUN_EXE}" vmrun_path)
+file(TO_CMAKE_PATH "${TEST_ROOT}/Client VM.vmx" vmx_path)
+file(TO_CMAKE_PATH "${TEST_ROOT}/Hard VM.vmx" hard_vmx_path)
+file(WRITE "${vmx_path}" "# Test VMX placeholder\n")
+file(WRITE "${hard_vmx_path}" "# Test VMX placeholder\n")
 
 set(lab_json [=[
 {
@@ -17,7 +26,7 @@ set(lab_json [=[
   "lab_id": "integration_lab",
   "provider": {
     "type": "vmware_workstation",
-    "vmrun": "C:/Program Files/VMware/VMware Workstation/vmrun.exe"
+    "vmrun": "@VMRUN@"
   },
   "host": {
     "listen": "127.0.0.1:37100",
@@ -31,15 +40,25 @@ set(lab_json [=[
     {
       "id": "client",
       "role": "client",
-      "vmx": "C:/VM/Client.vmx",
+      "vmx": "@VMX@",
       "agent_version": "0.1.0",
       "management_ip": "127.0.0.1"
+    },
+    {
+      "id": "hard-stop",
+      "role": "hard-stop-test",
+      "vmx": "@HARD_VMX@",
+      "agent_version": "0.1.0",
+      "management_ip": "127.0.0.2"
     }
   ]
 }
 ]=])
 string(REPLACE "@ARCHIVE@" "${archive_path}" lab_json "${lab_json}")
 string(REPLACE "@SHARE@" "${share_path}" lab_json "${lab_json}")
+string(REPLACE "@VMRUN@" "${vmrun_path}" lab_json "${lab_json}")
+string(REPLACE "@VMX@" "${vmx_path}" lab_json "${lab_json}")
+string(REPLACE "@HARD_VMX@" "${hard_vmx_path}" lab_json "${lab_json}")
 file(WRITE "${TEST_ROOT}/lab.json" "${lab_json}")
 
 set(agent_json [=[
@@ -97,6 +116,66 @@ set(task_json [=[
 ]=])
 string(REPLACE "@FIXTURE@" "${fixture_path}" task_json "${task_json}")
 file(WRITE "${TEST_ROOT}/task.json" "${task_json}")
+
+execute_process(
+    COMMAND "${HOST_EXE}" vm start --id client
+    WORKING_DIRECTORY "${TEST_ROOT}"
+    RESULT_VARIABLE vm_start_result
+    OUTPUT_VARIABLE vm_start_output
+    ERROR_VARIABLE vm_start_error
+)
+if(NOT vm_start_result EQUAL 0)
+    message(FATAL_ERROR "SatsumaHost vm start failed: ${vm_start_error}\n${vm_start_output}")
+endif()
+string(FIND "${vm_start_output}" "\"status\": \"started\"" vm_start_position)
+if(vm_start_position EQUAL -1)
+    message(FATAL_ERROR "SatsumaHost vm start returned unexpected output: ${vm_start_output}")
+endif()
+
+execute_process(
+    COMMAND "${HOST_EXE}" vm stop --id client
+    WORKING_DIRECTORY "${TEST_ROOT}"
+    RESULT_VARIABLE vm_stop_result
+    OUTPUT_VARIABLE vm_stop_output
+    ERROR_VARIABLE vm_stop_error
+)
+if(NOT vm_stop_result EQUAL 0)
+    message(FATAL_ERROR "SatsumaHost vm stop failed: ${vm_stop_error}\n${vm_stop_output}")
+endif()
+string(FIND "${vm_stop_output}" "\"status\": \"stopped\"" vm_stop_position)
+if(vm_stop_position EQUAL -1)
+    message(FATAL_ERROR "SatsumaHost vm stop returned unexpected output: ${vm_stop_output}")
+endif()
+
+execute_process(
+    COMMAND "${HOST_EXE}" vm stop --id hard-stop --mode hard
+    WORKING_DIRECTORY "${TEST_ROOT}"
+    RESULT_VARIABLE vm_hard_stop_result
+    OUTPUT_VARIABLE vm_hard_stop_output
+    ERROR_VARIABLE vm_hard_stop_error
+)
+if(NOT vm_hard_stop_result EQUAL 0)
+    message(FATAL_ERROR "SatsumaHost hard stop failed: ${vm_hard_stop_error}\n${vm_hard_stop_output}")
+endif()
+string(FIND "${vm_hard_stop_output}" "\"mode\": \"hard\"" vm_hard_stop_position)
+if(vm_hard_stop_position EQUAL -1)
+    message(FATAL_ERROR "SatsumaHost hard stop returned unexpected output: ${vm_hard_stop_output}")
+endif()
+
+execute_process(
+    COMMAND "${HOST_EXE}" vm restore --id client --snapshot clean
+    WORKING_DIRECTORY "${TEST_ROOT}"
+    RESULT_VARIABLE vm_restore_result
+    OUTPUT_VARIABLE vm_restore_output
+    ERROR_VARIABLE vm_restore_error
+)
+if(NOT vm_restore_result EQUAL 0)
+    message(FATAL_ERROR "SatsumaHost vm restore failed: ${vm_restore_error}\n${vm_restore_output}")
+endif()
+string(FIND "${vm_restore_output}" "\"status\": \"restored\"" vm_restore_position)
+if(vm_restore_position EQUAL -1)
+    message(FATAL_ERROR "SatsumaHost vm restore returned unexpected output: ${vm_restore_output}")
+endif()
 
 execute_process(
     COMMAND "${HOST_EXE}" run --config "${TEST_ROOT}/lab.json" --plan "${TEST_ROOT}/task.json"
