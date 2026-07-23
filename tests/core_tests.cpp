@@ -7,6 +7,7 @@
 #include <string>
 
 #include <nlohmann/json.hpp>
+#include <ylt/struct_pack.hpp>
 
 #include "satsuma/core/errors.hpp"
 #include "satsuma/core/id.hpp"
@@ -121,6 +122,11 @@ void test_rpc_protocol_validation() {
     hello.request_id = "request_1";
     hello.agent_version = "0.1.0";
     satsuma::validate_rpc_request(hello, "test_lab");
+
+    const auto encoded = struct_pack::serialize(hello);
+    const auto decoded = struct_pack::deserialize<satsuma::AgentHello>(encoded);
+    expect(decoded.has_value(), "AgentHello could not be deserialized by struct_pack");
+    expect(decoded.value().request_id == hello.request_id, "AgentHello changed during struct_pack round trip");
 
     expect_error(
         [&hello] {

@@ -23,6 +23,24 @@ if(NOT nlohmann_json_FOUND)
     FetchContent_MakeAvailable(nlohmann_json)
 endif()
 
+# coro_rpc 和 struct_pack 固定使用 yalantinglibs 0.6.1 正式版本。
+find_package(yalantinglibs CONFIG QUIET)
+if(yalantinglibs_FOUND)
+    set(SATSUMA_YLT_TARGET yalantinglibs::yalantinglibs)
+else()
+    set(YLT_ENABLE_DL OFF CACHE BOOL "Disable dynamic loader integration" FORCE)
+    set(YLT_ENABLE_SSL OFF CACHE BOOL "Disable TLS until authentication is implemented" FORCE)
+    FetchContent_Declare(
+        satsuma_yalantinglibs
+        GIT_REPOSITORY https://github.com/alibaba/yalantinglibs.git
+        GIT_TAG 0.6.1
+        GIT_SHALLOW TRUE
+        GIT_PROGRESS TRUE
+    )
+    FetchContent_MakeAvailable(satsuma_yalantinglibs)
+    set(SATSUMA_YLT_TARGET yalantinglibs)
+endif()
+
 add_library(SatsumaCore STATIC
     src/core/config.cpp
     src/core/id.cpp
@@ -35,15 +53,20 @@ add_library(SatsumaCore STATIC
 
 target_include_directories(SatsumaCore PUBLIC include)
 target_compile_features(SatsumaCore PUBLIC cxx_std_20)
-target_compile_definitions(SatsumaCore PUBLIC UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+target_compile_definitions(
+    SatsumaCore
+    PUBLIC UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX _WIN32_WINNT=0x0A00 WINVER=0x0A00
+)
 target_link_libraries(SatsumaCore PUBLIC nlohmann_json::nlohmann_json PRIVATE bcrypt)
 
 add_executable(SatsumaHost
     src/host/controller.cpp
     src/host/main.cpp
+    src/host/rpc_server.cpp
+    src/host/rpc_service.cpp
 )
 target_include_directories(SatsumaHost PRIVATE src/host)
-target_link_libraries(SatsumaHost PRIVATE SatsumaCore)
+target_link_libraries(SatsumaHost PRIVATE SatsumaCore ${SATSUMA_YLT_TARGET})
 
 add_executable(SatsumaVM
     src/vm/agent.cpp
@@ -61,6 +84,7 @@ if(MSVC)
     foreach(target SatsumaCore SatsumaHost SatsumaVM)
         target_compile_options(${target} PRIVATE /W4 /permissive- /utf-8 /EHsc)
     endforeach()
+    target_compile_options(SatsumaHost PRIVATE /external:anglebrackets /external:W0)
 endif()
 
 if(SATSUMA_BUILD_TESTS)

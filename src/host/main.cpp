@@ -5,6 +5,7 @@
 #include <string>
 
 #include "controller.hpp"
+#include "rpc_server.hpp"
 #include "satsuma/core/config.hpp"
 #include "satsuma/core/errors.hpp"
 #include "satsuma/core/json_io.hpp"
@@ -46,6 +47,7 @@ void print_usage() {
     std::cout
         << "SatsumaHost 0.1.0\n"
         << "Usage:\n"
+        << "  SatsumaHost serve --config lab.json\n"
         << "  SatsumaHost run --config lab.json --plan task.json\n"
         << "  SatsumaHost report --config lab.json --run <run-id>\n";
 }
@@ -63,7 +65,15 @@ int wmain(const int argc, wchar_t* argv[]) {
         const std::wstring command = argv[1];
         const auto options = parse_options(argc, argv, 2);
         const std::filesystem::path config_path = require_option(options, L"config");
-        satsuma::host::Controller controller(satsuma::load_lab_config(config_path));
+        satsuma::LabConfig config = satsuma::load_lab_config(config_path);
+
+        if (command == L"serve") {
+            satsuma::host::RpcServer server(std::move(config));
+            server.start();
+            return 0;
+        }
+
+        satsuma::host::Controller controller(std::move(config));
 
         if (command == L"run") {
             const std::filesystem::path plan_path = require_option(options, L"plan");
