@@ -5,16 +5,19 @@
 #include <iostream>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 #include <nlohmann/json.hpp>
 #include <ylt/struct_pack.hpp>
 
+#include "satsuma/core/config.hpp"
 #include "satsuma/core/errors.hpp"
 #include "satsuma/core/id.hpp"
 #include "satsuma/core/json_io.hpp"
 #include "satsuma/core/path.hpp"
 #include "satsuma/core/rpc_protocol.hpp"
 #include "satsuma/core/sha256.hpp"
+#include "satsuma/core/snapshot.hpp"
 #include "satsuma/core/task.hpp"
 #include "satsuma/core/windows_command_line.hpp"
 
@@ -68,6 +71,105 @@ void test_file_primitives(const std::filesystem::path& root) {
         satsuma::sha256_file(hash_path) ==
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
         "SHA-256 known-answer test failed");
+}
+
+// 验证 VM 快照策略解析和基础快照所有权边界。
+void test_snapshot_configuration(const std::filesystem::path& root) {
+    nlohmann::json value = {
+        {"schema_version", 1},
+        {"lab_id", "snapshot_test"},
+        {"provider", {{"type", "vmware_workstation"}, {"vmrun", "C:/vmrun.exe"}}},
+        {"host", {{"listen", "127.0.0.1:37100"}, {"archive_root", "C:/archive"}}},
+        {"shared_folder", {{"host_root", "C:/share"}, {"guest_root", "C:/share"}}},
+        {"vms", {{{
+            "id", "client"},
+            {"vmx", "C:/Client.vmx"},
+            {"agent_version", "0.1.0"},
+            {"snapshots", {
+                {"base", "clean"},
+                {"ai_prefix", "satsuma-ai-"},
+                {"max_ai_snapshots", 8},
+            }},
+            {"management_ip", "127.0.0.1"},
+        }}},
+    };
+    const std::filesystem::path config_path = root / L"snapshot-lab.json";
+    satsuma::write_json_atomic(config_path, value);
+    const satsuma::LabConfig config = satsuma::load_lab_config(config_path);
+    expect(config.vms.at(0).snapshots.base == "clean", "snapshot base was not parsed");
+    expect(config.vms.at(0).snapshots.max_ai_snapshots == 8, "snapshot quota was not parsed");
+
+    value["vms"][0]["snapshots"]["base"] = "satsuma-ai-user-base";
+    satsuma::write_json_atomic(config_path, value);
+    expect_error(
+        [&config_path] { static_cast<void>(satsuma::load_lab_config(config_path)); },
+        "base snapshot using the AI prefix was accepted");
+}
+
+// 验证 AI 快照命名、重名检查和数量配额。
+void test_ai_snapshot_plan() {
+    satsuma::SnapshotConfig config;
+    config.base = "clean";
+    config.ai_prefix = "satsuma-ai-";
+    config.max_ai_snapshots = 2;
+    std::vector<std::string> existing = {"clean", "satsuma-ai-existing-20260722"};
+    const std::string planned = satsuma::plan_ai_snapshot_name(
+        config,
+        existing,
+        "network-ready",
+        "20260723120000");
+    expect(
+        planned == "satsuma-ai-network-ready-20260723120000",
+        "AI snapshot name did not follow the configured prefix");
+
+    existing.push_back(planned);
+    expect_error(
+        [&config, &existing] {
+            static_cast<void>(satsuma::plan_ai_snapshot_name(
+                config,
+                existing,
+                "another",
+                "20260723120100"));
+        },
+        "AI snapshot quota was not enforced");
+
+    config.max_ai_snapshots = 8;
+    expect_error(
+        [&config, &existing] {
+            static_cast<void>(satsuma::plan_ai_snapshot_name(
+                config,
+                existing,
+                "network-ready",
+                "20260723120000"));
+        },
+        "duplicate AI snapshot name was accepted");
+}
+
+// 验证快照删除只能作用于已存在的 AI 所有权名称。
+void test_ai_snapshot_deletion() {
+    satsuma::SnapshotConfig config;
+    config.base = "clean";
+    config.ai_prefix = "satsuma-ai-";
+    config.max_ai_snapshots = 8;
+    const std::vector<std::string> existing = {
+        "clean",
+        "manual-checkpoint",
+        "satsuma-ai-obsolete-20260722",
+    };
+    satsuma::validate_ai_snapshot_deletion(config, existing, "satsuma-ai-obsolete-20260722");
+    expect_error(
+        [&config, &existing] { satsuma::validate_ai_snapshot_deletion(config, existing, "clean"); },
+        "user base snapshot was accepted for deletion");
+    expect_error(
+        [&config, &existing] {
+            satsuma::validate_ai_snapshot_deletion(config, existing, "manual-checkpoint");
+        },
+        "external snapshot was accepted for deletion");
+    expect_error(
+        [&config, &existing] {
+            satsuma::validate_ai_snapshot_deletion(config, existing, "satsuma-ai-missing");
+        },
+        "missing AI snapshot was accepted for deletion");
 }
 
 // 验证运行清单和执行结果的 JSON 往返。
@@ -171,6 +273,9 @@ int main() {
         std::filesystem::temp_directory_path() / satsuma::path_from_utf8(satsuma::make_id("satsuma-core-test"));
     try {
         test_file_primitives(root);
+        test_snapshot_configuration(root);
+        test_ai_snapshot_plan();
+        test_ai_snapshot_deletion();
         test_protocol_round_trip();
         test_rpc_protocol_validation();
         test_windows_command_line();

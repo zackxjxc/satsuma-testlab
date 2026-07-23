@@ -26,12 +26,20 @@ struct SharedFolderConfig {
     std::string guest_root;          // Guest 共享根目录 UTF-8 表示
 };
 
+// 单台 VM 的快照所有权和配额策略。
+struct SnapshotConfig {
+    std::string base;           // 用户只读基础快照
+    std::string ai_prefix;      // AI 派生快照固定前缀
+    int max_ai_snapshots{0};    // AI 派生快照数量上限
+};
+
 // 单台虚拟机的稳定配置。
 struct VmConfig {
     std::string id;              // 虚拟机稳定 ID
     std::string role;            // 业务展示角色
     std::filesystem::path vmx;   // VMX 文件路径
     std::string agent_version;   // 快照中的 Agent 版本
+    SnapshotConfig snapshots;    // 快照保护策略
     std::string management_ip;   // 管理网络地址
 };
 

@@ -159,6 +159,13 @@ void validate_vmx_file(const std::filesystem::path& vmx) {
     }
 }
 
+// 拒绝空快照名和会截断 CreateProcessW 命令行的 NUL。
+void validate_snapshot_name(const std::string_view snapshot_name) {
+    if (snapshot_name.empty() || snapshot_name.find('\0') != std::string_view::npos) {
+        throw Error("Snapshot name must be non-empty and contain no NUL character");
+    }
+}
+
 }  // namespace
 
 VmrunProvider::VmrunProvider(
@@ -211,6 +218,44 @@ std::vector<std::filesystem::path> VmrunProvider::list_running() const {
     return paths;
 }
 
+std::vector<std::string> VmrunProvider::list_snapshots(const std::filesystem::path& vmx) const {
+    validate_vmx_file(vmx);
+    const std::string output = invoke({"listSnapshots", path_to_utf8(vmx)});
+    std::istringstream lines(output);
+    std::string header;
+    if (!std::getline(lines, header)) {
+        throw Error("vmrun listSnapshots returned an empty response");
+    }
+    trim_carriage_return(header);
+
+    constexpr std::string_view prefix = "Total snapshots: ";
+    if (!header.starts_with(prefix)) {
+        throw Error("vmrun listSnapshots returned an invalid header: " + header);
+    }
+    std::size_t expected_count = 0;
+    const std::string_view count_text(header.data() + prefix.size(), header.size() - prefix.size());
+    const auto [end, parse_error] = std::from_chars(
+        count_text.data(),
+        count_text.data() + count_text.size(),
+        expected_count);
+    if (parse_error != std::errc{} || end != count_text.data() + count_text.size()) {
+        throw Error("vmrun listSnapshots returned an invalid snapshot count");
+    }
+
+    std::vector<std::string> snapshots;
+    std::string line;
+    while (std::getline(lines, line)) {
+        trim_carriage_return(line);
+        if (!line.empty()) {
+            snapshots.push_back(line);
+        }
+    }
+    if (snapshots.size() != expected_count) {
+        throw Error("vmrun listSnapshots count does not match its output");
+    }
+    return snapshots;
+}
+
 void VmrunProvider::start(const std::filesystem::path& vmx) const {
     validate_vmx_file(vmx);
     static_cast<void>(invoke({"start", path_to_utf8(vmx), "nogui"}));
@@ -236,10 +281,24 @@ void VmrunProvider::revert_to_snapshot(
     const std::filesystem::path& vmx,
     const std::string_view snapshot_name) const {
     validate_vmx_file(vmx);
-    if (snapshot_name.empty() || snapshot_name.find('\0') != std::string_view::npos) {
-        throw Error("Snapshot name must be non-empty and contain no NUL character");
-    }
+    validate_snapshot_name(snapshot_name);
     static_cast<void>(invoke({"revertToSnapshot", path_to_utf8(vmx), std::string(snapshot_name)}));
+}
+
+void VmrunProvider::create_snapshot(
+    const std::filesystem::path& vmx,
+    const std::string_view snapshot_name) const {
+    validate_vmx_file(vmx);
+    validate_snapshot_name(snapshot_name);
+    static_cast<void>(invoke({"snapshot", path_to_utf8(vmx), std::string(snapshot_name)}));
+}
+
+void VmrunProvider::delete_snapshot(
+    const std::filesystem::path& vmx,
+    const std::string_view snapshot_name) const {
+    validate_vmx_file(vmx);
+    validate_snapshot_name(snapshot_name);
+    static_cast<void>(invoke({"deleteSnapshot", path_to_utf8(vmx), std::string(snapshot_name)}));
 }
 
 std::string VmrunProvider::invoke(const std::vector<std::string>& arguments) const {

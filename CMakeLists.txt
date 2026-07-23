@@ -49,6 +49,7 @@ add_library(SatsumaCore STATIC
     src/core/path.cpp
     src/core/rpc_protocol.cpp
     src/core/sha256.cpp
+    src/core/snapshot.cpp
     src/core/task.cpp
     src/core/windows_command_line.cpp
 )

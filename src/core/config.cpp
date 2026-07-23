@@ -27,6 +27,28 @@ namespace {
     return result;
 }
 
+// 读取必需整数并拒绝 JSON 隐式类型转换。
+[[nodiscard]] int required_integer(const nlohmann::json& value, const char* field) {
+    if (!value.contains(field) || !value.at(field).is_number_integer()) {
+        throw Error(std::string("Missing or invalid integer field: ") + field);
+    }
+    return value.at(field).get<int>();
+}
+
+// 验证基础快照不会被 AI 快照所有权规则覆盖。
+void validate_snapshot_config(const SnapshotConfig& snapshots) {
+    if (snapshots.base.size() > 128 || snapshots.base.find('\0') != std::string::npos) {
+        throw Error("Snapshot base name must contain between 1 and 128 non-NUL characters");
+    }
+    validate_identifier(snapshots.ai_prefix, "snapshot ai_prefix");
+    if (snapshots.base.starts_with(snapshots.ai_prefix)) {
+        throw Error("Snapshot base name must not use the AI snapshot prefix");
+    }
+    if (snapshots.max_ai_snapshots < 1 || snapshots.max_ai_snapshots > 64) {
+        throw Error("max_ai_snapshots must be between 1 and 64");
+    }
+}
+
 // 检查当前仅支持的 schema 版本。
 void validate_schema_version(const nlohmann::json& value, const char* source) {
     const int version = value.value("schema_version", 0);
@@ -73,6 +95,14 @@ LabConfig load_lab_config(const std::filesystem::path& path) {
         vm.role = vm_value.value("role", vm.id);
         vm.vmx = path_from_utf8(required_string(vm_value, "vmx"));
         vm.agent_version = required_string(vm_value, "agent_version");
+        if (!vm_value.contains("snapshots") || !vm_value.at("snapshots").is_object()) {
+            throw Error("Missing or invalid snapshots object for VM: " + vm.id);
+        }
+        const auto& snapshots = vm_value.at("snapshots");
+        vm.snapshots.base = required_string(snapshots, "base");
+        vm.snapshots.ai_prefix = required_string(snapshots, "ai_prefix");
+        vm.snapshots.max_ai_snapshots = required_integer(snapshots, "max_ai_snapshots");
+        validate_snapshot_config(vm.snapshots);
         vm.management_ip = required_string(vm_value, "management_ip");
         if (!vm_ids.insert(vm.id).second) {
             throw Error("Duplicate VM id in lab.json: " + vm.id);

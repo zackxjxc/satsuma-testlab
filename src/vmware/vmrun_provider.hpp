@@ -26,6 +26,10 @@ public:
     // 查询当前正在运行的 VMX 绝对路径。
     [[nodiscard]] std::vector<std::filesystem::path> list_running() const;
 
+    // 查询指定 VMX 的全部快照名。
+    [[nodiscard]] std::vector<std::string> list_snapshots(
+        const std::filesystem::path& vmx) const;
+
     // 以无界面模式启动指定 VMX。
     void start(const std::filesystem::path& vmx) const;
 
@@ -34,6 +38,16 @@ public:
 
     // 将指定 VMX 恢复到已有快照。
     void revert_to_snapshot(
+        const std::filesystem::path& vmx,
+        std::string_view snapshot_name) const;
+
+    // 为指定 VMX 创建一个命名快照。
+    void create_snapshot(
+        const std::filesystem::path& vmx,
+        std::string_view snapshot_name) const;
+
+    // 删除指定 VMX 的单个命名快照。
+    void delete_snapshot(
         const std::filesystem::path& vmx,
         std::string_view snapshot_name) const;
 

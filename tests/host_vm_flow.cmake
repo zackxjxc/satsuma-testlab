@@ -42,6 +42,11 @@ set(lab_json [=[
       "role": "client",
       "vmx": "@VMX@",
       "agent_version": "0.1.0",
+      "snapshots": {
+        "base": "clean",
+        "ai_prefix": "satsuma-ai-",
+        "max_ai_snapshots": 8
+      },
       "management_ip": "127.0.0.1"
     },
     {
@@ -49,6 +54,11 @@ set(lab_json [=[
       "role": "hard-stop-test",
       "vmx": "@HARD_VMX@",
       "agent_version": "0.1.0",
+      "snapshots": {
+        "base": "clean",
+        "ai_prefix": "satsuma-ai-",
+        "max_ai_snapshots": 8
+      },
       "management_ip": "127.0.0.2"
     }
   ]
@@ -175,6 +185,79 @@ endif()
 string(FIND "${vm_restore_output}" "\"status\": \"restored\"" vm_restore_position)
 if(vm_restore_position EQUAL -1)
     message(FATAL_ERROR "SatsumaHost vm restore returned unexpected output: ${vm_restore_output}")
+endif()
+
+execute_process(
+    COMMAND "${HOST_EXE}" snapshot list --vm client
+    WORKING_DIRECTORY "${TEST_ROOT}"
+    RESULT_VARIABLE snapshot_list_result
+    OUTPUT_VARIABLE snapshot_list_output
+    ERROR_VARIABLE snapshot_list_error
+)
+if(NOT snapshot_list_result EQUAL 0)
+    message(FATAL_ERROR "SatsumaHost snapshot list failed: ${snapshot_list_error}\n${snapshot_list_output}")
+endif()
+string(FIND "${snapshot_list_output}" "\"ownership\": \"user_base\"" snapshot_list_position)
+if(snapshot_list_position EQUAL -1)
+    message(FATAL_ERROR "SatsumaHost snapshot list did not protect the base snapshot: ${snapshot_list_output}")
+endif()
+
+execute_process(
+    COMMAND "${HOST_EXE}" snapshot delete-ai --vm client --snapshot clean
+    WORKING_DIRECTORY "${TEST_ROOT}"
+    RESULT_VARIABLE base_delete_result
+    OUTPUT_VARIABLE base_delete_output
+    ERROR_VARIABLE base_delete_error
+)
+if(base_delete_result EQUAL 0)
+    message(FATAL_ERROR "SatsumaHost allowed deletion of the user base snapshot: ${base_delete_output}")
+endif()
+
+execute_process(
+    COMMAND "${HOST_EXE}" snapshot create-ai --vm client --name network-ready
+    WORKING_DIRECTORY "${TEST_ROOT}"
+    RESULT_VARIABLE snapshot_create_result
+    OUTPUT_VARIABLE snapshot_create_output
+    ERROR_VARIABLE snapshot_create_error
+)
+if(NOT snapshot_create_result EQUAL 0)
+    message(FATAL_ERROR "SatsumaHost snapshot create-ai failed: ${snapshot_create_error}\n${snapshot_create_output}")
+endif()
+string(FIND "${snapshot_create_output}" "\"status\": \"created\"" snapshot_create_position)
+if(snapshot_create_position EQUAL -1)
+    message(FATAL_ERROR "SatsumaHost snapshot create-ai returned unexpected output: ${snapshot_create_output}")
+endif()
+file(GLOB snapshot_metadata "${archive_path}/snapshots/client/*.json")
+list(LENGTH snapshot_metadata snapshot_metadata_count)
+if(NOT snapshot_metadata_count EQUAL 1)
+    message(FATAL_ERROR "SatsumaHost did not create exactly one snapshot metadata record")
+endif()
+list(GET snapshot_metadata 0 snapshot_metadata_path)
+file(READ "${snapshot_metadata_path}" snapshot_metadata_json)
+string(FIND "${snapshot_metadata_json}" "\"status\": \"created\"" snapshot_metadata_position)
+if(snapshot_metadata_position EQUAL -1)
+    message(FATAL_ERROR "Snapshot metadata did not record successful creation: ${snapshot_metadata_json}")
+endif()
+
+execute_process(
+    COMMAND "${HOST_EXE}" snapshot delete-ai --vm client --snapshot satsuma-ai-obsolete
+    WORKING_DIRECTORY "${TEST_ROOT}"
+    RESULT_VARIABLE snapshot_delete_result
+    OUTPUT_VARIABLE snapshot_delete_output
+    ERROR_VARIABLE snapshot_delete_error
+)
+if(NOT snapshot_delete_result EQUAL 0)
+    message(FATAL_ERROR "SatsumaHost snapshot delete-ai failed: ${snapshot_delete_error}\n${snapshot_delete_output}")
+endif()
+string(FIND "${snapshot_delete_output}" "\"status\": \"deleted\"" snapshot_delete_position)
+if(snapshot_delete_position EQUAL -1)
+    message(FATAL_ERROR "SatsumaHost snapshot delete-ai returned unexpected output: ${snapshot_delete_output}")
+endif()
+set(deleted_metadata_path "${archive_path}/snapshots/client/satsuma-ai-obsolete.json")
+file(READ "${deleted_metadata_path}" deleted_metadata_json)
+string(FIND "${deleted_metadata_json}" "\"status\": \"deleted\"" deleted_metadata_position)
+if(deleted_metadata_position EQUAL -1)
+    message(FATAL_ERROR "Snapshot deletion metadata was not finalized: ${deleted_metadata_json}")
 endif()
 
 execute_process(

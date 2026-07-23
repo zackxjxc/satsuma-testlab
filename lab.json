@@ -20,6 +20,11 @@
       "role": "client",
       "vmx": "D:\\VM\\Client\\Client.vmx",
       "agent_version": "0.1.0",
+      "snapshots": {
+        "base": "clean",
+        "ai_prefix": "satsuma-ai-",
+        "max_ai_snapshots": 8
+      },
       "management_ip": "192.168.250.11"
     },
     {
@@ -27,6 +32,11 @@
       "role": "gateway",
       "vmx": "D:\\VM\\Gateway\\Gateway.vmx",
       "agent_version": "0.1.0",
+      "snapshots": {
+        "base": "clean",
+        "ai_prefix": "satsuma-ai-",
+        "max_ai_snapshots": 8
+      },
       "management_ip": "192.168.250.12"
     }
   ]

@@ -3,13 +3,16 @@
 #include <iostream>
 #include <map>
 #include <string>
+#include <vector>
 
 #include "controller.hpp"
 #include "rpc_server.hpp"
 #include "satsuma/core/config.hpp"
 #include "satsuma/core/errors.hpp"
+#include "satsuma/core/id.hpp"
 #include "satsuma/core/json_io.hpp"
 #include "satsuma/core/path.hpp"
+#include "satsuma/core/snapshot.hpp"
 #include "vmrun_provider.hpp"
 
 namespace {
@@ -52,6 +55,9 @@ void print_usage() {
         << "  SatsumaHost vm start --id <vm-id> [--config lab.json]\n"
         << "  SatsumaHost vm stop --id <vm-id> [--mode soft|hard] [--config lab.json]\n"
         << "  SatsumaHost vm restore --id <vm-id> --snapshot <name> [--config lab.json]\n"
+        << "  SatsumaHost snapshot list --vm <vm-id> [--config lab.json]\n"
+        << "  SatsumaHost snapshot create-ai --vm <vm-id> --name <purpose> [--config lab.json]\n"
+        << "  SatsumaHost snapshot delete-ai --vm <vm-id> --snapshot <name> [--config lab.json]\n"
         << "  SatsumaHost run --config lab.json --plan task.json\n"
         << "  SatsumaHost report --config lab.json --run <run-id>\n";
 }
@@ -67,20 +73,21 @@ int wmain(const int argc, wchar_t* argv[]) {
         }
 
         const std::wstring command = argv[1];
-        std::wstring vm_command;
+        std::wstring subcommand;
         int options_start = 2;
-        if (command == L"vm") {
+        const bool grouped_command = command == L"vm" || command == L"snapshot";
+        if (grouped_command) {
             if (argc < 3) {
                 print_usage();
                 return 2;
             }
-            vm_command = argv[2];
+            subcommand = argv[2];
             options_start = 3;
         }
 
         const auto options = parse_options(argc, argv, options_start);
         const std::filesystem::path config_path =
-            command == L"vm" && !options.contains(L"config")
+            grouped_command && !options.contains(L"config")
                 ? std::filesystem::path(L"lab.json")
                 : std::filesystem::path(require_option(options, L"config"));
         satsuma::LabConfig config = satsuma::load_lab_config(config_path);
@@ -92,7 +99,7 @@ int wmain(const int argc, wchar_t* argv[]) {
         }
 
         if (command == L"vm") {
-            if (vm_command != L"start" && vm_command != L"stop" && vm_command != L"restore") {
+            if (subcommand != L"start" && subcommand != L"stop" && subcommand != L"restore") {
                 print_usage();
                 return 2;
             }
@@ -105,10 +112,10 @@ int wmain(const int argc, wchar_t* argv[]) {
             std::string status;  // 返回给调用方的电源操作状态
             std::string snapshot_name;  // 恢复操作使用的快照名
             std::string stop_mode;  // 关闭操作使用的 vmrun 模式
-            if (vm_command == L"start") {
+            if (subcommand == L"start") {
                 provider.start(vm->vmx);
                 status = "started";
-            } else if (vm_command == L"stop") {
+            } else if (subcommand == L"stop") {
                 const auto mode_option = options.find(L"mode");
                 stop_mode = mode_option == options.end()
                     ? "soft"
@@ -139,6 +146,114 @@ int wmain(const int argc, wchar_t* argv[]) {
                 output["mode"] = stop_mode;
             }
             std::cout << output.dump(2) << '\n';
+            return 0;
+        }
+
+        if (command == L"snapshot") {
+            if (subcommand != L"list" && subcommand != L"create-ai" && subcommand != L"delete-ai") {
+                print_usage();
+                return 2;
+            }
+            const std::string vm_id = satsuma::path_to_utf8(require_option(options, L"vm"));
+            const satsuma::VmConfig* vm = satsuma::find_vm(config, vm_id);
+            if (vm == nullptr) {
+                throw satsuma::Error("Unknown VM id: " + vm_id);
+            }
+            satsuma::vmware::VmrunProvider provider(config.provider.vmrun);
+            const std::vector<std::string> existing = provider.list_snapshots(vm->vmx);
+            if (subcommand == L"list") {
+                nlohmann::json snapshots = nlohmann::json::array();
+                for (const std::string& name : existing) {
+                    std::string ownership = "external";  // 不受 Satsuma 管理的快照
+                    if (name == vm->snapshots.base) {
+                        ownership = "user_base";
+                    } else if (name.starts_with(vm->snapshots.ai_prefix)) {
+                        ownership = "ai";
+                    }
+                    snapshots.push_back({{"name", name}, {"ownership", ownership}});
+                }
+                std::cout << nlohmann::json({
+                    {"status", "listed"},
+                    {"vm_id", vm_id},
+                    {"snapshots", std::move(snapshots)},
+                }).dump(2) << '\n';
+                return 0;
+            }
+            if (subcommand == L"delete-ai") {
+                const std::string snapshot_name = satsuma::path_to_utf8(require_option(options, L"snapshot"));
+                satsuma::validate_ai_snapshot_deletion(vm->snapshots, existing, snapshot_name);
+                const std::filesystem::path metadata_path = satsuma::resolve_under_root(
+                    config.host.archive_root,
+                    std::filesystem::path(L"snapshots") /
+                        satsuma::path_from_utf8(vm_id) /
+                        satsuma::path_from_utf8(snapshot_name + ".json"));
+                nlohmann::json metadata = std::filesystem::is_regular_file(metadata_path)
+                    ? satsuma::load_json(metadata_path)
+                    : nlohmann::json({
+                        {"schema_version", 1},
+                        {"type", "ai_snapshot"},
+                        {"vm_id", vm_id},
+                        {"snapshot", snapshot_name},
+                    });
+                metadata["status"] = "deleting";
+                satsuma::write_json_atomic(metadata_path, metadata);
+                try {
+                    provider.delete_snapshot(vm->vmx, snapshot_name);
+                } catch (const std::exception& error) {
+                    metadata["status"] = "delete_failed";
+                    metadata["error"] = error.what();
+                    satsuma::write_json_atomic(metadata_path, metadata);
+                    throw;
+                }
+                metadata["status"] = "deleted";
+                metadata["deleted_at"] = satsuma::utc_timestamp();
+                satsuma::write_json_atomic(metadata_path, metadata);
+                std::cout << nlohmann::json({
+                    {"status", "deleted"},
+                    {"vm_id", vm_id},
+                    {"snapshot", snapshot_name},
+                }).dump(2) << '\n';
+                return 0;
+            }
+
+            const std::string purpose = satsuma::path_to_utf8(require_option(options, L"name"));
+            const std::string snapshot_name = satsuma::plan_ai_snapshot_name(
+                vm->snapshots,
+                existing,
+                purpose,
+                satsuma::utc_timestamp_compact());
+            const std::filesystem::path metadata_path = satsuma::resolve_under_root(
+                config.host.archive_root,
+                std::filesystem::path(L"snapshots") /
+                    satsuma::path_from_utf8(vm_id) /
+                    satsuma::path_from_utf8(snapshot_name + ".json"));
+            nlohmann::json metadata = {
+                {"schema_version", 1},
+                {"type", "ai_snapshot"},
+                {"status", "creating"},
+                {"vm_id", vm_id},
+                {"snapshot", snapshot_name},
+                {"purpose", purpose},
+                {"parent_snapshot", nullptr},
+                {"agent_version", vm->agent_version},
+                {"created_at", satsuma::utc_timestamp()},
+            };
+            satsuma::write_json_atomic(metadata_path, metadata);
+            try {
+                provider.create_snapshot(vm->vmx, snapshot_name);
+            } catch (const std::exception& error) {
+                metadata["status"] = "failed";
+                metadata["error"] = error.what();
+                satsuma::write_json_atomic(metadata_path, metadata);
+                throw;
+            }
+            metadata["status"] = "created";
+            satsuma::write_json_atomic(metadata_path, metadata);
+            std::cout << nlohmann::json({
+                {"status", "created"},
+                {"vm_id", vm_id},
+                {"snapshot", snapshot_name},
+            }).dump(2) << '\n';
             return 0;
         }
 

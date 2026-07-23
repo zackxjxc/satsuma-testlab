@@ -31,6 +31,9 @@ public:
         soft_stop_path_ = create_vmx(L"Soft VM.vmx");
         hard_stop_path_ = create_vmx(L"Hard VM.vmx");
         snapshot_path_ = create_vmx(L"Snapshot VM.vmx");
+        create_snapshot_path_ = create_vmx(L"Create VM.vmx");
+        list_snapshots_path_ = create_vmx(L"List Snapshots VM.vmx");
+        delete_snapshot_path_ = create_vmx(L"Delete VM.vmx");
     }
 
     TemporaryVmx(const TemporaryVmx&) = delete;
@@ -62,6 +65,21 @@ public:
         return snapshot_path_;
     }
 
+    // 返回快照创建测试使用的 VMX 路径。
+    [[nodiscard]] const std::filesystem::path& create_snapshot_path() const noexcept {
+        return create_snapshot_path_;
+    }
+
+    // 返回快照列表测试使用的 VMX 路径。
+    [[nodiscard]] const std::filesystem::path& list_snapshots_path() const noexcept {
+        return list_snapshots_path_;
+    }
+
+    // 返回快照删除测试使用的 VMX 路径。
+    [[nodiscard]] const std::filesystem::path& delete_snapshot_path() const noexcept {
+        return delete_snapshot_path_;
+    }
+
 private:
     // 创建单个最小 VMX 占位文件。
     [[nodiscard]] std::filesystem::path create_vmx(const std::filesystem::path& filename) const {
@@ -79,11 +97,14 @@ private:
     std::filesystem::path soft_stop_path_;  // 软关闭测试路径
     std::filesystem::path hard_stop_path_;  // 硬关闭测试路径
     std::filesystem::path snapshot_path_;   // 快照恢复测试路径
+    std::filesystem::path create_snapshot_path_;  // 快照创建测试路径
+    std::filesystem::path list_snapshots_path_;  // 快照列表测试路径
+    std::filesystem::path delete_snapshot_path_;  // 快照删除测试路径
 };
 
 }  // namespace
 
-// 使用假 vmrun 验证结构化 list/start/stop/revertToSnapshot 调用。
+// 使用假 vmrun 验证 Provider 当前支持的结构化调用。
 int wmain(const int argc, wchar_t* argv[]) {
     try {
         if (argc != 2) {
@@ -97,10 +118,16 @@ int wmain(const int argc, wchar_t* argv[]) {
         expect(paths.at(0) == L"C:\\VM Space\\Client.vmx", "VM path with spaces changed");
         expect(paths.at(1) == L"D:\\Gateway\\Gateway.vmx", "second VM path changed");
         const TemporaryVmx vmx;
+        const auto snapshots = provider.list_snapshots(vmx.list_snapshots_path());
+        expect(snapshots.size() == 3, "vmrun listSnapshots did not return three snapshots");
+        expect(snapshots.at(0) == "clean", "base snapshot name changed");
+        expect(snapshots.at(2) == "satsuma-ai-client-ready", "AI snapshot name changed");
         provider.start(vmx.start_path());
         provider.stop(vmx.soft_stop_path(), satsuma::vmware::VmStopMode::Soft);
         provider.stop(vmx.hard_stop_path(), satsuma::vmware::VmStopMode::Hard);
         provider.revert_to_snapshot(vmx.snapshot_path(), "Clean Base");
+        provider.create_snapshot(vmx.create_snapshot_path(), "satsuma-ai-network-ready");
+        provider.delete_snapshot(vmx.delete_snapshot_path(), "satsuma-ai-obsolete");
         std::cout << "SatsumaVmrunProviderTests passed\n";
         return 0;
     } catch (const std::exception& error) {
