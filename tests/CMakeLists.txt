@@ -83,3 +83,19 @@ add_test(
         "-DTEST_ROOT=${CMAKE_CURRENT_BINARY_DIR}/host-vm-flow"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/host_vm_flow.cmake"
 )
+
+if(SATSUMA_ENABLE_REAL_VMWARE_SMOKE)
+    add_custom_target(
+        SatsumaRealVmwareSmoke
+        COMMAND "${CMAKE_COMMAND}"
+            "-DHOST_EXE=$<TARGET_FILE:SatsumaHost>"
+            "-DLAB_CONFIG=${SATSUMA_REAL_LAB_CONFIG}"
+            "-DVM_ID=${SATSUMA_REAL_VM_ID}"
+            "-DSNAPSHOT=${SATSUMA_REAL_SNAPSHOT}"
+            "-DCONFIRM=${SATSUMA_REAL_VMWARE_CONFIRM}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/real_vmware_smoke.cmake"
+        DEPENDS SatsumaHost
+        USES_TERMINAL
+        COMMENT "Run explicitly confirmed real VMware lifecycle smoke"
+    )
+endif()

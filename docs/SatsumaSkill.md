@@ -8,5 +8,5 @@
 6. 失败后先读取 `execution.json`、`stdout.log`、`stderr.log` 和已收集文件，再修改目标项目。
 7. Satsuma 的结论只覆盖部署、执行、超时和证据收集；业务正确性由调用它的 AI 判断。
 8. 被测程序只能在隔离 VM 中执行，不向 Host 添加运行被测 exe 的旁路命令。
-9. 当前 `0.1.0` 只提供共享文件通道；在 `vmrun` 恢复能力完成前，VM 卡死必须交由用户恢复快照。
-10. 后续出现 `RECOVERY_FAILED` 时停止自动修改，要求用户处理 VMware 环境。
+9. VM 生命周期和快照只能通过 `SatsumaHost.exe vm/snapshot` 命令操作，不直接调用 `vmrun`。
+10. 当前 JSON 任务尚未自动恢复快照；带外恢复命令失败时停止自动修改并要求用户处理 VMware 环境。

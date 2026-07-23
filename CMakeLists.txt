@@ -8,6 +8,11 @@ if(NOT WIN32)
 endif()
 
 option(SATSUMA_BUILD_TESTS "Build Satsuma tests" ON)
+option(SATSUMA_ENABLE_REAL_VMWARE_SMOKE "Expose the destructive real VMware smoke target" OFF)
+set(SATSUMA_REAL_LAB_CONFIG "" CACHE FILEPATH "lab.json used by the real VMware smoke target")
+set(SATSUMA_REAL_VM_ID "" CACHE STRING "VM ID used by the real VMware smoke target")
+set(SATSUMA_REAL_SNAPSHOT "" CACHE STRING "Snapshot restored by the real VMware smoke target")
+set(SATSUMA_REAL_VMWARE_CONFIRM "" CACHE STRING "Explicit confirmation for destructive VMware smoke")
 
 include(FetchContent)
 
