@@ -2,7 +2,6 @@
 #include "controller.hpp"
 
 #include <algorithm>
-#include <cctype>
 #include <set>
 
 #include <windows.h>
@@ -15,19 +14,6 @@
 
 namespace satsuma::host {
 namespace {
-
-// 限制运行 ID 为单个安全目录名。
-void validate_run_id(const std::string& run_id) {
-    const bool valid = !run_id.empty() && run_id.size() <= 128 && std::all_of(
-        run_id.begin(),
-        run_id.end(),
-        [](const unsigned char value) {
-            return std::isalnum(value) || value == '-' || value == '_';
-        });
-    if (!valid) {
-        throw Error("run_id may contain only letters, numbers, '-' and '_'");
-    }
-}
 
 // 验证计划只引用 lab.json 中登记的 VM。
 void validate_vm_references(const LabConfig& config, const TaskPlan& plan) {
@@ -78,7 +64,7 @@ RunManifest Controller::create_run(const std::filesystem::path& plan_path) const
     manifest.name = plan.name;
     manifest.created_at = utc_timestamp();
     manifest.steps = plan.steps;
-    validate_run_id(manifest.run_id);
+    validate_identifier(manifest.run_id, "run_id");
 
     const std::filesystem::path runs_root = config_.shared_folder.host_root / L"runs";
     std::filesystem::create_directories(runs_root);
@@ -126,7 +112,7 @@ RunManifest Controller::create_run(const std::filesystem::path& plan_path) const
 }
 
 nlohmann::json Controller::build_report(const std::string& run_id) const {
-    validate_run_id(run_id);
+    validate_identifier(run_id, "run_id");
     const std::filesystem::path run_directory = resolve_under_root(
         config_.shared_folder.host_root,
         std::filesystem::path(L"runs") / path_from_utf8(run_id));

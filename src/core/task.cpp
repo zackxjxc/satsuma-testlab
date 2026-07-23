@@ -8,6 +8,7 @@
 #include <nlohmann/json.hpp>
 
 #include "satsuma/core/errors.hpp"
+#include "satsuma/core/id.hpp"
 #include "satsuma/core/json_io.hpp"
 #include "satsuma/core/path.hpp"
 
@@ -34,19 +35,6 @@ void validate_sha256(const std::string& hash) {
         [](const unsigned char value) { return std::isdigit(value) || (value >= 'a' && value <= 'f'); });
     if (!valid) {
         throw Error("sha256 must contain 64 lowercase hexadecimal characters");
-    }
-}
-
-// 限制任务 ID 和 VM ID 为安全的 ASCII 标识符。
-void validate_identifier(const std::string& identifier, const char* field) {
-    const bool valid = !identifier.empty() && identifier.size() <= 128 && std::all_of(
-        identifier.begin(),
-        identifier.end(),
-        [](const unsigned char value) {
-            return std::isalnum(value) || value == '-' || value == '_';
-        });
-    if (!valid) {
-        throw Error(std::string(field) + " may contain only letters, numbers, '-' and '_'");
     }
 }
 

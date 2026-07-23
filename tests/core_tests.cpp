@@ -36,6 +36,11 @@ void expect_error(const std::function<void()>& operation, const std::string& mes
 
 // 验证路径边界、原子 JSON 和 SHA-256。
 void test_file_primitives(const std::filesystem::path& root) {
+    satsuma::validate_identifier("client_01", "test identifier");
+    expect_error(
+        [] { satsuma::validate_identifier("../client", "test identifier"); },
+        "unsafe identifier was accepted");
+
     std::filesystem::create_directories(root);
     expect(
         satsuma::resolve_under_root(root, L"runs/test.json") == root / L"runs/test.json",

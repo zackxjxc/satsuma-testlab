@@ -2,12 +2,12 @@
 #include "satsuma/core/config.hpp"
 
 #include <algorithm>
-#include <cctype>
 #include <set>
 
 #include <nlohmann/json.hpp>
 
 #include "satsuma/core/errors.hpp"
+#include "satsuma/core/id.hpp"
 #include "satsuma/core/json_io.hpp"
 #include "satsuma/core/path.hpp"
 
@@ -31,19 +31,6 @@ void validate_schema_version(const nlohmann::json& value, const char* source) {
     const int version = value.value("schema_version", 0);
     if (version != 1) {
         throw Error(std::string(source) + " requires schema_version 1");
-    }
-}
-
-// 限制稳定 ID 为可安全用于目录和文件名的 ASCII 字符。
-void validate_identifier(const std::string& value, const char* field) {
-    const bool valid = !value.empty() && value.size() <= 128 && std::all_of(
-        value.begin(),
-        value.end(),
-        [](const unsigned char character) {
-            return std::isalnum(character) || character == '-' || character == '_';
-        });
-    if (!valid) {
-        throw Error(std::string(field) + " may contain only letters, numbers, '-' and '_'");
     }
 }
 

@@ -1,7 +1,9 @@
 // 运行标识和 UTC 时间生成实现。
 #include "satsuma/core/id.hpp"
 
+#include <algorithm>
 #include <array>
+#include <cctype>
 #include <chrono>
 #include <iomanip>
 #include <sstream>
@@ -69,6 +71,19 @@ std::string make_id(const std::string_view prefix) {
         throw Error("ID prefix must not be empty");
     }
     return std::string(prefix) + '-' + utc_timestamp_compact() + '-' + random_hex();
+}
+
+void validate_identifier(const std::string_view value, const std::string_view field) {
+    const bool valid = !value.empty() && value.size() <= 128 && std::all_of(
+        value.begin(),
+        value.end(),
+        [](const unsigned char character) {
+            return std::isalnum(character) || character == '-' || character == '_';
+        });
+    if (!valid) {
+        throw Error(
+            std::string(field) + " may contain only letters, numbers, '-' and '_'");
+    }
 }
 
 }  // namespace satsuma
