@@ -69,6 +69,7 @@ target_link_libraries(SatsumaCore PUBLIC nlohmann_json::nlohmann_json PRIVATE bc
 
 add_executable(SatsumaHost
     src/host/controller.cpp
+    src/host/diagnostics.cpp
     src/host/main.cpp
     src/host/rpc_server.cpp
     src/host/rpc_service.cpp

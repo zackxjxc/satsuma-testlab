@@ -1,11 +1,15 @@
 // SatsumaHost 命令行入口。
+#include <charconv>
+#include <chrono>
 #include <filesystem>
 #include <iostream>
 #include <map>
+#include <optional>
 #include <string>
 #include <vector>
 
 #include "controller.hpp"
+#include "diagnostics.hpp"
 #include "rpc_server.hpp"
 #include "satsuma/core/config.hpp"
 #include "satsuma/core/errors.hpp"
@@ -46,11 +50,29 @@ namespace {
     return match->second;
 }
 
+// 解析检测模式等待 Agent 的秒数。
+[[nodiscard]] std::chrono::seconds parse_diagnostic_timeout(
+    const std::map<std::wstring, std::wstring>& options) {
+    const auto match = options.find(L"timeout-seconds");
+    if (match == options.end()) {
+        return std::chrono::seconds(30);
+    }
+
+    const std::string value = satsuma::path_to_utf8(match->second);
+    int seconds = 0;
+    const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), seconds);
+    if (error != std::errc{} || end != value.data() + value.size() || seconds < 1 || seconds > 300) {
+        throw satsuma::Error("Diagnostic timeout must be an integer between 1 and 300 seconds");
+    }
+    return std::chrono::seconds(seconds);
+}
+
 // 输出当前首个增量支持的 CLI 用法。
 void print_usage() {
     std::cout
         << "SatsumaHost 0.1.0\n"
         << "Usage:\n"
+        << "  SatsumaHost check --config lab.json [--vm <vm-id>] [--timeout-seconds <1-300>]\n"
         << "  SatsumaHost serve --config lab.json\n"
         << "  SatsumaHost vm start --id <vm-id> [--config lab.json]\n"
         << "  SatsumaHost vm stop --id <vm-id> [--mode soft|hard] [--config lab.json]\n"
@@ -96,6 +118,23 @@ int wmain(const int argc, wchar_t* argv[]) {
             satsuma::host::RpcServer server(std::move(config));
             server.start();
             return 0;
+        }
+
+        if (command == L"check") {
+            std::optional<std::string> vm_id;
+            const auto vm_option = options.find(L"vm");
+            if (vm_option != options.end()) {
+                vm_id = satsuma::path_to_utf8(vm_option->second);
+            }
+            const std::chrono::seconds timeout = parse_diagnostic_timeout(options);
+            satsuma::host::Diagnostics diagnostics(std::move(config));
+            const nlohmann::json report = diagnostics.run_probe(vm_id, timeout);
+            std::cout << report.dump(2) << '\n';
+            const std::string status = report.at("status").get<std::string>();
+            if (status == "ready") {
+                return 0;
+            }
+            return status == "degraded" ? 3 : 1;
         }
 
         if (command == L"vm") {

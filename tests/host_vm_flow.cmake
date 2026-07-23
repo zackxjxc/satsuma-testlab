@@ -128,6 +128,35 @@ string(REPLACE "@FIXTURE@" "${fixture_path}" task_json "${task_json}")
 file(WRITE "${TEST_ROOT}/task.json" "${task_json}")
 
 execute_process(
+    COMMAND "${CMAKE_COMMAND}"
+        "-DVM_EXE=${VM_EXE}"
+        "-DAGENT_CONFIG=${TEST_ROOT}/agent.json"
+        -P "${CMAKE_CURRENT_LIST_DIR}/run_agent_once_after_delay.cmake"
+    COMMAND "${HOST_EXE}" check
+        --config "${TEST_ROOT}/lab.json"
+        --vm client
+        --timeout-seconds 10
+    RESULTS_VARIABLE check_results
+    OUTPUT_VARIABLE check_output
+    ERROR_VARIABLE check_error
+)
+if(NOT check_results STREQUAL "0;0")
+    message(FATAL_ERROR "SatsumaHost active check failed (${check_results}): ${check_error}\n${check_output}")
+endif()
+string(FIND "${check_output}" "\"mode\": \"full\"" check_mode_position)
+if(check_mode_position EQUAL -1)
+    message(FATAL_ERROR "SatsumaHost active check did not return a full report: ${check_output}")
+endif()
+string(FIND "${check_output}" "\"status\": \"ready\"" check_status_position)
+if(check_status_position EQUAL -1)
+    message(FATAL_ERROR "SatsumaHost active check returned unexpected output: ${check_output}")
+endif()
+string(FIND "${check_output}" "\"status\": \"passed\"" check_agent_position)
+if(check_agent_position EQUAL -1)
+    message(FATAL_ERROR "SatsumaHost active check did not confirm the Agent: ${check_output}")
+endif()
+
+execute_process(
     COMMAND "${HOST_EXE}" vm start --id client
     WORKING_DIRECTORY "${TEST_ROOT}"
     RESULT_VARIABLE vm_start_result

@@ -55,6 +55,10 @@ Controller::Controller(LabConfig config) : config_(std::move(config)) {}
 
 RunManifest Controller::create_run(const std::filesystem::path& plan_path) const {
     const TaskPlan plan = load_task_plan(plan_path);
+    return create_run(plan);
+}
+
+RunManifest Controller::create_run(const TaskPlan& plan) const {
     validate_vm_references(config_, plan);
 
     RunManifest manifest;
