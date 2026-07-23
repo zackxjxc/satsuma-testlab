@@ -1,7 +1,6 @@
 // Windows Job Object 进程树执行实现。
 #include "process_runner.hpp"
 
-#include <algorithm>
 #include <limits>
 #include <string>
 #include <vector>
@@ -10,6 +9,7 @@
 
 #include "satsuma/core/errors.hpp"
 #include "satsuma/core/path.hpp"
+#include "satsuma/core/windows_command_line.hpp"
 
 namespace satsuma::vm {
 namespace {
@@ -67,46 +67,6 @@ public:
 private:
     HANDLE handle_;  // 被管理的 Win32 HANDLE
 };
-
-// 按 CommandLineToArgvW 规则引用单个 Windows 参数。
-[[nodiscard]] std::wstring quote_argument(const std::wstring& argument) {
-    if (!argument.empty() && argument.find_first_of(L" \t\n\v\"") == std::wstring::npos) {
-        return argument;
-    }
-
-    std::wstring quoted = L"\"";
-    std::size_t backslashes = 0;
-    for (const wchar_t value : argument) {
-        if (value == L'\\') {
-            ++backslashes;
-            continue;
-        }
-        if (value == L'\"') {
-            quoted.append(backslashes * 2 + 1, L'\\');
-            quoted.push_back(L'\"');
-            backslashes = 0;
-            continue;
-        }
-        quoted.append(backslashes, L'\\');
-        backslashes = 0;
-        quoted.push_back(value);
-    }
-    quoted.append(backslashes * 2, L'\\');
-    quoted.push_back(L'\"');
-    return quoted;
-}
-
-// 生成 CreateProcessW 所需的可修改命令行缓冲区。
-[[nodiscard]] std::vector<wchar_t> build_command_line(const ProcessRequest& request) {
-    std::wstring command = quote_argument(request.program.native());
-    for (const auto& argument : request.arguments) {
-        command.push_back(L' ');
-        command += quote_argument(path_from_utf8(argument).native());
-    }
-    std::vector<wchar_t> buffer(command.begin(), command.end());
-    buffer.push_back(L'\0');
-    return buffer;
-}
 
 // 打开允许 Host 实时读取的共享日志文件。
 [[nodiscard]] UniqueHandle open_log(const std::filesystem::path& path) {
@@ -192,7 +152,7 @@ ProcessResult ProcessRunner::run(const ProcessRequest& request) const {
     startup.hStdError = standard_error.get();
 
     PROCESS_INFORMATION process_info{};
-    std::vector<wchar_t> command_line = build_command_line(request);
+    std::vector<wchar_t> command_line = build_windows_command_line(request.program, request.arguments);
     const auto start_time = std::chrono::steady_clock::now();
     ensure_win32(
         CreateProcessW(

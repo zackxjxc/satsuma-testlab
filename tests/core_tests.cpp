@@ -16,6 +16,7 @@
 #include "satsuma/core/rpc_protocol.hpp"
 #include "satsuma/core/sha256.hpp"
 #include "satsuma/core/task.hpp"
+#include "satsuma/core/windows_command_line.hpp"
 
 namespace {
 
@@ -150,6 +151,18 @@ void test_rpc_protocol_validation() {
         "unknown Agent status was accepted");
 }
 
+// 验证 CreateProcessW 参数引用和结尾反斜杠处理。
+void test_windows_command_line() {
+    expect(satsuma::quote_windows_argument(L"plain") == L"plain", "plain argument was quoted unexpectedly");
+    expect(satsuma::quote_windows_argument(L"") == L"\"\"", "empty argument was not preserved");
+    expect(
+        satsuma::quote_windows_argument(L"hello world") == L"\"hello world\"",
+        "argument with spaces was not quoted");
+    expect(
+        satsuma::quote_windows_argument(L"C:\\path with space\\") == L"\"C:\\path with space\\\\\"",
+        "trailing backslash was not doubled before the closing quote");
+}
+
 }  // namespace
 
 // 顺序运行核心测试，并清理本次专用临时目录。
@@ -160,6 +173,7 @@ int main() {
         test_file_primitives(root);
         test_protocol_round_trip();
         test_rpc_protocol_validation();
+        test_windows_command_line();
         std::filesystem::remove_all(root);
         std::cout << "SatsumaCoreTests passed\n";
         return 0;
