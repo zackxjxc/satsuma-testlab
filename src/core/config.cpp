@@ -1,0 +1,129 @@
+// Satsuma Host 和 VM 配置解析实现。
+#include "satsuma/core/config.hpp"
+
+#include <algorithm>
+#include <cctype>
+#include <set>
+
+#include <nlohmann/json.hpp>
+
+#include "satsuma/core/errors.hpp"
+#include "satsuma/core/json_io.hpp"
+#include "satsuma/core/path.hpp"
+
+namespace satsuma {
+namespace {
+
+// 读取必需字符串字段并统一空值错误。
+[[nodiscard]] std::string required_string(const nlohmann::json& value, const char* field) {
+    if (!value.contains(field) || !value.at(field).is_string()) {
+        throw Error(std::string("Missing or invalid string field: ") + field);
+    }
+    const std::string result = value.at(field).get<std::string>();
+    if (result.empty()) {
+        throw Error(std::string("Configuration field must not be empty: ") + field);
+    }
+    return result;
+}
+
+// 检查当前仅支持的 schema 版本。
+void validate_schema_version(const nlohmann::json& value, const char* source) {
+    const int version = value.value("schema_version", 0);
+    if (version != 1) {
+        throw Error(std::string(source) + " requires schema_version 1");
+    }
+}
+
+// 限制稳定 ID 为可安全用于目录和文件名的 ASCII 字符。
+void validate_identifier(const std::string& value, const char* field) {
+    const bool valid = !value.empty() && value.size() <= 128 && std::all_of(
+        value.begin(),
+        value.end(),
+        [](const unsigned char character) {
+            return std::isalnum(character) || character == '-' || character == '_';
+        });
+    if (!valid) {
+        throw Error(std::string(field) + " may contain only letters, numbers, '-' and '_'");
+    }
+}
+
+}  // namespace
+
+LabConfig load_lab_config(const std::filesystem::path& path) {
+    const nlohmann::json value = load_json(path);
+    validate_schema_version(value, "lab.json");
+
+    LabConfig config;
+    config.schema_version = 1;
+    config.lab_id = required_string(value, "lab_id");
+    validate_identifier(config.lab_id, "lab_id");
+
+    const auto& provider = value.at("provider");
+    config.provider.type = required_string(provider, "type");
+    config.provider.vmrun = path_from_utf8(required_string(provider, "vmrun"));
+    if (config.provider.type != "vmware_workstation") {
+        throw Error("Unsupported provider type: " + config.provider.type);
+    }
+
+    const auto& host = value.at("host");
+    config.host.listen = required_string(host, "listen");
+    config.host.archive_root = path_from_utf8(required_string(host, "archive_root"));
+
+    const auto& shared_folder = value.at("shared_folder");
+    config.shared_folder.host_root = path_from_utf8(required_string(shared_folder, "host_root"));
+    config.shared_folder.guest_root = required_string(shared_folder, "guest_root");
+
+    if (!value.contains("vms") || !value.at("vms").is_array() || value.at("vms").empty()) {
+        throw Error("lab.json must contain at least one VM");
+    }
+
+    std::set<std::string> vm_ids;
+    for (const auto& vm_value : value.at("vms")) {
+        VmConfig vm;
+        vm.id = required_string(vm_value, "id");
+        validate_identifier(vm.id, "VM id");
+        vm.role = vm_value.value("role", vm.id);
+        vm.vmx = path_from_utf8(required_string(vm_value, "vmx"));
+        vm.agent_version = required_string(vm_value, "agent_version");
+        vm.management_ip = required_string(vm_value, "management_ip");
+        if (!vm_ids.insert(vm.id).second) {
+            throw Error("Duplicate VM id in lab.json: " + vm.id);
+        }
+        config.vms.push_back(std::move(vm));
+    }
+    return config;
+}
+
+AgentConfig load_agent_config(const std::filesystem::path& path) {
+    const nlohmann::json value = load_json(path);
+    validate_schema_version(value, "agent.json");
+
+    AgentConfig config;
+    config.schema_version = 1;
+    config.protocol_version = value.value("protocol_version", 0);
+    config.lab_id = required_string(value, "lab_id");
+    config.vm_id = required_string(value, "vm_id");
+    validate_identifier(config.lab_id, "lab_id");
+    validate_identifier(config.vm_id, "vm_id");
+    config.shared_root = path_from_utf8(required_string(value, "shared_root"));
+    config.local_work_root = path_from_utf8(required_string(value, "local_work_root"));
+    config.poll_interval_ms = value.value("poll_interval_ms", 1000);
+
+    if (config.protocol_version != 1) {
+        throw Error("agent.json requires protocol_version 1");
+    }
+    if (config.poll_interval_ms < 100 || config.poll_interval_ms > 60'000) {
+        throw Error("poll_interval_ms must be between 100 and 60000");
+    }
+    return config;
+}
+
+const VmConfig* find_vm(const LabConfig& config, const std::string& vm_id) {
+    const auto match = std::find_if(
+        config.vms.begin(),
+        config.vms.end(),
+        [&vm_id](const VmConfig& vm) { return vm.id == vm_id; });
+    return match == config.vms.end() ? nullptr : &*match;
+}
+
+}  // namespace satsuma

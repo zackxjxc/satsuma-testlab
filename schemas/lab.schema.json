@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://satsuma.local/schemas/lab.schema.json",
+  "title": "Satsuma laboratory configuration",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "lab_id", "provider", "host", "shared_folder", "vms"],
+  "properties": {
+    "$schema": {"type": "string"},
+    "schema_version": {"const": 1},
+    "lab_id": {"$ref": "#/$defs/identifier"},
+    "provider": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "vmrun"],
+      "properties": {
+        "type": {"const": "vmware_workstation"},
+        "vmrun": {"type": "string", "minLength": 1}
+      }
+    },
+    "host": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["listen", "archive_root"],
+      "properties": {
+        "listen": {"type": "string", "minLength": 1},
+        "archive_root": {"type": "string", "minLength": 1}
+      }
+    },
+    "shared_folder": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["host_root", "guest_root"],
+      "properties": {
+        "host_root": {"type": "string", "minLength": 1},
+        "guest_root": {"type": "string", "minLength": 1}
+      }
+    },
+    "vms": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["id", "vmx", "agent_version", "management_ip"],
+        "properties": {
+          "id": {"$ref": "#/$defs/identifier"},
+          "role": {"type": "string", "minLength": 1},
+          "vmx": {"type": "string", "minLength": 1},
+          "agent_version": {"type": "string", "minLength": 1},
+          "management_ip": {"type": "string", "minLength": 1}
+        }
+      }
+    }
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{1,128}$"
+    }
+  }
+}

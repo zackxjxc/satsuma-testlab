@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://satsuma.local/schemas/result.schema.json",
+  "title": "Satsuma execution result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "run_id",
+    "vm_id",
+    "job_id",
+    "step_id",
+    "status",
+    "timed_out",
+    "duration_ms",
+    "stdout",
+    "stderr",
+    "files",
+    "started_at",
+    "finished_at"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "run_id": {"type": "string", "minLength": 1},
+    "vm_id": {"type": "string", "minLength": 1},
+    "job_id": {"type": "string", "minLength": 1},
+    "step_id": {"type": "string", "minLength": 1},
+    "status": {"enum": ["exited", "timed_out", "failed"]},
+    "exit_code": {"type": ["integer", "null"], "minimum": 0},
+    "timed_out": {"type": "boolean"},
+    "duration_ms": {"type": "integer", "minimum": 0},
+    "stdout": {"type": "string"},
+    "stderr": {"type": "string"},
+    "files": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "sha256"],
+        "properties": {
+          "path": {"type": "string", "minLength": 1},
+          "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+        }
+      }
+    },
+    "error": {"type": "string"},
+    "started_at": {"type": "string", "format": "date-time"},
+    "finished_at": {"type": "string", "format": "date-time"}
+  }
+}

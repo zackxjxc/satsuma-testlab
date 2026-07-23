@@ -1,0 +1,90 @@
+// JSON 文件读取和原子写入实现。
+#include "satsuma/core/json_io.hpp"
+
+#include <fstream>
+#include <string>
+
+#include <windows.h>
+
+#include "satsuma/core/errors.hpp"
+#include "satsuma/core/id.hpp"
+#include "satsuma/core/path.hpp"
+
+namespace satsuma {
+namespace {
+
+// 将 Win32 错误码转换为稳定的错误文本。
+[[nodiscard]] std::string win32_error(const std::string& operation, const DWORD code) {
+    return operation + " failed with Win32 error " + std::to_string(code);
+}
+
+}  // namespace
+
+nlohmann::json load_json(const std::filesystem::path& path) {
+    std::ifstream input(path, std::ios::binary);
+    if (!input) {
+        throw Error("Cannot open JSON file: " + path_to_utf8(path));
+    }
+
+    try {
+        return nlohmann::json::parse(input);
+    } catch (const nlohmann::json::exception& error) {
+        throw Error("Invalid JSON file " + path_to_utf8(path) + ": " + error.what());
+    }
+}
+
+void write_json_atomic(const std::filesystem::path& path, const nlohmann::json& value) {
+    const std::filesystem::path parent = path.parent_path();
+    if (!parent.empty()) {
+        std::filesystem::create_directories(parent);
+    }
+
+    // 每次写入使用独立临时文件，避免并发任务互相覆盖。
+    std::filesystem::path temporary = path;
+    temporary += path_from_utf8(".tmp-" + make_id("write"));
+    const std::string payload = value.dump(2) + "\n";
+
+    HANDLE file = CreateFileW(
+        temporary.c_str(),
+        GENERIC_WRITE,
+        0,
+        nullptr,
+        CREATE_NEW,
+        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH,
+        nullptr);
+    if (file == INVALID_HANDLE_VALUE) {
+        throw Error(win32_error("CreateFileW", GetLastError()));
+    }
+
+    DWORD bytes_written = 0;
+    const BOOL write_ok = WriteFile(
+        file,
+        payload.data(),
+        static_cast<DWORD>(payload.size()),
+        &bytes_written,
+        nullptr);
+    const DWORD write_error = write_ok ? ERROR_SUCCESS : GetLastError();
+    const BOOL flush_ok = write_ok ? FlushFileBuffers(file) : FALSE;
+    const DWORD flush_error = flush_ok ? ERROR_SUCCESS : GetLastError();
+    CloseHandle(file);
+
+    if (!write_ok || bytes_written != payload.size()) {
+        DeleteFileW(temporary.c_str());
+        throw Error(win32_error("WriteFile", write_error));
+    }
+    if (!flush_ok) {
+        DeleteFileW(temporary.c_str());
+        throw Error(win32_error("FlushFileBuffers", flush_error));
+    }
+
+    if (!MoveFileExW(
+            temporary.c_str(),
+            path.c_str(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        const DWORD move_error = GetLastError();
+        DeleteFileW(temporary.c_str());
+        throw Error(win32_error("MoveFileExW", move_error));
+    }
+}
+
+}  // namespace satsuma
