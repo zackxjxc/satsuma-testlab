@@ -30,6 +30,28 @@ if(MSVC)
 endif()
 add_test(NAME SatsumaHostRpcServiceTests COMMAND SatsumaHostRpcServiceTests)
 
+add_executable(SatsumaFakeVmrun fake_vmrun.cpp)
+target_compile_features(SatsumaFakeVmrun PRIVATE cxx_std_20)
+set_target_properties(SatsumaFakeVmrun PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
+)
+
+add_executable(
+    SatsumaVmrunProviderTests
+    vmrun_provider_tests.cpp
+    ../src/vmware/vmrun_provider.cpp
+)
+target_include_directories(SatsumaVmrunProviderTests PRIVATE ../src/vmware)
+target_link_libraries(SatsumaVmrunProviderTests PRIVATE SatsumaCore)
+if(MSVC)
+    target_compile_options(SatsumaFakeVmrun PRIVATE /W4 /permissive- /utf-8 /EHsc)
+    target_compile_options(SatsumaVmrunProviderTests PRIVATE /W4 /permissive- /utf-8 /EHsc)
+endif()
+add_test(
+    NAME SatsumaVmrunProviderTests
+    COMMAND SatsumaVmrunProviderTests "$<TARGET_FILE:SatsumaFakeVmrun>"
+)
+
 add_executable(
     SatsumaRpcServerTests
     rpc_server_tests.cpp

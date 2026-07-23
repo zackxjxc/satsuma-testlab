@@ -66,8 +66,9 @@ add_executable(SatsumaHost
     src/host/main.cpp
     src/host/rpc_server.cpp
     src/host/rpc_service.cpp
+    src/vmware/vmrun_provider.cpp
 )
-target_include_directories(SatsumaHost PRIVATE src/host)
+target_include_directories(SatsumaHost PRIVATE src/host src/vmware)
 target_link_libraries(SatsumaHost PRIVATE SatsumaCore ${SATSUMA_YLT_TARGET})
 
 add_executable(SatsumaVM
