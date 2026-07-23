@@ -4,11 +4,11 @@
 #include <stdexcept>
 #include <string>
 
-#include "rpc_service.hpp"
 #include "satsuma/core/id.hpp"
 #include "satsuma/core/json_io.hpp"
 #include "satsuma/core/path.hpp"
 #include "satsuma/core/task.hpp"
+#include "satsuma/rpc/service.hpp"
 
 namespace {
 

@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://satsuma.local/schemas/agent.schema.json",
+  "title": "Satsuma VM Agent configuration",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "protocol_version",
+    "lab_id",
+    "vm_id",
+    "agent_version",
+    "host",
+    "shared_root",
+    "local_work_root"
+  ],
+  "properties": {
+    "$schema": {"type": "string"},
+    "schema_version": {"const": 1},
+    "protocol_version": {"const": 1},
+    "lab_id": {"$ref": "#/$defs/identifier"},
+    "vm_id": {"$ref": "#/$defs/identifier"},
+    "agent_version": {"type": "string", "minLength": 1, "maxLength": 64},
+    "host": {
+      "type": "string",
+      "pattern": "^(?:[^:\\[\\]]+|\\[[^\\]]+\\]):[0-9]{1,5}$"
+    },
+    "shared_root": {"type": "string", "minLength": 1},
+    "local_work_root": {"type": "string", "minLength": 1},
+    "poll_interval_ms": {"type": "integer", "minimum": 100, "maximum": 60000},
+    "reconnect_interval_ms": {"type": "integer", "minimum": 100, "maximum": 60000},
+    "rpc_timeout_ms": {"type": "integer", "minimum": 100, "maximum": 300000}
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{1,128}$"
+    }
+  }
+}

@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <chrono>
 #include <fstream>
+#include <iostream>
 #include <thread>
 #include <vector>
 
@@ -111,7 +112,10 @@ void publish_log(const std::filesystem::path& partial, const std::filesystem::pa
 }  // namespace
 
 Agent::Agent(AgentConfig config)
-    : config_(std::move(config)), session_id_(make_id("session")), boot_id_(make_id("boot")) {}
+    : config_(std::move(config)),
+      session_id_(make_id("session")),
+      boot_id_(make_id("boot")),
+      rpc_client_(config_, session_id_, boot_id_) {}
 
 int Agent::run_once() {
     const std::filesystem::path runs_root = config_.shared_root / L"runs";
@@ -181,9 +185,43 @@ int Agent::run_once() {
 
 [[noreturn]] void Agent::run_watch() {
     for (;;) {
+        bool rpc_available = false;
+        try {
+            static_cast<void>(synchronize_rpc());
+            rpc_available = true;
+        } catch (const std::exception& error) {
+            rpc_client_.disconnect();
+            std::cerr << "SatsumaVM RPC unavailable: " << error.what() << '\n';
+        }
         static_cast<void>(run_once());
-        std::this_thread::sleep_for(std::chrono::milliseconds(config_.poll_interval_ms));
+        const int delay_ms = rpc_available
+            ? config_.poll_interval_ms
+            : config_.reconnect_interval_ms;
+        std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
     }
+}
+
+bool Agent::synchronize_rpc() {
+    if (!rpc_client_.connected()) {
+        static_cast<void>(rpc_client_.connect());
+    }
+    const HostDirective directive = rpc_client_.heartbeat("idle", "");
+    if (directive.action == "stop") {
+        throw Error("Host stopped the Agent session: " + directive.message);
+    }
+    if (directive.action != "poll") {
+        return false;
+    }
+
+    const TaskReference task = rpc_client_.poll_task();
+    if (task.type == "error") {
+        throw Error("Host task polling failed: " + task.manifest);
+    }
+    if (task.has_task) {
+        validate_identifier(task.run_id, "run_id");
+        validate_relative_path(path_from_utf8(task.manifest));
+    }
+    return task.has_task;
 }
 
 void Agent::deploy_artifacts(
@@ -236,6 +274,7 @@ void Agent::execute_step(
     result.stdout_path = path_to_utf8(std::filesystem::relative(stdout_final, run_directory));
     result.stderr_path = path_to_utf8(std::filesystem::relative(stderr_final, run_directory));
     write_state(run_directory, "running", job_id);
+    report_job_state(manifest, step, job_id, "running", std::nullopt);
 
     try {
         const auto start_time = std::chrono::steady_clock::now();
@@ -304,6 +343,7 @@ void Agent::execute_step(
     result.finished_at = utc_timestamp();
     write_json_atomic(result_directory / L"execution.json", result);
     write_state(run_directory, "idle", "");
+    report_job_state(manifest, step, job_id, result.status, result.exit_code);
 }
 
 void Agent::write_state(
@@ -324,6 +364,34 @@ void Agent::write_state(
     write_json_atomic(
         run_directory / L"state" / path_from_utf8(config_.vm_id + "-agent.json"),
         state);
+}
+
+void Agent::report_job_state(
+    const RunManifest& manifest,
+    const TaskStep& step,
+    const std::string& job_id,
+    const std::string& status,
+    const std::optional<std::uint32_t>& exit_code) {
+    if (!rpc_client_.connected()) {
+        return;
+    }
+
+    try {
+        JobStatus request;
+        request.run_id = manifest.run_id;
+        request.job_id = job_id;
+        request.step_id = step.id;
+        request.status = status;
+        request.has_exit_code = exit_code.has_value();
+        request.exit_code = exit_code.value_or(0);
+        const RpcAck response = rpc_client_.report_job(std::move(request));
+        if (!response.accepted) {
+            throw Error("Host rejected Job status: " + response.message);
+        }
+    } catch (const std::exception& error) {
+        rpc_client_.disconnect();
+        std::cerr << "SatsumaVM Job RPC unavailable: " << error.what() << '\n';
+    }
 }
 
 }  // namespace satsuma::vm

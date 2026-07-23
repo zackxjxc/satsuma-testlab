@@ -35,9 +35,13 @@ add_executable(
     rpc_server_tests.cpp
     ../src/host/rpc_server.cpp
     ../src/host/rpc_service.cpp
+    ../src/vm/agent.cpp
+    ../src/vm/process_runner.cpp
+    ../src/vm/rpc_client.cpp
 )
-target_include_directories(SatsumaRpcServerTests PRIVATE ../src/host)
+target_include_directories(SatsumaRpcServerTests PRIVATE ../src/host ../src/vm)
 target_link_libraries(SatsumaRpcServerTests PRIVATE SatsumaCore ${SATSUMA_YLT_TARGET})
+target_link_libraries(SatsumaRpcServerTests PRIVATE ws2_32)
 if(MSVC)
     target_compile_options(
         SatsumaRpcServerTests

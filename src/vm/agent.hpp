@@ -1,12 +1,15 @@
 // VM Agent 任务领取、执行和结果落盘接口。
 #pragma once
 
+#include <cstdint>
 #include <filesystem>
+#include <optional>
 #include <string>
 
 #include "satsuma/core/config.hpp"
 #include "satsuma/core/task.hpp"
 #include "process_runner.hpp"
+#include "rpc_client.hpp"
 
 namespace satsuma::vm {
 
@@ -21,6 +24,9 @@ public:
 
     // 按配置的间隔持续扫描共享目录。
     [[noreturn]] void run_watch();
+
+    // 完成一次连接、心跳和任务通知同步。
+    [[nodiscard]] bool synchronize_rpc();
 
 private:
     // 执行一个已领取步骤并始终生成 execution.json。
@@ -42,10 +48,19 @@ private:
         const std::string& status,
         const std::string& job_id) const;
 
+    // 尽力向 Host 上报 Job 状态，不影响文件通道执行结果。
+    void report_job_state(
+        const RunManifest& manifest,
+        const TaskStep& step,
+        const std::string& job_id,
+        const std::string& status,
+        const std::optional<std::uint32_t>& exit_code);
+
     AgentConfig config_;       // 当前 VM Agent 配置
     std::string session_id_;   // 当前进程会话 ID
     std::string boot_id_;      // 当前进程启动 ID
     ProcessRunner runner_;     // Windows Job Object 执行器
+    RpcClient rpc_client_;     // Host RPC 客户端
 };
 
 }  // namespace satsuma::vm

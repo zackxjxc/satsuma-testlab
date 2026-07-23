@@ -16,6 +16,7 @@ void print_usage() {
         << "SatsumaVM 0.1.0\n"
         << "Usage:\n"
         << "  SatsumaVM --config agent.json --once\n"
+        << "  SatsumaVM --config agent.json --rpc-once\n"
         << "  SatsumaVM --config agent.json --watch\n";
 }
 
@@ -34,6 +35,12 @@ int wmain(const int argc, wchar_t* argv[]) {
         if (mode == L"--once") {
             const int executed = agent.run_once();
             std::cout << "{\"executed_steps\":" << executed << "}\n";
+            return 0;
+        }
+        if (mode == L"--rpc-once") {
+            const bool has_task = agent.synchronize_rpc();
+            std::cout << "{\"rpc_connected\":true,\"has_task\":"
+                      << (has_task ? "true" : "false") << "}\n";
             return 0;
         }
         if (mode == L"--watch") {

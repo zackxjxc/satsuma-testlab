@@ -7,7 +7,11 @@
 #include <string>
 #include <thread>
 
+#include <winsock2.h>
+
 #include "rpc_server.hpp"
+#include "agent.hpp"
+#include "rpc_client.hpp"
 #include "satsuma/core/errors.hpp"
 #include "satsuma/core/id.hpp"
 #include "satsuma/core/path.hpp"
@@ -21,18 +25,49 @@ void expect(const bool condition, const std::string& message) {
     }
 }
 
+// 临时绑定回环端口并返回系统分配的可用端口。
+[[nodiscard]] unsigned short find_available_port() {
+    WSADATA data{};
+    if (WSAStartup(MAKEWORD(2, 2), &data) != 0) {
+        throw std::runtime_error("WSAStartup failed");
+    }
+    const SOCKET socket_handle = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (socket_handle == INVALID_SOCKET) {
+        WSACleanup();
+        throw std::runtime_error("socket creation failed");
+    }
+
+    sockaddr_in address{};
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    address.sin_port = 0;
+    if (bind(socket_handle, reinterpret_cast<const sockaddr*>(&address), sizeof(address)) == SOCKET_ERROR) {
+        closesocket(socket_handle);
+        WSACleanup();
+        throw std::runtime_error("temporary socket bind failed");
+    }
+    int address_size = sizeof(address);
+    if (getsockname(socket_handle, reinterpret_cast<sockaddr*>(&address), &address_size) == SOCKET_ERROR) {
+        closesocket(socket_handle);
+        WSACleanup();
+        throw std::runtime_error("getsockname failed");
+    }
+    const unsigned short port = ntohs(address.sin_port);
+    closesocket(socket_handle);
+    WSACleanup();
+    return port;
+}
+
 // 验证 IPv4、IPv6 和错误端点解析。
 void test_endpoint_parser() {
-    const satsuma::host::ListenEndpoint ipv4 =
-        satsuma::host::parse_listen_endpoint("127.0.0.1:37100");
+    const satsuma::TcpEndpoint ipv4 = satsuma::parse_tcp_endpoint("127.0.0.1:37100");
     expect(ipv4.address == "127.0.0.1" && ipv4.port == 37'100, "IPv4 endpoint was parsed incorrectly");
 
-    const satsuma::host::ListenEndpoint ipv6 =
-        satsuma::host::parse_listen_endpoint("[::1]:37100");
+    const satsuma::TcpEndpoint ipv6 = satsuma::parse_tcp_endpoint("[::1]:37100");
     expect(ipv6.address == "::1" && ipv6.port == 37'100, "IPv6 endpoint was parsed incorrectly");
 
     try {
-        static_cast<void>(satsuma::host::parse_listen_endpoint("127.0.0.1"));
+        static_cast<void>(satsuma::parse_tcp_endpoint("127.0.0.1"));
         throw std::runtime_error("endpoint without a port was accepted");
     } catch (const satsuma::Error&) {
     }
@@ -40,14 +75,24 @@ void test_endpoint_parser() {
 
 // 验证本机临时端口的启动和跨线程停止。
 void test_server_lifecycle(const std::filesystem::path& root) {
+    const unsigned short port = find_available_port();
     satsuma::LabConfig config;
     config.lab_id = "rpc_server_test";
-    config.host.listen = "127.0.0.1:0";
+    config.host.listen = "127.0.0.1:" + std::to_string(port);
     config.shared_folder.host_root = root / L"share";
     satsuma::VmConfig vm;
     vm.id = "client";
     vm.agent_version = "0.1.0";
     config.vms.push_back(std::move(vm));
+
+    satsuma::AgentConfig agent_config;
+    agent_config.lab_id = config.lab_id;
+    agent_config.vm_id = "client";
+    agent_config.agent_version = "0.1.0";
+    agent_config.host = config.host.listen;
+    agent_config.shared_root = config.shared_folder.host_root;
+    agent_config.local_work_root = root / L"work";
+    agent_config.rpc_timeout_ms = 1000;
 
     satsuma::host::RpcServer server(std::move(config));
     std::exception_ptr server_error;
@@ -59,10 +104,38 @@ void test_server_lifecycle(const std::filesystem::path& root) {
         }
     });
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
+
+    std::exception_ptr client_error;
+    try {
+        satsuma::vm::RpcClient client(agent_config, "session_1", "boot_1");
+        const satsuma::SessionInfo session = client.connect();
+        expect(session.accepted && client.connected(), "RPC Agent registration failed");
+        const satsuma::HostDirective directive = client.heartbeat("idle", "");
+        expect(directive.action == "poll", "RPC heartbeat did not return poll directive");
+        const satsuma::TaskReference task = client.poll_task();
+        expect(!task.has_task, "RPC poll returned an unexpected task");
+
+        satsuma::JobStatus job;
+        job.run_id = "rpc_run";
+        job.job_id = "job_1";
+        job.step_id = "step_1";
+        job.status = "running";
+        expect(client.report_job(std::move(job)).accepted, "RPC Job report was rejected");
+        client.disconnect();
+
+        satsuma::vm::Agent agent(agent_config);
+        expect(!agent.synchronize_rpc(), "Agent RPC synchronization returned an unexpected task");
+    } catch (...) {
+        client_error = std::current_exception();
+    }
+
     server.stop();
     server_thread.join();
     if (server_error != nullptr) {
         std::rethrow_exception(server_error);
+    }
+    if (client_error != nullptr) {
+        std::rethrow_exception(client_error);
     }
 }
 

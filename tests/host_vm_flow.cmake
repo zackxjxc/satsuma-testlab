@@ -48,9 +48,13 @@ set(agent_json [=[
   "protocol_version": 1,
   "lab_id": "integration_lab",
   "vm_id": "client",
+  "agent_version": "0.1.0",
+  "host": "127.0.0.1:37100",
   "shared_root": "@SHARE@",
   "local_work_root": "@LOCAL@",
-  "poll_interval_ms": 100
+  "poll_interval_ms": 100,
+  "reconnect_interval_ms": 100,
+  "rpc_timeout_ms": 1000
 }
 ]=])
 string(REPLACE "@SHARE@" "${share_path}" agent_json "${agent_json}")

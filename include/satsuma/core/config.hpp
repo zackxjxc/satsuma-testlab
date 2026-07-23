@@ -51,9 +51,13 @@ struct AgentConfig {
     int protocol_version{1};                // 文件协议版本
     std::string lab_id;                     // 实验室稳定 ID
     std::string vm_id;                      // 当前虚拟机稳定 ID
+    std::string agent_version;              // 当前 Agent 语义版本
+    std::string host;                       // Host RPC address:port
     std::filesystem::path shared_root;      // Guest 共享根目录
     std::filesystem::path local_work_root;  // Guest 本地执行根目录
     int poll_interval_ms{1000};             // 无任务时的轮询间隔
+    int reconnect_interval_ms{1000};        // RPC 断线后的重连间隔
+    int rpc_timeout_ms{5000};               // 单次 RPC 超时
 };
 
 // 读取并验证 Host 实验室配置。

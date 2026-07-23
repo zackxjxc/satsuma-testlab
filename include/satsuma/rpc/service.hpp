@@ -1,4 +1,4 @@
-// Host RPC 会话状态和任务选择接口。
+// Host RPC 会话状态和任务选择公共接口声明。
 #pragma once
 
 #include <cstddef>

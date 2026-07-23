@@ -7,6 +7,7 @@
 #include <nlohmann/json.hpp>
 
 #include "satsuma/core/errors.hpp"
+#include "satsuma/core/endpoint.hpp"
 #include "satsuma/core/id.hpp"
 #include "satsuma/core/json_io.hpp"
 #include "satsuma/core/path.hpp"
@@ -90,17 +91,31 @@ AgentConfig load_agent_config(const std::filesystem::path& path) {
     config.protocol_version = value.value("protocol_version", 0);
     config.lab_id = required_string(value, "lab_id");
     config.vm_id = required_string(value, "vm_id");
+    config.agent_version = required_string(value, "agent_version");
+    config.host = required_string(value, "host");
     validate_identifier(config.lab_id, "lab_id");
     validate_identifier(config.vm_id, "vm_id");
     config.shared_root = path_from_utf8(required_string(value, "shared_root"));
     config.local_work_root = path_from_utf8(required_string(value, "local_work_root"));
     config.poll_interval_ms = value.value("poll_interval_ms", 1000);
+    config.reconnect_interval_ms = value.value("reconnect_interval_ms", 1000);
+    config.rpc_timeout_ms = value.value("rpc_timeout_ms", 5000);
 
     if (config.protocol_version != 1) {
         throw Error("agent.json requires protocol_version 1");
     }
     if (config.poll_interval_ms < 100 || config.poll_interval_ms > 60'000) {
         throw Error("poll_interval_ms must be between 100 and 60000");
+    }
+    if (config.agent_version.size() > 64) {
+        throw Error("agent_version must not exceed 64 characters");
+    }
+    static_cast<void>(parse_tcp_endpoint(config.host));
+    if (config.reconnect_interval_ms < 100 || config.reconnect_interval_ms > 60'000) {
+        throw Error("reconnect_interval_ms must be between 100 and 60000");
+    }
+    if (config.rpc_timeout_ms < 100 || config.rpc_timeout_ms > 300'000) {
+        throw Error("rpc_timeout_ms must be between 100 and 300000");
     }
     return config;
 }

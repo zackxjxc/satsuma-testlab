@@ -43,6 +43,7 @@ endif()
 
 add_library(SatsumaCore STATIC
     src/core/config.cpp
+    src/core/endpoint.cpp
     src/core/id.cpp
     src/core/json_io.cpp
     src/core/path.cpp
@@ -72,9 +73,10 @@ add_executable(SatsumaVM
     src/vm/agent.cpp
     src/vm/main.cpp
     src/vm/process_runner.cpp
+    src/vm/rpc_client.cpp
 )
 target_include_directories(SatsumaVM PRIVATE src/vm)
-target_link_libraries(SatsumaVM PRIVATE SatsumaCore)
+target_link_libraries(SatsumaVM PRIVATE SatsumaCore ${SATSUMA_YLT_TARGET})
 
 set_target_properties(SatsumaHost SatsumaVM PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
@@ -85,6 +87,7 @@ if(MSVC)
         target_compile_options(${target} PRIVATE /W4 /permissive- /utf-8 /EHsc)
     endforeach()
     target_compile_options(SatsumaHost PRIVATE /external:anglebrackets /external:W0)
+    target_compile_options(SatsumaVM PRIVATE /external:anglebrackets /external:W0)
 endif()
 
 if(SATSUMA_BUILD_TESTS)
