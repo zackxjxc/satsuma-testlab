@@ -1,0 +1,11 @@
+/.vs/
+/.vscode/*
+!/.vscode/settings.json
+/build/
+/out/
+/cmake-build-*/
+/CMakeUserPresets.json
+*.user
+*.suo
+*.VC.db
+*.VC.opendb
