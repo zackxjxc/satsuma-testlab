@@ -239,6 +239,30 @@ PowerShell 可以关闭，不需要保留前台窗口。
 Agent 就绪后会在共享目录发布 `agents/<vm-id>.json`。被测 Artifact 始终复制到 Guest 本地工作目录执行，
 不直接从 UNC 路径运行。
 
+#### Agent 自更新
+
+Host 通过独立更新通道发布候选，不把自更新伪装成普通 `execute` 步骤：
+
+```powershell
+SatsumaHost.exe agent update `
+    --config lab.local.json `
+    --vm client `
+    --binary E:\release\SatsumaVM.exe `
+    --version 0.1.0 `
+    --timeout-seconds 180
+```
+
+Host 在 `updates/<vm-id>/<update-id>` 的隐藏暂存目录中复制候选，计算大小和 SHA-256、写入不可变
+`update.json`，再整体改名发布。Agent 校验清单后复制为本机 `C:\Satsuma\bin\SatsumaVM.new.exe`，由该
+候选以独立、无 Job Object 的 `--apply-update` 模式有限停止 Service、切换文件并等待新 PID 发布匹配
+版本和 update ID 的 presence。
+
+成功结果写回前，助手必须删除 `SatsumaVM.bak.exe`、确认 `SatsumaVM.new.exe` 不存在，并删除本机配置
+备份、manifest 和状态文件；Host 读取成功结果后删除整个共享更新目录。哈希、停服、改名、启动或
+presence 任一步失败都会写回明确结果；文件已经切换时先恢复旧 EXE、旧配置和旧 presence。只有自动恢复
+也失败时才保留备份和状态证据，复杂恢复使用 Guest 快照。目前该流程已通过本机文件切换和注入式
+Service/presence 测试，真实 SCM/Guest 更新留到稳定候选发布后验收。
+
 ### 6. 创建用户基础快照
 
 在创建 `clean` 快照前，确认以下条件：
