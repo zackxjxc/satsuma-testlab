@@ -91,8 +91,59 @@ set_target_properties(SatsumaHost SatsumaVM PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
 )
 
+# 独立示例软件不链接 SatsumaCore，用于真实 Artifact 执行验收。
+add_executable(SatsumaDemoApp examples/demo_app.cpp)
+target_compile_features(SatsumaDemoApp PRIVATE cxx_std_20)
+target_link_libraries(SatsumaDemoApp PRIVATE nlohmann_json::nlohmann_json)
+set_target_properties(SatsumaDemoApp PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
+)
+
+# 为每个构建配置生成包含真实绝对 Artifact 路径的任务文件。
+set(SATSUMA_DEMO_INPUT "${CMAKE_CURRENT_SOURCE_DIR}/examples/demo-input.txt")
+set(SATSUMA_DEMO_TASK [=[
+{
+  "schema_version": 1,
+  "name": "demo-app-real-vm",
+  "artifacts": [
+    {
+      "source": "$<TARGET_FILE:SatsumaDemoApp>",
+      "vm": "client",
+      "shared_destination": "artifacts/client/SatsumaDemoApp.exe"
+    },
+    {
+      "source": "@DEMO_INPUT@",
+      "vm": "client",
+      "shared_destination": "artifacts/client/demo-input.txt"
+    }
+  ],
+  "steps": [
+    {
+      "id": "run_demo_app",
+      "vm": "client",
+      "type": "execute",
+      "program": "artifacts/client/SatsumaDemoApp.exe",
+      "arguments": [
+        "--input", "artifacts/client/demo-input.txt",
+        "--result", "output/demo-result.json",
+        "--transformed", "output/transformed.txt",
+        "--label", "real-vm-artifact-test",
+        "--emit-warning"
+      ],
+      "timeout_seconds": 30,
+      "collect_files": ["output/demo-result.json", "output/transformed.txt"]
+    }
+  ]
+}
+]=])
+string(REPLACE "@DEMO_INPUT@" "${SATSUMA_DEMO_INPUT}" SATSUMA_DEMO_TASK "${SATSUMA_DEMO_TASK}")
+file(GENERATE
+    OUTPUT "${CMAKE_BINARY_DIR}/examples/demo-app-task-$<CONFIG>.json"
+    CONTENT "${SATSUMA_DEMO_TASK}"
+)
+
 if(MSVC)
-    foreach(target SatsumaCore SatsumaHost SatsumaVM)
+    foreach(target SatsumaCore SatsumaHost SatsumaVM SatsumaDemoApp)
         target_compile_options(${target} PRIVATE /W4 /permissive- /utf-8 /EHsc)
     endforeach()
     target_compile_options(SatsumaHost PRIVATE /external:anglebrackets /external:W0)

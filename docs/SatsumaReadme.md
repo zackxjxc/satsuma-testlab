@@ -273,6 +273,21 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File '\\vmware-host\Shared Fo
        --config 'lab.local.json' --run '<run-id>'
    ```
 
+### 8. 运行独立示例软件
+
+`SatsumaDemoApp.exe` 不链接 `SatsumaCore`，用于模拟普通软件读取输入、处理数据、输出日志并生成结果。
+CMake 会为每个构建配置生成包含真实 Artifact 绝对路径的任务文件：
+
+```powershell
+cmake --build --preset windows-release --target SatsumaDemoApp
+& 'build/windows-default/bin/Release/SatsumaHost.exe' run `
+    --config 'lab.local.json' `
+    --plan 'build/windows-default/examples/demo-app-task-Release.json'
+```
+
+任务会收集 `output/demo-result.json` 和 `output/transformed.txt`。使用 Host 返回的 `run_id` 查询报告，
+并核对退出码、stdout、stderr、结果内容和 SHA-256 后，才算通过真实 Artifact 执行验收。
+
 ## AI 主动检测模式
 
 正式发布测试任务前，AI 应主动检查目标 VM 的完整自动化通道：

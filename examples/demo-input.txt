@@ -1,0 +1,3 @@
+Satsuma external artifact test
+Normal software input
+VMware guest execution

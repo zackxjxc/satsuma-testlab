@@ -18,6 +18,15 @@ endif()
 
 add_test(NAME SatsumaCoreTests COMMAND SatsumaCoreTests)
 
+add_test(
+    NAME SatsumaDemoAppTest
+    COMMAND "${CMAKE_COMMAND}"
+        "-DAPP=$<TARGET_FILE:SatsumaDemoApp>"
+        "-DINPUT=${CMAKE_SOURCE_DIR}/examples/demo-input.txt"
+        "-DTEST_ROOT=${CMAKE_CURRENT_BINARY_DIR}/demo-app-test"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/demo_app_test.cmake"
+)
+
 add_executable(
     SatsumaHostRpcServiceTests
     host_rpc_service_tests.cpp
