@@ -6,6 +6,7 @@
 #include <map>
 #include <optional>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "controller.hpp"
@@ -85,6 +86,23 @@ namespace {
     return std::chrono::seconds(seconds);
 }
 
+// 解析 report 的可选有限等待秒数。
+[[nodiscard]] std::optional<std::chrono::seconds> parse_report_wait(
+    const std::map<std::wstring, std::wstring>& options) {
+    const auto match = options.find(L"wait-seconds");
+    if (match == options.end()) {
+        return std::nullopt;
+    }
+
+    const std::string value = satsuma::path_to_utf8(match->second);
+    int seconds = 0;
+    const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), seconds);
+    if (error != std::errc{} || end != value.data() + value.size() || seconds < 1 || seconds > 86'400) {
+        throw satsuma::Error("Report wait must be an integer between 1 and 86400 seconds");
+    }
+    return std::chrono::seconds(seconds);
+}
+
 // 输出当前首个增量支持的 CLI 用法。
 void print_usage() {
     std::cout
@@ -100,7 +118,7 @@ void print_usage() {
         << "  SatsumaHost snapshot delete-ai --vm <vm-id> --snapshot <name> [--config lab.json]\n"
         << "  SatsumaHost run --config lab.json --plan task.json\n"
         << "  SatsumaHost orchestrate --config lab.json --plan task.json [--timeout-seconds <1-86400>]\n"
-        << "  SatsumaHost report --config lab.json --run <run-id>\n";
+        << "  SatsumaHost report --config lab.json --run <run-id> [--wait-seconds <1-86400>]\n";
 }
 
 }  // namespace
@@ -346,8 +364,46 @@ int wmain(const int argc, wchar_t* argv[]) {
         }
         if (command == L"report") {
             const std::string run_id = satsuma::path_to_utf8(require_option(options, L"run"));
-            std::cout << controller.build_report(run_id).dump(2) << '\n';
-            return 0;
+            const std::optional<std::chrono::seconds> wait = parse_report_wait(options);
+            const auto started = std::chrono::steady_clock::now();
+            const auto deadline = wait.has_value()
+                ? started + *wait
+                : started;
+            nlohmann::json report;
+            std::string wait_status;
+            do {
+                report = controller.build_report(run_id);
+                if (report.at("complete").get<bool>()) {
+                    if (wait.has_value()) {
+                        wait_status = "completed";
+                    }
+                    break;
+                }
+                if (report.value("manual_intervention_required", false)) {
+                    if (wait.has_value()) {
+                        wait_status = "manual_intervention_required";
+                    }
+                    break;
+                }
+                if (!wait.has_value()) {
+                    break;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            } while (std::chrono::steady_clock::now() < deadline);
+
+            if (wait.has_value()) {
+                if (wait_status.empty()) {
+                    wait_status = "timeout";
+                }
+                report["wait_status"] = wait_status;
+                report["waited_ms"] = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - started).count();
+            }
+            std::cout << report.dump(2) << '\n';
+            if (wait_status == "manual_intervention_required") {
+                return 5;
+            }
+            return wait_status == "timeout" ? 3 : 0;
         }
 
         print_usage();

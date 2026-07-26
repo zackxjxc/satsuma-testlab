@@ -556,6 +556,55 @@ string(FIND
 if(unsafe_report_gate_position EQUAL -1)
     message(FATAL_ERROR "Host report omitted unsafe claim gate: ${unsafe_report_output}")
 endif()
+execute_process(
+    COMMAND "${HOST_EXE}" report
+        --config "${TEST_ROOT}/lab.json"
+        --run "${unsafe_claim_run}"
+        --wait-seconds 1
+    RESULT_VARIABLE unsafe_wait_result
+    OUTPUT_VARIABLE unsafe_wait_output
+    ERROR_VARIABLE unsafe_wait_error
+)
+if(NOT unsafe_wait_result EQUAL 5)
+    message(FATAL_ERROR "Report wait ignored the manual gate: ${unsafe_wait_error}\n${unsafe_wait_output}")
+endif()
+string(FIND
+    "${unsafe_wait_output}"
+    "\"wait_status\": \"manual_intervention_required\""
+    unsafe_wait_status_position)
+if(unsafe_wait_status_position EQUAL -1)
+    message(FATAL_ERROR "Report wait omitted manual status: ${unsafe_wait_output}")
+endif()
+
+set(pending_run "claim_wait_timeout")
+string(REPLACE "@RUN_ID@" "${pending_run}" pending_task "${claim_task_template}")
+string(REPLACE "@RETRY_SAFE@" "true" pending_task "${pending_task}")
+string(REPLACE "@RUN_ID@" "${pending_run}" pending_claim "${claim_template}")
+string(REPLACE "@RETRY_SAFE@" "true" pending_claim "${pending_claim}")
+string(REPLACE
+    "\"lease_expires_unix_ms\": 2000"
+    "\"lease_expires_unix_ms\": 4102444800000"
+    pending_claim
+    "${pending_claim}")
+file(MAKE_DIRECTORY "${share_path}/runs/${pending_run}/state/client")
+file(WRITE "${share_path}/runs/${pending_run}/task.json" "${pending_task}")
+file(WRITE "${share_path}/runs/${pending_run}/state/client/echo.claim.json" "${pending_claim}")
+execute_process(
+    COMMAND "${HOST_EXE}" report
+        --config "${TEST_ROOT}/lab.json"
+        --run "${pending_run}"
+        --wait-seconds 1
+    RESULT_VARIABLE pending_wait_result
+    OUTPUT_VARIABLE pending_wait_output
+    ERROR_VARIABLE pending_wait_error
+)
+if(NOT pending_wait_result EQUAL 3)
+    message(FATAL_ERROR "Report wait did not time out: ${pending_wait_error}\n${pending_wait_output}")
+endif()
+string(FIND "${pending_wait_output}" "\"wait_status\": \"timeout\"" pending_wait_status_position)
+if(pending_wait_status_position EQUAL -1)
+    message(FATAL_ERROR "Report wait omitted timeout status: ${pending_wait_output}")
+endif()
 
 execute_process(
     COMMAND "${CMAKE_COMMAND}"
@@ -740,13 +789,20 @@ if(NOT vm_result EQUAL 0)
 endif()
 
 execute_process(
-    COMMAND "${HOST_EXE}" report --config "${TEST_ROOT}/lab.json" --run integration_run
+    COMMAND "${HOST_EXE}" report
+        --config "${TEST_ROOT}/lab.json"
+        --run integration_run
+        --wait-seconds 1
     RESULT_VARIABLE report_result
     OUTPUT_VARIABLE report_output
     ERROR_VARIABLE report_error
 )
 if(NOT report_result EQUAL 0)
     message(FATAL_ERROR "SatsumaHost report failed: ${report_error}\n${report_output}")
+endif()
+string(FIND "${report_output}" "\"wait_status\": \"completed\"" report_wait_position)
+if(report_wait_position EQUAL -1)
+    message(FATAL_ERROR "Completed report wait omitted status: ${report_output}")
 endif()
 
 string(FIND "${report_output}" "\"successful_steps\": 1" success_position)
