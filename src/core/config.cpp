@@ -124,6 +124,7 @@ AgentConfig load_agent_config(const std::filesystem::path& path) {
     config.lab_id = required_string(value, "lab_id");
     config.vm_id = required_string(value, "vm_id");
     config.agent_version = required_string(value, "agent_version");
+    config.last_update_id = value.value("last_update_id", std::string{});
     config.host = required_string(value, "host");
     validate_identifier(config.lab_id, "lab_id");
     validate_identifier(config.vm_id, "vm_id");
@@ -141,6 +142,9 @@ AgentConfig load_agent_config(const std::filesystem::path& path) {
     }
     if (config.agent_version.size() > 64) {
         throw Error("agent_version must not exceed 64 characters");
+    }
+    if (!config.last_update_id.empty()) {
+        validate_identifier(config.last_update_id, "last_update_id");
     }
     static_cast<void>(parse_tcp_endpoint(config.host));
     if (config.reconnect_interval_ms < 100 || config.reconnect_interval_ms > 60'000) {

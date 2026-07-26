@@ -60,6 +60,7 @@ struct AgentConfig {
     std::string lab_id;                     // 实验室稳定 ID
     std::string vm_id;                      // 当前虚拟机稳定 ID
     std::string agent_version;              // 当前 Agent 语义版本
+    std::string last_update_id;              // 最近成功应用的更新 ID
     std::string host;                       // Host RPC address:port
     std::filesystem::path shared_root;      // Guest 共享根目录
     std::filesystem::path local_work_root;  // Guest 本地执行根目录

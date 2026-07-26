@@ -33,10 +33,18 @@ nlohmann::json load_json(const std::filesystem::path& path) {
     }
 }
 
-void write_json_atomic(const std::filesystem::path& path, const nlohmann::json& value) {
+// 根据调用方策略准备父目录并执行同目录原子替换。
+static void write_json_atomic_impl(
+    const std::filesystem::path& path,
+    const nlohmann::json& value,
+    const bool create_parent) {
     const std::filesystem::path parent = path.parent_path();
     if (!parent.empty()) {
-        std::filesystem::create_directories(parent);
+        if (create_parent) {
+            std::filesystem::create_directories(parent);
+        } else if (!std::filesystem::is_directory(parent)) {
+            throw Error("JSON parent directory does not exist: " + path_to_utf8(parent));
+        }
     }
 
     // 每次写入使用独立临时文件，避免并发任务互相覆盖。
@@ -85,6 +93,16 @@ void write_json_atomic(const std::filesystem::path& path, const nlohmann::json& 
         DeleteFileW(temporary.c_str());
         throw Error(win32_error("MoveFileExW", move_error));
     }
+}
+
+void write_json_atomic(const std::filesystem::path& path, const nlohmann::json& value) {
+    write_json_atomic_impl(path, value, true);
+}
+
+void write_json_atomic_existing_parent(
+    const std::filesystem::path& path,
+    const nlohmann::json& value) {
+    write_json_atomic_impl(path, value, false);
 }
 
 }  // namespace satsuma
