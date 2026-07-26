@@ -65,6 +65,11 @@ struct AgentServiceStopResult {
     const std::filesystem::path& executable,
     const std::filesystem::path& config);
 
+// 确认固定命令后启动既有 Agent Service，并返回 SCM PID。
+[[nodiscard]] std::uint32_t start_owned_agent_service(
+    const std::filesystem::path& executable,
+    const std::filesystem::path& config);
+
 // 停止并删除属于当前安装路径的 Agent Service。
 [[nodiscard]] bool remove_agent_service(const std::filesystem::path& config);
 

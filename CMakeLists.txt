@@ -58,6 +58,7 @@ add_library(SatsumaCore STATIC
     src/core/sha256.cpp
     src/core/snapshot.cpp
     src/core/task.cpp
+    src/core/update.cpp
     src/core/windows_command_line.cpp
 )
 
@@ -65,7 +66,14 @@ target_include_directories(SatsumaCore PUBLIC include)
 target_compile_features(SatsumaCore PUBLIC cxx_std_20)
 target_compile_definitions(
     SatsumaCore
-    PUBLIC UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX _WIN32_WINNT=0x0A00 WINVER=0x0A00
+    PUBLIC
+        UNICODE
+        _UNICODE
+        WIN32_LEAN_AND_MEAN
+        NOMINMAX
+        _WIN32_WINNT=0x0A00
+        WINVER=0x0A00
+        SATSUMA_VERSION="${PROJECT_VERSION}"
 )
 target_link_libraries(SatsumaCore PUBLIC nlohmann_json::nlohmann_json PRIVATE bcrypt)
 
@@ -88,6 +96,7 @@ add_executable(SatsumaVM
     src/vm/process_runner.cpp
     src/vm/rpc_client.cpp
     src/vm/service.cpp
+    src/vm/update.cpp
 )
 target_include_directories(SatsumaVM PRIVATE src/vm)
 target_link_libraries(

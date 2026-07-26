@@ -21,6 +21,7 @@
 #include "satsuma/core/path.hpp"
 #include "rpc_client.hpp"
 #include "satsuma/core/sha256.hpp"
+#include "update.hpp"
 
 namespace satsuma::vm {
 namespace {
@@ -289,6 +290,9 @@ void Agent::run_watch(const std::stop_token stop_token) {
         bool file_channel_available = false;
         try {
             write_presence();
+            if (process_pending_agent_update(config_, stop_token)) {
+                break;
+            }
             static_cast<void>(run_once(stop_token));
             file_channel_available = true;
         } catch (const std::exception& error) {
@@ -312,6 +316,8 @@ void Agent::write_presence() const {
         {"protocol_version", config_.protocol_version},
         {"lab_id", config_.lab_id},
         {"vm_id", config_.vm_id},
+        {"agent_version", config_.agent_version},
+        {"update_id", config_.last_update_id},
         {"session_id", session_id_},
         {"boot_id", boot_id_},
         {"process_id", GetCurrentProcessId()},
@@ -483,6 +489,8 @@ void Agent::write_state(
         {"protocol_version", config_.protocol_version},
         {"lab_id", config_.lab_id},
         {"vm_id", config_.vm_id},
+        {"agent_version", config_.agent_version},
+        {"update_id", config_.last_update_id},
         {"session_id", session_id_},
         {"boot_id", boot_id_},
         {"status", status},

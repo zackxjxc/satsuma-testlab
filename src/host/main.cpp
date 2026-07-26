@@ -103,6 +103,30 @@ namespace {
     return std::chrono::seconds(seconds);
 }
 
+// 解析 Agent 更新结果的有限等待秒数。
+[[nodiscard]] std::chrono::seconds parse_update_timeout(
+    const std::map<std::wstring, std::wstring>& options) {
+    const auto match = options.find(L"timeout-seconds");
+    if (match == options.end()) {
+        return std::chrono::seconds(180);
+    }
+
+    const std::string value = satsuma::path_to_utf8(match->second);
+    int seconds = 0;
+    const auto [end, error] = std::from_chars(
+        value.data(),
+        value.data() + value.size(),
+        seconds);
+    if (error != std::errc{} ||
+        end != value.data() + value.size() ||
+        seconds < 1 ||
+        seconds > 3'600) {
+        throw satsuma::Error(
+            "Agent update timeout must be an integer between 1 and 3600 seconds");
+    }
+    return std::chrono::seconds(seconds);
+}
+
 // 输出当前首个增量支持的 CLI 用法。
 void print_usage() {
     std::cout
@@ -116,6 +140,8 @@ void print_usage() {
         << "  SatsumaHost snapshot list --vm <vm-id> [--config lab.json]\n"
         << "  SatsumaHost snapshot create-ai --vm <vm-id> --name <purpose> [--config lab.json]\n"
         << "  SatsumaHost snapshot delete-ai --vm <vm-id> --snapshot <name> [--config lab.json]\n"
+        << "  SatsumaHost agent update --vm <vm-id> --binary SatsumaVM.exe --version <version> "
+           "[--timeout-seconds <1-3600>] [--config lab.json]\n"
         << "  SatsumaHost run --config lab.json --plan task.json\n"
         << "  SatsumaHost orchestrate --config lab.json --plan task.json [--timeout-seconds <1-86400>]\n"
         << "  SatsumaHost report --config lab.json --run <run-id> [--wait-seconds <1-86400>]\n";
@@ -134,7 +160,8 @@ int wmain(const int argc, wchar_t* argv[]) {
         const std::wstring command = argv[1];
         std::wstring subcommand;
         int options_start = 2;
-        const bool grouped_command = command == L"vm" || command == L"snapshot";
+        const bool grouped_command =
+            command == L"vm" || command == L"snapshot" || command == L"agent";
         if (grouped_command) {
             if (argc < 3) {
                 print_usage();
@@ -172,6 +199,30 @@ int wmain(const int argc, wchar_t* argv[]) {
                 return 0;
             }
             return status == "degraded" ? 3 : 1;
+        }
+
+        if (command == L"agent") {
+            if (subcommand != L"update") {
+                print_usage();
+                return 2;
+            }
+            const std::string vm_id = satsuma::path_to_utf8(
+                require_option(options, L"vm"));
+            const std::filesystem::path binary = require_option(options, L"binary");
+            const std::string version = satsuma::path_to_utf8(
+                require_option(options, L"version"));
+            const std::chrono::seconds timeout = parse_update_timeout(options);
+            satsuma::host::Controller controller(std::move(config));
+            const satsuma::AgentUpdateManifest manifest =
+                controller.publish_agent_update(vm_id, binary, version);
+            const satsuma::AgentUpdateResult result = controller.wait_agent_update(
+                vm_id,
+                manifest.update_id,
+                timeout);
+            nlohmann::json output = result;
+            output["manifest"] = manifest;
+            std::cout << output.dump(2) << '\n';
+            return result.status == "succeeded" ? 0 : 1;
         }
 
         if (command == L"vm") {

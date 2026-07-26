@@ -917,6 +917,33 @@ AgentServiceStopResult stop_owned_agent_service(
     return {true, was_active};
 }
 
+std::uint32_t start_owned_agent_service(
+    const std::filesystem::path& executable,
+    const std::filesystem::path& config) {
+    const UniqueServiceHandle manager = open_service_manager(SC_MANAGER_CONNECT);
+    constexpr DWORD access =
+        SERVICE_QUERY_CONFIG | SERVICE_QUERY_STATUS | SERVICE_START;
+    const UniqueServiceHandle service(OpenServiceW(
+        manager.get(),
+        kAgentServiceName.data(),
+        access));
+    if (!service) {
+        if (GetLastError() == ERROR_SERVICE_DOES_NOT_EXIST) {
+            throw Error("SatsumaVM service does not exist");
+        }
+        ensure_win32(FALSE, "OpenServiceW");
+    }
+
+    const AgentServiceSpec spec = make_agent_service_spec(executable, config);
+    const std::vector<BYTE> existing_buffer = query_service_config(service.get());
+    const auto* existing =
+        reinterpret_cast<const QUERY_SERVICE_CONFIGW*>(existing_buffer.data());
+    if (!service_belongs_to_agent(*existing, spec)) {
+        throw Error("Existing SatsumaVM service points to a different command");
+    }
+    return start_service(service.get());
+}
+
 bool remove_agent_service(const std::filesystem::path& config) {
     const AgentServiceSpec spec = make_agent_service_removal_spec(
         current_executable_path(),

@@ -2,7 +2,10 @@
 #include "controller.hpp"
 
 #include <algorithm>
+#include <chrono>
+#include <limits>
 #include <set>
+#include <thread>
 
 #include <windows.h>
 
@@ -11,6 +14,7 @@
 #include "satsuma/core/json_io.hpp"
 #include "satsuma/core/path.hpp"
 #include "satsuma/core/sha256.hpp"
+#include "satsuma/core/update.hpp"
 
 namespace satsuma::host {
 namespace {
@@ -116,6 +120,125 @@ RunManifest Controller::create_run(const TaskPlan& plan) const {
         throw;
     }
     return manifest;
+}
+
+AgentUpdateManifest Controller::publish_agent_update(
+    const std::string& vm_id,
+    const std::filesystem::path& binary,
+    const std::string& version) const {
+    validate_identifier(vm_id, "update VM id");
+    if (find_vm(config_, vm_id) == nullptr) {
+        throw Error("Agent update references an unknown VM: " + vm_id);
+    }
+    if (!std::filesystem::is_regular_file(binary)) {
+        throw Error("Agent update binary is not a regular file: " + path_to_utf8(binary));
+    }
+
+    AgentUpdateManifest manifest;
+    manifest.lab_id = config_.lab_id;
+    manifest.vm_id = vm_id;
+    manifest.update_id = make_id("update");
+    manifest.version = version;
+    manifest.binary = L"SatsumaVM.exe";
+    manifest.created_at = utc_timestamp();
+
+    const std::filesystem::path updates_root = resolve_under_root(
+        config_.shared_folder.host_root,
+        std::filesystem::path(L"updates") / path_from_utf8(vm_id));
+    std::filesystem::create_directories(updates_root);
+    const std::filesystem::path final_directory = resolve_under_root(
+        updates_root,
+        path_from_utf8(manifest.update_id));
+    const std::filesystem::path staging_directory = resolve_under_root(
+        updates_root,
+        path_from_utf8(".preparing-" + manifest.update_id + "-" + make_id("stage")));
+    if (std::filesystem::exists(final_directory)) {
+        throw Error("Agent update directory already exists: " + path_to_utf8(final_directory));
+    }
+
+    try {
+        std::filesystem::create_directories(staging_directory);
+        const std::filesystem::path staged_binary =
+            resolve_under_root(staging_directory, manifest.binary);
+        std::filesystem::copy_file(
+            binary,
+            staged_binary,
+            std::filesystem::copy_options::none);
+        const std::uintmax_t size = std::filesystem::file_size(staged_binary);
+        if (size == 0 || size > std::numeric_limits<std::uint64_t>::max()) {
+            throw Error("Agent update binary has an invalid size");
+        }
+        manifest.size = static_cast<std::uint64_t>(size);
+        manifest.sha256 = sha256_file(staged_binary);
+        manifest = nlohmann::json(manifest).get<AgentUpdateManifest>();
+        write_json_atomic(staging_directory / L"update.json", manifest);
+        std::filesystem::rename(staging_directory, final_directory);
+    } catch (...) {
+        std::error_code cleanup_error;
+        std::filesystem::remove_all(staging_directory, cleanup_error);
+        throw;
+    }
+    return manifest;
+}
+
+AgentUpdateResult Controller::wait_agent_update(
+    const std::string& vm_id,
+    const std::string& update_id,
+    const std::chrono::seconds timeout) const {
+    validate_identifier(vm_id, "update VM id");
+    validate_identifier(update_id, "update_id");
+    if (timeout < std::chrono::seconds(1) || timeout > std::chrono::hours(1)) {
+        throw Error("Agent update timeout must be between 1 and 3600 seconds");
+    }
+    const std::filesystem::path update_directory = resolve_under_root(
+        config_.shared_folder.host_root,
+        std::filesystem::path(L"updates") /
+            path_from_utf8(vm_id) /
+            path_from_utf8(update_id));
+    const std::filesystem::path manifest_path = update_directory / L"update.json";
+    if (!std::filesystem::is_regular_file(manifest_path)) {
+        throw Error("Unknown agent update: " + update_id);
+    }
+    const AgentUpdateManifest manifest = load_agent_update_manifest(manifest_path);
+    if (manifest.lab_id != config_.lab_id ||
+        manifest.vm_id != vm_id ||
+        manifest.update_id != update_id) {
+        throw Error("Agent update manifest identity does not match its directory");
+    }
+
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    for (;;) {
+        const std::filesystem::path result_path = update_directory / L"result.json";
+        if (std::filesystem::is_regular_file(result_path)) {
+            const AgentUpdateResult result = load_agent_update_result(result_path);
+            if (result.vm_id != vm_id ||
+                result.update_id != update_id ||
+                result.version != manifest.version) {
+                throw Error("Agent update result identity does not match its directory");
+            }
+            if (result.status == "succeeded") {
+                const auto cleanup_deadline =
+                    std::chrono::steady_clock::now() + std::chrono::seconds(5);
+                std::error_code cleanup_error;
+                do {
+                    cleanup_error.clear();
+                    std::filesystem::remove_all(update_directory, cleanup_error);
+                    if (!std::filesystem::exists(update_directory)) {
+                        return result;
+                    }
+                    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                } while (std::chrono::steady_clock::now() < cleanup_deadline);
+                throw Error(
+                    "Successful agent update could not clean its shared directory: " +
+                    cleanup_error.message());
+            }
+            return result;
+        }
+        if (std::chrono::steady_clock::now() >= deadline) {
+            throw Error("Timed out while waiting for the Agent update result");
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
 }
 
 nlohmann::json Controller::build_report(const std::string& run_id) const {

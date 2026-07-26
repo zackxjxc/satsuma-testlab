@@ -10,18 +10,21 @@
 #include "agent.hpp"
 #include "autostart.hpp"
 #include "service.hpp"
+#include "update.hpp"
 #include "satsuma/core/config.hpp"
 #include "satsuma/core/errors.hpp"
 #include "satsuma/core/id.hpp"
 #include "satsuma/core/path.hpp"
+#include "satsuma/core/version.hpp"
 
 namespace {
 
 // 输出 VM Agent 的首个增量用法。
 void print_usage() {
     std::cout
-        << "SatsumaVM 0.1.0\n"
+        << "SatsumaVM " << satsuma::kVersion << '\n'
         << "Usage:\n"
+        << "  SatsumaVM --version\n"
         << "  SatsumaVM --config agent.json --once\n"
         << "  SatsumaVM --config agent.json --rpc-once\n"
         << "  SatsumaVM --config agent.json --watch\n"
@@ -29,6 +32,7 @@ void print_usage() {
         << "  SatsumaVM --config agent.json --validate-config\n"
         << "  SatsumaVM --config agent.json --install-service\n"
         << "  SatsumaVM --config agent.json --remove-service\n"
+        << "  SatsumaVM --config agent.json --apply-update update-manifest.json\n"
         << "  SatsumaVM --config agent.json --install-autostart\n";
 }
 
@@ -85,13 +89,30 @@ int wmain(const int argc, wchar_t* argv[]) {
     std::filesystem::path config_path;
     std::wstring mode;
     try {
-        if (argc != 4 || std::wstring(argv[1]) != L"--config") {
+        if (argc == 2 && std::wstring(argv[1]) == L"--version") {
+            std::cout << satsuma::kVersion << '\n';
+            return 0;
+        }
+        if ((argc != 4 && argc != 5) || std::wstring(argv[1]) != L"--config") {
             print_usage();
             return 2;
         }
 
         config_path = std::filesystem::path(argv[2]);
         mode = argv[3];
+        if (mode == L"--apply-update") {
+            if (argc != 5) {
+                print_usage();
+                return 2;
+            }
+            return satsuma::vm::apply_agent_update_helper(
+                config_path,
+                std::filesystem::path(argv[4]));
+        }
+        if (argc != 4) {
+            print_usage();
+            return 2;
+        }
         if (mode == L"--service") {
             const int service_result = satsuma::vm::run_agent_service_dispatcher(config_path);
             if (service_result != 0) {
