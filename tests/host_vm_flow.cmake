@@ -169,6 +169,195 @@ if(lifecycle_error_position EQUAL -1)
     message(FATAL_ERROR "SatsumaHost run returned an unexpected lifecycle error: ${lifecycle_run_error}")
 endif()
 
+set(orchestration_task_json [=[
+{
+  "schema_version": 1,
+  "name": "host-lifecycle-integration",
+  "run_id": "orchestration_run",
+  "steps": [
+    {
+      "id": "main_echo",
+      "vm": "client",
+      "type": "echo",
+      "message": "main lifecycle step"
+    }
+  ],
+  "lifecycle": {
+    "vms": [
+      {
+        "vm": "client",
+        "restore_before": "clean",
+        "on_success": {"action": "stop"},
+        "on_failure": {"action": "restore", "snapshot": "clean"}
+      }
+    ],
+    "finally": [
+      {
+        "id": "finally_echo",
+        "vm": "client",
+        "type": "echo",
+        "message": "finally lifecycle step"
+      }
+    ]
+  }
+}
+]=])
+file(WRITE "${TEST_ROOT}/orchestration-task.json" "${orchestration_task_json}")
+set(lifecycle_state "${archive_path}/runs/orchestration_run/lifecycle.json")
+
+execute_process(
+    COMMAND "${CMAKE_COMMAND}"
+        "-DVM_EXE=${VM_EXE}"
+        "-DAGENT_CONFIG=${TEST_ROOT}/agent.json"
+        "-DLIFECYCLE_STATE=${lifecycle_state}"
+        -P "${CMAKE_CURRENT_LIST_DIR}/run_agent_until_lifecycle_terminal.cmake"
+    COMMAND "${HOST_EXE}" orchestrate
+        --config "${TEST_ROOT}/lab.json"
+        --plan "${TEST_ROOT}/orchestration-task.json"
+        --timeout-seconds 10
+    RESULTS_VARIABLE orchestration_results
+    OUTPUT_VARIABLE orchestration_output
+    ERROR_VARIABLE orchestration_error
+)
+if(NOT orchestration_results STREQUAL "0;0")
+    message(FATAL_ERROR
+        "SatsumaHost orchestrate failed (${orchestration_results}): "
+        "${orchestration_error}\n${orchestration_output}")
+endif()
+string(FIND "${orchestration_output}" "\"status\": \"COMPLETED\"" orchestration_status_position)
+if(orchestration_status_position EQUAL -1)
+    message(FATAL_ERROR "SatsumaHost orchestrate returned unexpected output: ${orchestration_output}")
+endif()
+string(FIND "${orchestration_output}" "\"cleanup_action\": \"stop\"" cleanup_action_position)
+if(cleanup_action_position EQUAL -1)
+    message(FATAL_ERROR "SatsumaHost orchestrate did not apply success cleanup: ${orchestration_output}")
+endif()
+if(NOT EXISTS "${lifecycle_state}")
+    message(FATAL_ERROR "SatsumaHost orchestrate did not persist lifecycle state")
+endif()
+file(READ "${lifecycle_state}" lifecycle_state_json)
+string(FIND "${lifecycle_state_json}" "\"phase\": \"completed\"" completed_phase_position)
+string(FIND "${lifecycle_state_json}" "\"to\": \"running_finally\"" finally_phase_position)
+if(completed_phase_position EQUAL -1 OR finally_phase_position EQUAL -1)
+    message(FATAL_ERROR "Lifecycle state omitted required transitions: ${lifecycle_state_json}")
+endif()
+if(NOT EXISTS "${archive_path}/runs/orchestration_run/evidence/main/task.json" OR
+   NOT EXISTS "${archive_path}/runs/orchestration_run/evidence/finally/task.json")
+    message(FATAL_ERROR "SatsumaHost orchestrate did not archive main and finally evidence")
+endif()
+
+set(orchestration_failure_json [=[
+{
+  "schema_version": 1,
+  "name": "host-lifecycle-business-failure",
+  "run_id": "orchestration_failure",
+  "artifacts": [
+    {
+      "source": "@FIXTURE@",
+      "vm": "client",
+      "shared_destination": "artifacts/client/SatsumaTestFixture.exe"
+    }
+  ],
+  "steps": [
+    {
+      "id": "timeout",
+      "vm": "client",
+      "type": "execute",
+      "program": "artifacts/client/SatsumaTestFixture.exe",
+      "arguments": ["--sleep-ms", "3000"],
+      "timeout_seconds": 1
+    }
+  ],
+  "lifecycle": {
+    "vms": [
+      {
+        "vm": "client",
+        "on_success": {"action": "stop"},
+        "on_failure": {"action": "restore", "snapshot": "clean"}
+      }
+    ]
+  }
+}
+]=])
+string(REPLACE "@FIXTURE@" "${fixture_path}" orchestration_failure_json "${orchestration_failure_json}")
+file(WRITE "${TEST_ROOT}/orchestration-failure.json" "${orchestration_failure_json}")
+set(failure_state "${archive_path}/runs/orchestration_failure/lifecycle.json")
+
+execute_process(
+    COMMAND "${CMAKE_COMMAND}"
+        "-DVM_EXE=${VM_EXE}"
+        "-DAGENT_CONFIG=${TEST_ROOT}/agent.json"
+        "-DLIFECYCLE_STATE=${failure_state}"
+        -P "${CMAKE_CURRENT_LIST_DIR}/run_agent_until_lifecycle_terminal.cmake"
+    COMMAND "${HOST_EXE}" orchestrate
+        --config "${TEST_ROOT}/lab.json"
+        --plan "${TEST_ROOT}/orchestration-failure.json"
+        --timeout-seconds 10
+    RESULTS_VARIABLE orchestration_failure_results
+    OUTPUT_VARIABLE orchestration_failure_output
+    ERROR_VARIABLE orchestration_failure_error
+)
+if(NOT orchestration_failure_results STREQUAL "0;1")
+    message(FATAL_ERROR
+        "SatsumaHost did not distinguish business failure (${orchestration_failure_results}): "
+        "${orchestration_failure_error}\n${orchestration_failure_output}")
+endif()
+string(FIND "${orchestration_failure_output}" "\"status\": \"FAILED\"" failure_status_position)
+string(FIND "${orchestration_failure_output}" "\"cleanup_action\": \"restore\"" failure_cleanup_position)
+if(failure_status_position EQUAL -1 OR failure_cleanup_position EQUAL -1)
+    message(FATAL_ERROR "SatsumaHost did not report recovered business failure: ${orchestration_failure_output}")
+endif()
+file(READ "${failure_state}" failure_state_json)
+string(FIND "${failure_state_json}" "\"phase\": \"failed\"" failed_phase_position)
+if(failed_phase_position EQUAL -1)
+    message(FATAL_ERROR "Business failure lifecycle did not reach failed: ${failure_state_json}")
+endif()
+
+string(REPLACE
+    "\"snapshot\": \"clean\""
+    "\"snapshot\": \"satsuma-ai-recovery-fail\""
+    recovery_failure_json
+    "${orchestration_failure_json}")
+string(REPLACE
+    "\"run_id\": \"orchestration_failure\""
+    "\"run_id\": \"orchestration_recovery_failure\""
+    recovery_failure_json
+    "${recovery_failure_json}")
+file(WRITE "${TEST_ROOT}/orchestration-recovery-failure.json" "${recovery_failure_json}")
+set(recovery_failure_state "${archive_path}/runs/orchestration_recovery_failure/lifecycle.json")
+
+execute_process(
+    COMMAND "${CMAKE_COMMAND}"
+        "-DVM_EXE=${VM_EXE}"
+        "-DAGENT_CONFIG=${TEST_ROOT}/agent.json"
+        "-DLIFECYCLE_STATE=${recovery_failure_state}"
+        -P "${CMAKE_CURRENT_LIST_DIR}/run_agent_until_lifecycle_terminal.cmake"
+    COMMAND "${HOST_EXE}" orchestrate
+        --config "${TEST_ROOT}/lab.json"
+        --plan "${TEST_ROOT}/orchestration-recovery-failure.json"
+        --timeout-seconds 10
+    RESULTS_VARIABLE recovery_failure_results
+    OUTPUT_VARIABLE recovery_failure_output
+    ERROR_VARIABLE recovery_failure_error
+)
+if(NOT recovery_failure_results STREQUAL "0;4")
+    message(FATAL_ERROR
+        "SatsumaHost did not classify recovery failure (${recovery_failure_results}): "
+        "${recovery_failure_error}\n${recovery_failure_output}")
+endif()
+string(FIND "${recovery_failure_output}" "\"status\": \"RECOVERY_FAILED\"" recovery_status_position)
+if(recovery_status_position EQUAL -1)
+    message(FATAL_ERROR "SatsumaHost omitted RECOVERY_FAILED: ${recovery_failure_output}")
+endif()
+file(READ "${recovery_failure_state}" recovery_failure_state_json)
+string(FIND
+    "${recovery_failure_state_json}"
+    "\"phase\": \"recovery_failed\""
+    recovery_failed_phase_position)
+if(recovery_failed_phase_position EQUAL -1)
+    message(FATAL_ERROR "Recovery failure lifecycle omitted terminal state: ${recovery_failure_state_json}")
+endif()
+
 execute_process(
     COMMAND "${CMAKE_COMMAND}"
         "-DVM_EXE=${VM_EXE}"

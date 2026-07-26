@@ -42,7 +42,11 @@ int wmain(const int argc, wchar_t* argv[]) {
     if (argc == 3 &&
         std::wstring(argv[1]) == L"listSnapshots" &&
         std::filesystem::path(argv[2]).filename() == L"Client VM.vmx") {
-        std::cout << "Total snapshots: 2\nclean\nsatsuma-ai-obsolete\n";
+        std::cout
+            << "Total snapshots: 3\n"
+            << "clean\n"
+            << "satsuma-ai-obsolete\n"
+            << "satsuma-ai-recovery-fail\n";
         return 0;
     }
     if (argc == 4 &&
@@ -58,7 +62,7 @@ int wmain(const int argc, wchar_t* argv[]) {
          (std::filesystem::path(argv[2]).filename() == L"Hard VM.vmx" &&
           std::wstring(argv[3]) == L"hard") ||
          (std::filesystem::path(argv[2]).filename() == L"Client VM.vmx" &&
-          std::wstring(argv[3]) == L"soft"))) {
+          (std::wstring(argv[3]) == L"soft" || std::wstring(argv[3]) == L"hard")))) {
         return 0;
     }
     if (argc == 4 &&

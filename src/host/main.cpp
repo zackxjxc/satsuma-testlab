@@ -10,6 +10,7 @@
 
 #include "controller.hpp"
 #include "diagnostics.hpp"
+#include "orchestrator.hpp"
 #include "rpc_server.hpp"
 #include "satsuma/core/config.hpp"
 #include "satsuma/core/errors.hpp"
@@ -67,6 +68,23 @@ namespace {
     return std::chrono::seconds(seconds);
 }
 
+// 解析生命周期编排的有限等待秒数。
+[[nodiscard]] std::chrono::seconds parse_orchestration_timeout(
+    const std::map<std::wstring, std::wstring>& options) {
+    const auto match = options.find(L"timeout-seconds");
+    if (match == options.end()) {
+        return std::chrono::seconds(300);
+    }
+
+    const std::string value = satsuma::path_to_utf8(match->second);
+    int seconds = 0;
+    const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), seconds);
+    if (error != std::errc{} || end != value.data() + value.size() || seconds < 1 || seconds > 86'400) {
+        throw satsuma::Error("Orchestration timeout must be an integer between 1 and 86400 seconds");
+    }
+    return std::chrono::seconds(seconds);
+}
+
 // 输出当前首个增量支持的 CLI 用法。
 void print_usage() {
     std::cout
@@ -81,6 +99,7 @@ void print_usage() {
         << "  SatsumaHost snapshot create-ai --vm <vm-id> --name <purpose> [--config lab.json]\n"
         << "  SatsumaHost snapshot delete-ai --vm <vm-id> --snapshot <name> [--config lab.json]\n"
         << "  SatsumaHost run --config lab.json --plan task.json\n"
+        << "  SatsumaHost orchestrate --config lab.json --plan task.json [--timeout-seconds <1-86400>]\n"
         << "  SatsumaHost report --config lab.json --run <run-id>\n";
 }
 
@@ -294,6 +313,19 @@ int wmain(const int argc, wchar_t* argv[]) {
                 {"snapshot", snapshot_name},
             }).dump(2) << '\n';
             return 0;
+        }
+
+        if (command == L"orchestrate") {
+            const std::filesystem::path plan_path = require_option(options, L"plan");
+            const std::chrono::seconds timeout = parse_orchestration_timeout(options);
+            satsuma::host::Orchestrator orchestrator(std::move(config));
+            const nlohmann::json output = orchestrator.execute(plan_path, timeout);
+            std::cout << output.dump(2) << '\n';
+            const std::string status = output.at("status").get<std::string>();
+            if (status == "COMPLETED") {
+                return 0;
+            }
+            return status == "RECOVERY_FAILED" ? 4 : 1;
         }
 
         satsuma::host::Controller controller(std::move(config));

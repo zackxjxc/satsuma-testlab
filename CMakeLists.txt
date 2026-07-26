@@ -72,6 +72,7 @@ add_executable(SatsumaHost
     src/host/controller.cpp
     src/host/diagnostics.cpp
     src/host/main.cpp
+    src/host/orchestrator.cpp
     src/host/rpc_server.cpp
     src/host/rpc_service.cpp
     src/vmware/vmrun_provider.cpp
