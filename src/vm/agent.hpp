@@ -48,6 +48,9 @@ private:
         const std::string& status,
         const std::string& job_id) const;
 
+    // 原子发布跨运行可见的 Agent 就绪状态。
+    void write_presence() const;
+
     // 尽力向 Host 上报 Job 状态，不影响文件通道执行结果。
     void report_job_state(
         const RunManifest& manifest,

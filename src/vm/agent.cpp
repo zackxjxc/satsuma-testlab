@@ -186,6 +186,7 @@ int Agent::run_once() {
 [[noreturn]] void Agent::run_watch() {
     for (;;) {
         bool rpc_available = false;
+        bool file_channel_available = false;
         try {
             static_cast<void>(synchronize_rpc());
             rpc_available = true;
@@ -193,12 +194,35 @@ int Agent::run_once() {
             rpc_client_.disconnect();
             std::cerr << "SatsumaVM RPC unavailable: " << error.what() << '\n';
         }
-        static_cast<void>(run_once());
-        const int delay_ms = rpc_available
+        try {
+            write_presence();
+            static_cast<void>(run_once());
+            file_channel_available = true;
+        } catch (const std::exception& error) {
+            std::cerr << "SatsumaVM file channel unavailable: " << error.what() << '\n';
+        }
+        const int delay_ms = rpc_available && file_channel_available
             ? config_.poll_interval_ms
             : config_.reconnect_interval_ms;
         std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
     }
+}
+
+void Agent::write_presence() const {
+    const nlohmann::json presence = {
+        {"schema_version", 1},
+        {"protocol_version", config_.protocol_version},
+        {"lab_id", config_.lab_id},
+        {"vm_id", config_.vm_id},
+        {"session_id", session_id_},
+        {"boot_id", boot_id_},
+        {"process_id", GetCurrentProcessId()},
+        {"status", "idle"},
+        {"updated_at", utc_timestamp()},
+    };
+    write_json_atomic(
+        config_.shared_root / L"agents" / path_from_utf8(config_.vm_id + ".json"),
+        presence);
 }
 
 bool Agent::synchronize_rpc() {
