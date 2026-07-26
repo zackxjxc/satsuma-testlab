@@ -64,7 +64,7 @@ struct AgentConfig {
     std::filesystem::path shared_root;      // Guest 共享根目录
     std::filesystem::path local_work_root;  // Guest 本地执行根目录
     int poll_interval_ms{1000};             // 无任务时的轮询间隔
-    int reconnect_interval_ms{1000};        // RPC 断线后的重连间隔
+    int reconnect_interval_ms{1000};        // Shared Folder 异常后的重试间隔
     int rpc_timeout_ms{5000};               // 单次 RPC 超时
 };
 

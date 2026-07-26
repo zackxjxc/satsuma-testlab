@@ -9,6 +9,7 @@
 
 #include "agent.hpp"
 #include "autostart.hpp"
+#include "service.hpp"
 #include "satsuma/core/config.hpp"
 #include "satsuma/core/errors.hpp"
 #include "satsuma/core/id.hpp"
@@ -24,8 +25,25 @@ void print_usage() {
         << "  SatsumaVM --config agent.json --once\n"
         << "  SatsumaVM --config agent.json --rpc-once\n"
         << "  SatsumaVM --config agent.json --watch\n"
+        << "  SatsumaVM --config agent.json --service\n"
         << "  SatsumaVM --config agent.json --validate-config\n"
+        << "  SatsumaVM --config agent.json --install-service\n"
+        << "  SatsumaVM --config agent.json --remove-service\n"
         << "  SatsumaVM --config agent.json --install-autostart\n";
+}
+
+// 将 Windows Service 变更转换为稳定机器文本。
+[[nodiscard]] const char* service_change_name(const satsuma::vm::ServiceChange change) {
+    switch (change) {
+        case satsuma::vm::ServiceChange::Created:
+            return "created";
+        case satsuma::vm::ServiceChange::Updated:
+            return "updated";
+        case satsuma::vm::ServiceChange::Unchanged:
+            return "unchanged";
+        default:
+            throw satsuma::Error("Unknown service change");
+    }
 }
 
 // 将计划任务变更转换为稳定机器文本。
@@ -74,6 +92,23 @@ int wmain(const int argc, wchar_t* argv[]) {
 
         config_path = std::filesystem::path(argv[2]);
         mode = argv[3];
+        if (mode == L"--service") {
+            const int service_result = satsuma::vm::run_agent_service_dispatcher(config_path);
+            if (service_result != 0) {
+                std::cerr << "SatsumaVM service dispatcher failed with Win32 error "
+                          << service_result << '\n';
+            }
+            return service_result;
+        }
+        if (mode == L"--remove-service") {
+            const bool removed = satsuma::vm::remove_agent_service(config_path);
+            std::cout << nlohmann::json({
+                {"status", removed ? "removed" : "absent"},
+                {"service_name", "SatsumaVM"},
+            }).dump() << '\n';
+            return 0;
+        }
+
         satsuma::AgentConfig config = satsuma::load_agent_config(config_path);
         if (mode == L"--validate-config") {
             std::cout << nlohmann::json({
@@ -93,13 +128,17 @@ int wmain(const int argc, wchar_t* argv[]) {
             }).dump() << '\n';
             return 0;
         }
-        if (mode == L"--watch") {
-            const satsuma::vm::AgentAutostartResult result =
-                satsuma::vm::ensure_agent_autostart(config_path, config.local_work_root, false);
-            std::cerr << "SatsumaVM autostart " << autostart_change_name(result.change)
-                      << ": " << result.task_path << '\n';
+        if (mode == L"--install-service") {
+            const satsuma::vm::AgentServiceResult result =
+                satsuma::vm::ensure_agent_service(config_path, config.local_work_root, true);
+            std::cout << nlohmann::json({
+                {"status", service_change_name(result.change)},
+                {"service_name", result.service_name},
+                {"start_requested", result.start_requested},
+                {"process_id", result.process_id},
+            }).dump() << '\n';
+            return 0;
         }
-
         satsuma::vm::Agent agent(std::move(config));
         if (mode == L"--once") {
             const int executed = agent.run_once();

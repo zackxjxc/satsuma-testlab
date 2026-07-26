@@ -35,6 +35,12 @@ struct AgentAutostartResult {
     const std::filesystem::path& executable,
     const std::filesystem::path& config);
 
+// 验证 Agent 可执行文件、配置和工作目录属于同一受保护安装布局。
+void validate_agent_install_layout(
+    const std::filesystem::path& executable,
+    const std::filesystem::path& config,
+    const std::filesystem::path& local_work_root);
+
 #ifdef SATSUMA_AUTOSTART_TESTS
 // 验证父目录 ACL，并允许只在父目录创建其他子项。
 void validate_agent_autostart_parent_acl_for_test(const std::filesystem::path& path);

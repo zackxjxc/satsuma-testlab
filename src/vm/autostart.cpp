@@ -350,7 +350,7 @@ private:
 [[nodiscard]] SidStorage make_well_known_sid(
     const WELL_KNOWN_SID_TYPE type) {
     SidStorage storage{};
-    DWORD size = static_cast<DWORD>(storage.size());
+    DWORD size = static_cast<DWORD>(storage.size() * sizeof(storage[0]));
     if (!CreateWellKnownSid(type, nullptr, storage.data(), &size)) {
         throw Error("CreateWellKnownSid failed (Win32 error " + std::to_string(GetLastError()) + ")");
     }
@@ -447,12 +447,18 @@ void validate_installed_layout(
         throw Error("Agent local_work_root is empty during autostart validation");
     }
     const std::filesystem::path install_root = spec.executable.parent_path().parent_path();
-    const std::filesystem::path expected_executable = install_root / L"bin" / L"SatsumaVM.exe";
-    const std::filesystem::path expected_config = install_root / L"agent.json";
-    const std::filesystem::path expected_work_root = install_root / L"work";
+    const std::filesystem::path expected_executable =
+        std::filesystem::canonical(install_root / L"bin" / L"SatsumaVM.exe");
+    const std::filesystem::path expected_config =
+        std::filesystem::canonical(install_root / L"agent.json");
+    const std::filesystem::path expected_work_root =
+        std::filesystem::canonical(install_root / L"work");
     const std::filesystem::path normalized_work_root = std::filesystem::canonical(local_work_root);
 
-    if (!same_file_identity(spec.executable, expected_executable) ||
+    if (!path_equal(spec.executable, expected_executable) ||
+        !path_equal(spec.config, expected_config) ||
+        !path_equal(normalized_work_root, expected_work_root) ||
+        !same_file_identity(spec.executable, expected_executable) ||
         !same_file_identity(spec.config, expected_config) ||
         !same_file_identity(normalized_work_root, expected_work_root)) {
         throw Error(
@@ -814,6 +820,13 @@ AgentAutostartSpec make_agent_autostart_spec(
     spec.working_directory = spec.executable.parent_path();
     spec.arguments = L"--config " + quote_windows_argument(spec.config.native()) + L" --watch";
     return spec;
+}
+
+void validate_agent_install_layout(
+    const std::filesystem::path& executable,
+    const std::filesystem::path& config,
+    const std::filesystem::path& local_work_root) {
+    validate_installed_layout(make_agent_autostart_spec(executable, config), local_work_root);
 }
 
 #ifdef SATSUMA_AUTOSTART_TESTS
