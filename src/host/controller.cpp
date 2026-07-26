@@ -156,6 +156,34 @@ nlohmann::json Controller::build_report(const std::string& run_id) const {
     }
 
     const RunManifest manifest = load_run_manifest(run_directory / L"task.json");
+    nlohmann::json blocked_steps = nlohmann::json::array();
+    for (const TaskStep& step : manifest.steps) {
+        const std::filesystem::path result_path = resolve_under_root(
+            run_directory,
+            std::filesystem::path(L"results") /
+                path_from_utf8(step.vm) /
+                path_from_utf8(step.id) /
+                L"execution.json");
+        if (std::filesystem::is_regular_file(result_path)) {
+            continue;
+        }
+        const std::filesystem::path recovery_path = resolve_under_root(
+            run_directory,
+            std::filesystem::path(L"state") /
+                path_from_utf8(step.vm) /
+                path_from_utf8(step.id + ".claim-recovery.json"));
+        if (!std::filesystem::is_regular_file(recovery_path)) {
+            continue;
+        }
+        const nlohmann::json recovery = load_json(recovery_path);
+        if (recovery.value("status", "") == "manual_intervention_required") {
+            blocked_steps.push_back({
+                {"vm_id", step.vm},
+                {"step_id", step.id},
+                {"recovery", recovery},
+            });
+        }
+    }
     return {
         {"schema_version", 1},
         {"run_id", run_id},
@@ -165,6 +193,8 @@ nlohmann::json Controller::build_report(const std::string& run_id) const {
         {"successful_steps", completed},
         {"failed_steps", failed},
         {"complete", executions.size() == manifest.steps.size()},
+        {"manual_intervention_required", !blocked_steps.empty()},
+        {"blocked_steps", std::move(blocked_steps)},
         {"executions", std::move(executions)},
     };
 }

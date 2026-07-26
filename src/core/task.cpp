@@ -51,6 +51,7 @@ void validate_sha256(const std::string& hash) {
     if (step.timeout_seconds < 1 || step.timeout_seconds > 86'400) {
         throw Error("timeout_seconds must be between 1 and 86400 for step " + step.id);
     }
+    step.retry_safe = value.value("retry_safe", step.type == "echo");
 
     if (value.contains("arguments")) {
         step.arguments = value.at("arguments").get<std::vector<std::string>>();
@@ -167,6 +168,7 @@ void validate_snapshot_name(const std::string& snapshot, const std::string_view 
         {"vm", step.vm},
         {"type", step.type},
         {"timeout_seconds", step.timeout_seconds},
+        {"retry_safe", step.retry_safe},
     };
     if (step.type == "execute") {
         value["program"] = path_to_utf8(step.program);

@@ -11,6 +11,7 @@
 #include <ylt/struct_pack.hpp>
 
 #include "satsuma/core/config.hpp"
+#include "satsuma/core/claim.hpp"
 #include "satsuma/core/errors.hpp"
 #include "satsuma/core/id.hpp"
 #include "satsuma/core/json_io.hpp"
@@ -199,12 +200,14 @@ void test_protocol_round_trip() {
     step.type = "execute";
     step.program = satsuma::path_from_utf8("artifacts/client/test.exe");
     step.arguments = {"argument with spaces", "quote\"value"};
+    step.retry_safe = true;
     manifest.steps.push_back(step);
 
     const nlohmann::json encoded = manifest;
     const satsuma::RunManifest decoded = encoded.get<satsuma::RunManifest>();
     expect(decoded.run_id == manifest.run_id, "run manifest ID changed during JSON round trip");
     expect(decoded.steps.at(0).arguments == step.arguments, "task arguments changed during JSON round trip");
+    expect(decoded.steps.at(0).retry_safe, "task retry safety changed during JSON round trip");
 
     satsuma::ExecutionResult result;
     result.run_id = "run_1";
@@ -324,6 +327,45 @@ void test_run_lifecycle(const std::filesystem::path& root) {
         "terminal recovery failure accepted another transition");
 }
 
+// 验证 claim 租约只允许显式安全步骤在启动身份变化后重试。
+void test_claim_recovery_decision(const std::filesystem::path& root) {
+    const satsuma::StepClaimLease safe = satsuma::make_step_claim_lease(
+        "run_claim",
+        "client",
+        "echo",
+        "job_claim",
+        "session_old",
+        "boot_old",
+        1'000,
+        5'000,
+        true);
+    expect(
+        satsuma::evaluate_claim_recovery(safe, 5'999, "boot_new") ==
+            satsuma::ClaimRecoveryDecision::Wait,
+        "unexpired claim lease was retried");
+    expect(
+        satsuma::evaluate_claim_recovery(safe, 6'000, "boot_old") ==
+            satsuma::ClaimRecoveryDecision::Wait,
+        "same boot identity reclaimed its expired lease");
+    expect(
+        satsuma::evaluate_claim_recovery(safe, 6'000, "boot_new") ==
+            satsuma::ClaimRecoveryDecision::Retry,
+        "safe expired claim was not released after boot identity changed");
+
+    satsuma::StepClaimLease dangerous = safe;
+    dangerous.step_id = "execute";
+    dangerous.retry_safe = false;
+    expect(
+        satsuma::evaluate_claim_recovery(dangerous, 6'000, "boot_new") ==
+            satsuma::ClaimRecoveryDecision::ManualInterventionRequired,
+        "unsafe expired claim did not preserve the manual gate");
+
+    const std::filesystem::path claim_path = root / L"claim" / L"step.claim.json";
+    satsuma::write_json_atomic(claim_path, safe);
+    const satsuma::StepClaimLease loaded = satsuma::load_step_claim_lease(claim_path);
+    expect(loaded.attempt == 1 && loaded.lease_expires_unix_ms == 6'000, "claim lease round trip failed");
+}
+
 // 验证 RPC 请求的版本、实验室和状态边界。
 void test_rpc_protocol_validation() {
     satsuma::AgentHello hello;
@@ -388,6 +430,7 @@ int main() {
         test_protocol_round_trip();
         test_task_lifecycle_policy(root);
         test_run_lifecycle(root);
+        test_claim_recovery_decision(root);
         test_rpc_protocol_validation();
         test_windows_command_line();
         std::filesystem::remove_all(root);

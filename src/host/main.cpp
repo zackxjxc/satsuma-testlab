@@ -325,7 +325,10 @@ int wmain(const int argc, wchar_t* argv[]) {
             if (status == "COMPLETED") {
                 return 0;
             }
-            return status == "RECOVERY_FAILED" ? 4 : 1;
+            if (status == "RECOVERY_FAILED") {
+                return 4;
+            }
+            return status == "MANUAL_INTERVENTION_REQUIRED" ? 5 : 1;
         }
 
         satsuma::host::Controller controller(std::move(config));

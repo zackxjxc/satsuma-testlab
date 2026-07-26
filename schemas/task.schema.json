@@ -122,6 +122,7 @@
             "vm": {"$ref": "#/$defs/identifier"},
             "type": {"const": "echo"},
             "message": {"type": "string", "minLength": 1},
+            "retry_safe": {"type": "boolean"},
             "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 86400}
           }
         }
@@ -140,6 +141,7 @@
             "type": {"const": "execute"},
             "program": {"type": "string", "pattern": "^artifacts[/\\\\].+"},
             "arguments": {"type": "array", "items": {"type": "string"}},
+            "retry_safe": {"type": "boolean"},
             "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 86400},
             "collect_files": {"type": "array", "items": {"type": "string", "minLength": 1}}
           }

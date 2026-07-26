@@ -89,7 +89,8 @@ void validate_managed_snapshot(
     nlohmann::json report;
     do {
         report = controller.build_report(run_id);
-        if (report.at("complete").get<bool>()) {
+        if (report.at("complete").get<bool>() ||
+            report.value("manual_intervention_required", false)) {
             return report;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -258,6 +259,7 @@ nlohmann::json Orchestrator::execute(
     bool agent_ready = false;
     bool main_published = false;
     bool business_success = false;
+    bool manual_gate = false;
     std::string business_error;
 
     try {
@@ -315,8 +317,11 @@ nlohmann::json Orchestrator::execute(
             utc_timestamp(),
             "wait for main task results");
         output["report"] = wait_for_report(controller, manifest.run_id, timeout);
-        business_success = output["report"].at("failed_steps") == 0;
-        if (!business_success) {
+        manual_gate = output["report"].value("manual_intervention_required", false);
+        business_success = !manual_gate && output["report"].at("failed_steps") == 0;
+        if (manual_gate) {
+            append_error(business_error, "Main task requires manual intervention");
+        } else if (!business_success) {
             append_error(business_error, "Main task reported failed steps");
         }
     } catch (const std::exception& error) {
@@ -353,6 +358,18 @@ nlohmann::json Orchestrator::execute(
             business_success = false;
             append_error(business_error, error.what());
         }
+    }
+
+    if (manual_gate) {
+        persist_run_transition(
+            state_path,
+            state,
+            RunPhase::ManualInterventionRequired,
+            utc_timestamp(),
+            business_error);
+        output["status"] = "MANUAL_INTERVENTION_REQUIRED";
+        output["error"] = business_error;
+        return output;
     }
 
     if (agent_ready &&

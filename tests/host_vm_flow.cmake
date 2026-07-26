@@ -358,6 +358,205 @@ if(recovery_failed_phase_position EQUAL -1)
     message(FATAL_ERROR "Recovery failure lifecycle omitted terminal state: ${recovery_failure_state_json}")
 endif()
 
+set(manual_gate_task [=[
+{
+  "schema_version": 1,
+  "name": "host-lifecycle-manual-gate",
+  "run_id": "orchestration_manual_gate",
+  "steps": [
+    {
+      "id": "main_echo",
+      "vm": "client",
+      "type": "echo",
+      "message": "must remain blocked",
+      "retry_safe": false
+    }
+  ],
+  "lifecycle": {
+    "vms": [
+      {
+        "vm": "client",
+        "on_success": {"action": "stop"},
+        "on_failure": {"action": "restore", "snapshot": "clean"}
+      }
+    ],
+    "finally": [
+      {
+        "id": "must_not_run",
+        "vm": "client",
+        "type": "echo",
+        "message": "unsafe finally"
+      }
+    ]
+  }
+}
+]=])
+file(WRITE "${TEST_ROOT}/orchestration-manual-gate.json" "${manual_gate_task}")
+set(manual_gate_state "${archive_path}/runs/orchestration_manual_gate/lifecycle.json")
+execute_process(
+    COMMAND "${CMAKE_COMMAND}"
+        "-DVM_EXE=${VM_EXE}"
+        "-DAGENT_CONFIG=${TEST_ROOT}/agent.json"
+        "-DSHARED_ROOT=${share_path}"
+        "-DRUN_ID=orchestration_manual_gate"
+        "-DLIFECYCLE_STATE=${manual_gate_state}"
+        -P "${CMAKE_CURRENT_LIST_DIR}/inject_expired_claim_and_drive_agent.cmake"
+    COMMAND "${HOST_EXE}" orchestrate
+        --config "${TEST_ROOT}/lab.json"
+        --plan "${TEST_ROOT}/orchestration-manual-gate.json"
+        --timeout-seconds 10
+    RESULTS_VARIABLE manual_gate_results
+    OUTPUT_VARIABLE manual_gate_output
+    ERROR_VARIABLE manual_gate_error
+)
+if(NOT manual_gate_results STREQUAL "0;5")
+    message(FATAL_ERROR
+        "SatsumaHost did not stop at the manual gate (${manual_gate_results}): "
+        "${manual_gate_error}\n${manual_gate_output}")
+endif()
+string(FIND
+    "${manual_gate_output}"
+    "\"status\": \"MANUAL_INTERVENTION_REQUIRED\""
+    manual_gate_status_position)
+if(manual_gate_status_position EQUAL -1)
+    message(FATAL_ERROR "SatsumaHost omitted manual gate status: ${manual_gate_output}")
+endif()
+file(READ "${manual_gate_state}" manual_gate_state_json)
+string(FIND
+    "${manual_gate_state_json}"
+    "\"phase\": \"manual_intervention_required\""
+    manual_gate_phase_position)
+if(manual_gate_phase_position EQUAL -1)
+    message(FATAL_ERROR "Lifecycle did not persist the manual gate: ${manual_gate_state_json}")
+endif()
+if(EXISTS "${archive_path}/runs/orchestration_manual_gate/evidence/finally")
+    message(FATAL_ERROR "SatsumaHost executed finally after an unsafe claim gate")
+endif()
+
+set(claim_task_template [=[
+{
+  "schema_version": 1,
+  "protocol_version": 1,
+  "lab_id": "integration_lab",
+  "run_id": "@RUN_ID@",
+  "request_id": "request_claim_recovery",
+  "name": "claim recovery",
+  "created_at": "2026-07-26T00:00:00.000Z",
+  "artifacts": [],
+  "steps": [
+    {
+      "id": "echo",
+      "vm": "client",
+      "type": "echo",
+      "message": "claim recovery",
+      "timeout_seconds": 1,
+      "retry_safe": @RETRY_SAFE@
+    }
+  ]
+}
+]=])
+set(claim_template [=[
+{
+  "schema_version": 2,
+  "run_id": "@RUN_ID@",
+  "vm_id": "client",
+  "step_id": "echo",
+  "job_id": "job_old",
+  "session_id": "session_old",
+  "boot_id": "boot_old",
+  "claimed_at": "2026-07-26T00:00:00.000Z",
+  "claimed_unix_ms": 1000,
+  "lease_expires_unix_ms": 2000,
+  "retry_safe": @RETRY_SAFE@,
+  "attempt": 1
+}
+]=])
+
+set(safe_claim_run "claim_safe_recovery")
+string(REPLACE "@RUN_ID@" "${safe_claim_run}" safe_claim_task "${claim_task_template}")
+string(REPLACE "@RETRY_SAFE@" "true" safe_claim_task "${safe_claim_task}")
+string(REPLACE "@RUN_ID@" "${safe_claim_run}" safe_claim "${claim_template}")
+string(REPLACE "@RETRY_SAFE@" "true" safe_claim "${safe_claim}")
+file(MAKE_DIRECTORY "${share_path}/runs/${safe_claim_run}/state/client")
+file(WRITE "${share_path}/runs/${safe_claim_run}/task.json" "${safe_claim_task}")
+file(WRITE "${share_path}/runs/${safe_claim_run}/state/client/echo.claim.json" "${safe_claim}")
+execute_process(
+    COMMAND "${VM_EXE}" --config "${TEST_ROOT}/agent.json" --once
+    RESULT_VARIABLE safe_claim_result
+    OUTPUT_VARIABLE safe_claim_output
+    ERROR_VARIABLE safe_claim_error
+)
+if(NOT safe_claim_result EQUAL 0)
+    message(FATAL_ERROR "Safe claim recovery failed: ${safe_claim_error}\n${safe_claim_output}")
+endif()
+set(safe_execution "${share_path}/runs/${safe_claim_run}/results/client/echo/execution.json")
+if(NOT EXISTS "${safe_execution}")
+    message(FATAL_ERROR "Expired safe claim was not executed")
+endif()
+file(READ "${share_path}/runs/${safe_claim_run}/state/client/echo.claim.json" safe_claim_after)
+string(FIND "${safe_claim_after}" "\"attempt\": 2" safe_attempt_position)
+if(safe_attempt_position EQUAL -1)
+    message(FATAL_ERROR "Recovered safe claim did not increment attempt: ${safe_claim_after}")
+endif()
+file(GLOB safe_expired_claims
+    "${share_path}/runs/${safe_claim_run}/state/client/echo.claim.json.expired-attempt-1-*")
+list(LENGTH safe_expired_claims safe_expired_count)
+if(NOT safe_expired_count EQUAL 1)
+    message(FATAL_ERROR "Safe claim recovery did not preserve exactly one expired claim")
+endif()
+
+set(unsafe_claim_run "claim_unsafe_recovery")
+string(REPLACE "@RUN_ID@" "${unsafe_claim_run}" unsafe_claim_task "${claim_task_template}")
+string(REPLACE "@RETRY_SAFE@" "false" unsafe_claim_task "${unsafe_claim_task}")
+string(REPLACE "@RUN_ID@" "${unsafe_claim_run}" unsafe_claim "${claim_template}")
+string(REPLACE "@RETRY_SAFE@" "false" unsafe_claim "${unsafe_claim}")
+file(MAKE_DIRECTORY "${share_path}/runs/${unsafe_claim_run}/state/client")
+file(WRITE "${share_path}/runs/${unsafe_claim_run}/task.json" "${unsafe_claim_task}")
+file(WRITE "${share_path}/runs/${unsafe_claim_run}/state/client/echo.claim.json" "${unsafe_claim}")
+execute_process(
+    COMMAND "${VM_EXE}" --config "${TEST_ROOT}/agent.json" --once
+    RESULT_VARIABLE unsafe_claim_result
+    OUTPUT_VARIABLE unsafe_claim_output
+    ERROR_VARIABLE unsafe_claim_error
+)
+if(NOT unsafe_claim_result EQUAL 0)
+    message(FATAL_ERROR "Unsafe claim audit failed: ${unsafe_claim_error}\n${unsafe_claim_output}")
+endif()
+if(EXISTS "${share_path}/runs/${unsafe_claim_run}/results/client/echo/execution.json")
+    message(FATAL_ERROR "Expired unsafe claim was executed without manual approval")
+endif()
+set(unsafe_recovery
+    "${share_path}/runs/${unsafe_claim_run}/state/client/echo.claim-recovery.json")
+if(NOT EXISTS "${unsafe_recovery}")
+    message(FATAL_ERROR "Expired unsafe claim did not publish a recovery gate")
+endif()
+file(READ "${unsafe_recovery}" unsafe_recovery_json)
+string(FIND
+    "${unsafe_recovery_json}"
+    "\"status\": \"manual_intervention_required\""
+    unsafe_gate_position)
+if(unsafe_gate_position EQUAL -1)
+    message(FATAL_ERROR "Unsafe claim recovery gate has an unexpected format: ${unsafe_recovery_json}")
+endif()
+execute_process(
+    COMMAND "${HOST_EXE}" report
+        --config "${TEST_ROOT}/lab.json"
+        --run "${unsafe_claim_run}"
+    RESULT_VARIABLE unsafe_report_result
+    OUTPUT_VARIABLE unsafe_report_output
+    ERROR_VARIABLE unsafe_report_error
+)
+if(NOT unsafe_report_result EQUAL 0)
+    message(FATAL_ERROR "Unsafe claim report failed: ${unsafe_report_error}\n${unsafe_report_output}")
+endif()
+string(FIND
+    "${unsafe_report_output}"
+    "\"manual_intervention_required\": true"
+    unsafe_report_gate_position)
+if(unsafe_report_gate_position EQUAL -1)
+    message(FATAL_ERROR "Host report omitted unsafe claim gate: ${unsafe_report_output}")
+endif()
+
 execute_process(
     COMMAND "${CMAKE_COMMAND}"
         "-DVM_EXE=${VM_EXE}"

@@ -36,6 +36,7 @@ struct TaskStep {
     std::vector<std::string> arguments;     // 原样传递的进程参数
     std::string message;                    // echo 步骤内容
     int timeout_seconds{120};               // 进程树超时秒数
+    bool retry_safe{false};                 // 旧 claim 到期后是否允许新启动身份重试
     std::vector<std::filesystem::path> collect_files; // 待收集的工作目录相对路径
 };
 

@@ -47,6 +47,7 @@ else()
 endif()
 
 add_library(SatsumaCore STATIC
+    src/core/claim.cpp
     src/core/config.cpp
     src/core/endpoint.cpp
     src/core/id.cpp

@@ -5,6 +5,7 @@
 #include <chrono>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <thread>
 #include <vector>
 
@@ -12,6 +13,7 @@
 #include <windows.h>
 
 #include "satsuma/core/errors.hpp"
+#include "satsuma/core/claim.hpp"
 #include "satsuma/core/id.hpp"
 #include "satsuma/core/json_io.hpp"
 #include "satsuma/core/path.hpp"
@@ -54,6 +56,22 @@ namespace {
         throw Error("Cannot persist claim file (Win32 error " + std::to_string(error) + ")");
     }
     return true;
+}
+
+// 原子归档过期 claim；并发下只有一个 Agent 能成功取得回收权。
+[[nodiscard]] bool archive_expired_claim(
+    const std::filesystem::path& path,
+    const std::uint32_t attempt) {
+    std::filesystem::path archived = path;
+    archived += path_from_utf8(".expired-attempt-" + std::to_string(attempt) + "-" + make_id("claim"));
+    if (MoveFileExW(path.c_str(), archived.c_str(), MOVEFILE_WRITE_THROUGH)) {
+        return true;
+    }
+    const DWORD error = GetLastError();
+    if (error == ERROR_FILE_NOT_FOUND || error == ERROR_ALREADY_EXISTS) {
+        return false;
+    }
+    throw Error("Cannot archive expired claim file (Win32 error " + std::to_string(error) + ")");
 }
 
 // 使用 Win32 写穿方式创建 UTF-8 日志。
@@ -162,19 +180,73 @@ int Agent::run_once() {
                 std::filesystem::path(L"state") /
                     path_from_utf8(config_.vm_id) /
                     path_from_utf8(step.id + ".claim.json"));
-            const nlohmann::json claim = {
-                {"schema_version", 1},
-                {"run_id", manifest.run_id},
-                {"vm_id", config_.vm_id},
-                {"step_id", step.id},
-                {"job_id", job_id},
-                {"session_id", session_id_},
-                {"boot_id", boot_id_},
-                {"claimed_at", utc_timestamp()},
-            };
+            const std::filesystem::path recovery_path = resolve_under_root(
+                run_directory,
+                std::filesystem::path(L"state") /
+                    path_from_utf8(config_.vm_id) /
+                    path_from_utf8(step.id + ".claim-recovery.json"));
+            std::uint32_t attempt = 1;  // 首次领取从 1 开始
+            if (std::filesystem::is_regular_file(claim_path)) {
+                StepClaimLease existing;
+                try {
+                    existing = load_step_claim_lease(claim_path);
+                } catch (const std::exception& error) {
+                    write_json_atomic(recovery_path, {
+                        {"schema_version", 1},
+                        {"status", "manual_intervention_required"},
+                        {"reason", "claim cannot be parsed as a version 2 lease"},
+                        {"error", error.what()},
+                        {"observed_at", utc_timestamp()},
+                    });
+                    continue;
+                }
+
+                const ClaimRecoveryDecision decision = evaluate_claim_recovery(
+                    existing,
+                    unix_time_ms(),
+                    boot_id_);
+                if (decision == ClaimRecoveryDecision::Wait) {
+                    continue;
+                }
+                if (decision == ClaimRecoveryDecision::ManualInterventionRequired) {
+                    write_json_atomic(recovery_path, {
+                        {"schema_version", 1},
+                        {"status", "manual_intervention_required"},
+                        {"reason", "expired claim belongs to an unsafe step"},
+                        {"claim", existing},
+                        {"current_boot_id", boot_id_},
+                        {"observed_at", utc_timestamp()},
+                    });
+                    continue;
+                }
+                if (!archive_expired_claim(claim_path, existing.attempt)) {
+                    continue;
+                }
+                if (existing.attempt == std::numeric_limits<std::uint32_t>::max()) {
+                    throw Error("Step claim attempt limit has been reached");
+                }
+                attempt = existing.attempt + 1;
+            }
+
+            constexpr std::int64_t claim_grace_ms = 30'000;
+            const std::int64_t lease_duration_ms =
+                static_cast<std::int64_t>(step.timeout_seconds) * 1'000 + claim_grace_ms;
+            const StepClaimLease claim = make_step_claim_lease(
+                manifest.run_id,
+                config_.vm_id,
+                step.id,
+                job_id,
+                session_id_,
+                boot_id_,
+                unix_time_ms(),
+                lease_duration_ms,
+                step.retry_safe,
+                attempt);
             if (!create_claim(claim_path, claim)) {
                 continue;
             }
+            std::error_code marker_error;
+            std::filesystem::remove(recovery_path, marker_error);
 
             execute_step(run_directory, manifest, step, job_id);
             ++executed_steps;
