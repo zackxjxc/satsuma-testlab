@@ -85,7 +85,7 @@ add_executable(SatsumaVM
     src/vm/rpc_client.cpp
 )
 target_include_directories(SatsumaVM PRIVATE src/vm)
-target_link_libraries(SatsumaVM PRIVATE SatsumaCore ${SATSUMA_YLT_TARGET})
+target_link_libraries(SatsumaVM PRIVATE SatsumaCore ${SATSUMA_YLT_TARGET} ws2_32)
 
 set_target_properties(SatsumaHost SatsumaVM PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"

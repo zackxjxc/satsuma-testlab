@@ -73,6 +73,40 @@ void test_endpoint_parser() {
     }
 }
 
+// 验证 RPC 服务不可用时，Client 可以安全清理并再次连接。
+void test_unavailable_server_retry(const std::filesystem::path& root) {
+    const unsigned short port = find_available_port();
+    satsuma::AgentConfig config;
+    config.lab_id = "rpc_unavailable_test";
+    config.vm_id = "client";
+    config.agent_version = "0.1.0";
+    config.host = "127.0.0.1:" + std::to_string(port);
+    config.shared_root = root / L"share";
+    config.local_work_root = root / L"work";
+    config.rpc_timeout_ms = 200;
+
+    satsuma::vm::RpcClient client(config, "session_1", "boot_1");
+    for (int attempt = 0; attempt < 2; ++attempt) {
+        try {
+            static_cast<void>(client.connect());
+            throw std::runtime_error("RPC Client connected to an unavailable server");
+        } catch (const satsuma::Error&) {
+        }
+        expect(!client.connected(), "failed RPC Client remained connected");
+        client.disconnect();
+    }
+
+    config.host = "192.0.2.1:9";
+    config.rpc_timeout_ms = 50;
+    satsuma::vm::RpcClient timeout_client(config, "session_2", "boot_2");
+    try {
+        static_cast<void>(timeout_client.connect());
+        throw std::runtime_error("RPC Client connected to a TEST-NET endpoint");
+    } catch (const satsuma::Error&) {
+    }
+    expect(!timeout_client.connected(), "timed out RPC Client remained connected");
+}
+
 // 验证本机临时端口的启动和跨线程停止。
 void test_server_lifecycle(const std::filesystem::path& root) {
     const unsigned short port = find_available_port();
@@ -147,6 +181,7 @@ int main() {
         std::filesystem::temp_directory_path() / satsuma::path_from_utf8(satsuma::make_id("rpc-server-test"));
     try {
         test_endpoint_parser();
+        test_unavailable_server_retry(root);
         test_server_lifecycle(root);
         std::filesystem::remove_all(root);
         std::cout << "SatsumaRpcServerTests passed\n";
