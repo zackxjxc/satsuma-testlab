@@ -146,6 +146,26 @@ void test_server_lifecycle(const std::filesystem::path& root) {
         expect(session.accepted && client.connected(), "RPC Agent registration failed");
         const satsuma::HostDirective directive = client.heartbeat("idle", "");
         expect(directive.action == "poll", "RPC heartbeat did not return poll directive");
+
+        // 跨线程误用必须在进入第三方 Client 前失败，且不能破坏 owner 线程上的连接。
+        bool foreign_thread_rejected = false;
+        std::exception_ptr foreign_thread_error;
+        std::thread foreign_thread([&client, &foreign_thread_rejected, &foreign_thread_error] {
+            try {
+                static_cast<void>(client.heartbeat("idle", ""));
+            } catch (const satsuma::Error& error) {
+                foreign_thread_rejected =
+                    std::string(error.what()) == "RPC Client cannot be used from a different thread";
+            } catch (...) {
+                foreign_thread_error = std::current_exception();
+            }
+        });
+        foreign_thread.join();
+        if (foreign_thread_error != nullptr) {
+            std::rethrow_exception(foreign_thread_error);
+        }
+        expect(foreign_thread_rejected, "RPC Client accepted a call from a foreign thread");
+
         const satsuma::TaskReference task = client.poll_task();
         expect(!task.has_task, "RPC poll returned an unexpected task");
 
@@ -173,6 +193,79 @@ void test_server_lifecycle(const std::filesystem::path& root) {
     }
 }
 
+// 验证 Server 停止后 Client 有限清理，并能连接同端口上的新 Server。
+void test_server_restart_recovery(const std::filesystem::path& root) {
+    const unsigned short port = find_available_port();
+    satsuma::LabConfig config;
+    config.lab_id = "rpc_restart_test";
+    config.host.listen = "127.0.0.1:" + std::to_string(port);
+    config.shared_folder.host_root = root / L"restart-share";
+    satsuma::VmConfig vm;
+    vm.id = "client";
+    vm.agent_version = "0.1.0";
+    config.vms.push_back(std::move(vm));
+
+    satsuma::AgentConfig agent_config;
+    agent_config.lab_id = config.lab_id;
+    agent_config.vm_id = "client";
+    agent_config.agent_version = "0.1.0";
+    agent_config.host = config.host.listen;
+    agent_config.shared_root = config.shared_folder.host_root;
+    agent_config.local_work_root = root / L"restart-work";
+    agent_config.rpc_timeout_ms = 200;
+    satsuma::vm::RpcClient client(agent_config, "session_restart", "boot_restart");
+
+    {
+        satsuma::host::RpcServer server(config);
+        std::exception_ptr server_error;
+        std::thread server_thread([&server, &server_error] {
+            try {
+                server.start();
+            } catch (...) {
+                server_error = std::current_exception();
+            }
+        });
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        expect(client.connect().accepted, "RPC Client did not connect before Server restart");
+        server.stop();
+        server_thread.join();
+        if (server_error != nullptr) {
+            std::rethrow_exception(server_error);
+        }
+    }
+
+    const auto disconnect_started = std::chrono::steady_clock::now();
+    try {
+        static_cast<void>(client.heartbeat("idle", ""));
+        throw std::runtime_error("RPC heartbeat succeeded after Server stopped");
+    } catch (const satsuma::Error&) {
+    }
+    client.disconnect();
+    const auto disconnect_duration = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - disconnect_started);
+    expect(disconnect_duration < std::chrono::seconds(2), "RPC disconnect exceeded its bounded wait");
+
+    {
+        satsuma::host::RpcServer server(config);
+        std::exception_ptr server_error;
+        std::thread server_thread([&server, &server_error] {
+            try {
+                server.start();
+            } catch (...) {
+                server_error = std::current_exception();
+            }
+        });
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        expect(client.connect().accepted, "RPC Client did not reconnect after Server restart");
+        client.disconnect();
+        server.stop();
+        server_thread.join();
+        if (server_error != nullptr) {
+            std::rethrow_exception(server_error);
+        }
+    }
+}
+
 }  // namespace
 
 // 运行 RPC Server 测试并清理本次专用临时目录。
@@ -183,6 +276,7 @@ int main() {
         test_endpoint_parser();
         test_unavailable_server_retry(root);
         test_server_lifecycle(root);
+        test_server_restart_recovery(root);
         std::filesystem::remove_all(root);
         std::cout << "SatsumaRpcServerTests passed\n";
         return 0;

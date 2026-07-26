@@ -3,10 +3,12 @@
 
 #include <algorithm>
 #include <chrono>
+#include <condition_variable>
 #include <fstream>
 #include <iostream>
 #include <limits>
-#include <thread>
+#include <mutex>
+#include <utility>
 #include <vector>
 
 #include <nlohmann/json.hpp>
@@ -17,10 +19,29 @@
 #include "satsuma/core/id.hpp"
 #include "satsuma/core/json_io.hpp"
 #include "satsuma/core/path.hpp"
+#include "rpc_client.hpp"
 #include "satsuma/core/sha256.hpp"
 
 namespace satsuma::vm {
 namespace {
+
+// 在轮询间隔内等待停止请求，收到请求时立即返回。
+[[nodiscard]] bool wait_for_stop(
+    const std::stop_token stop_token,
+    const std::chrono::milliseconds delay) {
+    std::mutex mutex;
+    std::condition_variable_any condition;
+    std::unique_lock lock(mutex);
+    condition.wait_for(lock, stop_token, delay, [] { return false; });
+    return stop_token.stop_requested();
+}
+
+// 在可取消操作边界统一转换停止请求。
+void throw_if_stop_requested(const std::stop_token stop_token) {
+    if (stop_token.stop_requested()) {
+        throw Error("Agent stop requested");
+    }
+}
 
 // 独占创建 claim 文件；已存在表示步骤已由其他会话领取。
 [[nodiscard]] bool create_claim(const std::filesystem::path& path, const nlohmann::json& value) {
@@ -132,10 +153,12 @@ void publish_log(const std::filesystem::path& partial, const std::filesystem::pa
 Agent::Agent(AgentConfig config)
     : config_(std::move(config)),
       session_id_(make_id("session")),
-      boot_id_(make_id("boot")),
-      rpc_client_(config_, session_id_, boot_id_) {}
+      boot_id_(make_id("boot")) {}
 
-int Agent::run_once() {
+int Agent::run_once(const std::stop_token stop_token) {
+    if (stop_token.stop_requested()) {
+        return 0;
+    }
     const std::filesystem::path runs_root = config_.shared_root / L"runs";
     std::filesystem::create_directories(runs_root);
 
@@ -152,6 +175,9 @@ int Agent::run_once() {
 
     int executed_steps = 0;
     for (const auto& run_directory : run_directories) {
+        if (stop_token.stop_requested()) {
+            break;
+        }
         const RunManifest manifest = load_run_manifest(run_directory / L"task.json");
         if (manifest.lab_id != config_.lab_id || manifest.protocol_version != config_.protocol_version) {
             continue;
@@ -161,6 +187,9 @@ int Agent::run_once() {
         }
 
         for (const auto& step : manifest.steps) {
+            if (stop_token.stop_requested()) {
+                return executed_steps;
+            }
             if (step.vm != config_.vm_id) {
                 continue;
             }
@@ -248,35 +277,32 @@ int Agent::run_once() {
             std::error_code marker_error;
             std::filesystem::remove(recovery_path, marker_error);
 
-            execute_step(run_directory, manifest, step, job_id);
+            execute_step(run_directory, manifest, step, job_id, stop_token);
             ++executed_steps;
         }
     }
     return executed_steps;
 }
 
-[[noreturn]] void Agent::run_watch() {
-    for (;;) {
-        bool rpc_available = false;
+void Agent::run_watch(const std::stop_token stop_token) {
+    while (!stop_token.stop_requested()) {
         bool file_channel_available = false;
         try {
-            static_cast<void>(synchronize_rpc());
-            rpc_available = true;
-        } catch (const std::exception& error) {
-            rpc_client_.disconnect();
-            std::cerr << "SatsumaVM RPC unavailable: " << error.what() << '\n';
-        }
-        try {
             write_presence();
-            static_cast<void>(run_once());
+            static_cast<void>(run_once(stop_token));
             file_channel_available = true;
         } catch (const std::exception& error) {
+            if (stop_token.stop_requested()) {
+                break;
+            }
             std::cerr << "SatsumaVM file channel unavailable: " << error.what() << '\n';
         }
-        const int delay_ms = rpc_available && file_channel_available
+        const int delay_ms = file_channel_available
             ? config_.poll_interval_ms
             : config_.reconnect_interval_ms;
-        std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
+        if (wait_for_stop(stop_token, std::chrono::milliseconds(delay_ms))) {
+            break;
+        }
     }
 }
 
@@ -298,10 +324,12 @@ void Agent::write_presence() const {
 }
 
 bool Agent::synchronize_rpc() {
-    if (!rpc_client_.connected()) {
-        static_cast<void>(rpc_client_.connect());
+    RpcClient client(config_, session_id_, boot_id_);
+    if (!client.connected()) {
+        static_cast<void>(client.connect());
     }
-    const HostDirective directive = rpc_client_.heartbeat("idle", "");
+
+    const HostDirective directive = client.heartbeat("idle", "");
     if (directive.action == "stop") {
         throw Error("Host stopped the Agent session: " + directive.message);
     }
@@ -309,7 +337,7 @@ bool Agent::synchronize_rpc() {
         return false;
     }
 
-    const TaskReference task = rpc_client_.poll_task();
+    const TaskReference task = client.poll_task();
     if (task.type == "error") {
         throw Error("Host task polling failed: " + task.manifest);
     }
@@ -323,8 +351,10 @@ bool Agent::synchronize_rpc() {
 void Agent::deploy_artifacts(
     const std::filesystem::path& run_directory,
     const std::filesystem::path& local_run_directory,
-    const RunManifest& manifest) const {
+    const RunManifest& manifest,
+    const std::stop_token stop_token) const {
     for (const auto& artifact : manifest.artifacts) {
+        throw_if_stop_requested(stop_token);
         if (artifact.vm != config_.vm_id) {
             continue;
         }
@@ -350,7 +380,8 @@ void Agent::execute_step(
     const std::filesystem::path& run_directory,
     const RunManifest& manifest,
     const TaskStep& step,
-    const std::string& job_id) {
+    const std::string& job_id,
+    const std::stop_token stop_token) {
     const std::filesystem::path result_directory = resolve_under_root(
         run_directory,
         std::filesystem::path(L"results") / path_from_utf8(config_.vm_id) / path_from_utf8(step.id));
@@ -370,9 +401,9 @@ void Agent::execute_step(
     result.stdout_path = path_to_utf8(std::filesystem::relative(stdout_final, run_directory));
     result.stderr_path = path_to_utf8(std::filesystem::relative(stderr_final, run_directory));
     write_state(run_directory, "running", job_id);
-    report_job_state(manifest, step, job_id, "running", std::nullopt);
 
     try {
+        throw_if_stop_requested(stop_token);
         const auto start_time = std::chrono::steady_clock::now();
         if (step.type == "echo") {
             write_text(stdout_partial, step.message + "\n");
@@ -389,7 +420,7 @@ void Agent::execute_step(
                 config_.local_work_root,
                 path_from_utf8(manifest.run_id));
             std::filesystem::create_directories(local_run_directory);
-            deploy_artifacts(run_directory, local_run_directory, manifest);
+            deploy_artifacts(run_directory, local_run_directory, manifest, stop_token);
 
             ProcessRequest request;
             request.program = resolve_under_root(local_run_directory, step.program);
@@ -398,12 +429,14 @@ void Agent::execute_step(
             request.stdout_path = stdout_partial;
             request.stderr_path = stderr_partial;
             request.timeout = std::chrono::seconds(step.timeout_seconds);
+            request.stop_token = stop_token;
             const ProcessResult process_result = runner_.run(request);
             result.exit_code = process_result.exit_code;
             result.timed_out = process_result.timed_out;
             result.duration_ms = process_result.duration_ms;
 
             for (const auto& collect_file : step.collect_files) {
+                throw_if_stop_requested(stop_token);
                 const std::filesystem::path source = resolve_under_root(local_run_directory, collect_file);
                 if (!std::filesystem::is_regular_file(source)) {
                     throw Error("Declared result file does not exist: " + path_to_utf8(collect_file));
@@ -439,7 +472,6 @@ void Agent::execute_step(
     result.finished_at = utc_timestamp();
     write_json_atomic(result_directory / L"execution.json", result);
     write_state(run_directory, "idle", "");
-    report_job_state(manifest, step, job_id, result.status, result.exit_code);
 }
 
 void Agent::write_state(
@@ -460,34 +492,6 @@ void Agent::write_state(
     write_json_atomic(
         run_directory / L"state" / path_from_utf8(config_.vm_id + "-agent.json"),
         state);
-}
-
-void Agent::report_job_state(
-    const RunManifest& manifest,
-    const TaskStep& step,
-    const std::string& job_id,
-    const std::string& status,
-    const std::optional<std::uint32_t>& exit_code) {
-    if (!rpc_client_.connected()) {
-        return;
-    }
-
-    try {
-        JobStatus request;
-        request.run_id = manifest.run_id;
-        request.job_id = job_id;
-        request.step_id = step.id;
-        request.status = status;
-        request.has_exit_code = exit_code.has_value();
-        request.exit_code = exit_code.value_or(0);
-        const RpcAck response = rpc_client_.report_job(std::move(request));
-        if (!response.accepted) {
-            throw Error("Host rejected Job status: " + response.message);
-        }
-    } catch (const std::exception& error) {
-        rpc_client_.disconnect();
-        std::cerr << "SatsumaVM Job RPC unavailable: " << error.what() << '\n';
-    }
 }
 
 }  // namespace satsuma::vm

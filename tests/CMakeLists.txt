@@ -31,6 +31,24 @@ if(MSVC)
 endif()
 add_test(NAME SatsumaVmAutostartTests COMMAND SatsumaVmAutostartTests)
 
+add_executable(
+    SatsumaVmAgentTests
+    vm_agent_tests.cpp
+    ../src/vm/agent.cpp
+    ../src/vm/process_runner.cpp
+    ../src/vm/rpc_client.cpp
+)
+target_include_directories(SatsumaVmAgentTests PRIVATE ../src/vm)
+target_link_libraries(SatsumaVmAgentTests PRIVATE SatsumaCore ${SATSUMA_YLT_TARGET} ws2_32)
+if(MSVC)
+    target_compile_options(
+        SatsumaVmAgentTests
+        PRIVATE /W4 /permissive- /utf-8 /EHsc /external:anglebrackets /external:W0
+    )
+endif()
+add_test(NAME SatsumaVmAgentTests COMMAND SatsumaVmAgentTests "$<TARGET_FILE:SatsumaTestFixture>")
+set_tests_properties(SatsumaVmAgentTests PROPERTIES TIMEOUT 15)
+
 add_test(
     NAME SatsumaDemoAppTest
     COMMAND "${CMAKE_COMMAND}"

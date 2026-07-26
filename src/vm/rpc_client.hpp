@@ -9,7 +9,7 @@
 
 namespace satsuma::vm {
 
-// 管理单个 VM Agent 的 RPC 连接和版本化请求身份。
+// 管理单个 VM Agent 的 RPC 连接和版本化请求身份；连接后的全部操作必须留在同一线程。
 class RpcClient {
 public:
     // 绑定 Agent 配置和当前进程会话身份。

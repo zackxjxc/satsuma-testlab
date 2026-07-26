@@ -116,6 +116,17 @@ void ensure_win32(const BOOL success, const char* operation) {
     }
 }
 
+// 终止已分配到 Job Object 的进程树并返回稳定停止错误。
+[[noreturn]] void cancel_job(const HANDLE job, const HANDLE process) {
+    if (!TerminateJobObject(job, ERROR_OPERATION_ABORTED)) {
+        throw Error(
+            "Agent stop requested; TerminateJobObject failed with Win32 error " +
+            std::to_string(GetLastError()));
+    }
+    WaitForSingleObject(process, 5'000);
+    throw Error("Agent stop requested");
+}
+
 }  // namespace
 
 ProcessResult ProcessRunner::run(const ProcessRequest& request) const {
@@ -129,6 +140,9 @@ ProcessResult ProcessRunner::run(const ProcessRequest& request) const {
         request.timeout.count() > static_cast<std::int64_t>(std::numeric_limits<DWORD>::max())) {
         throw Error("Process timeout is outside the supported range");
     }
+    if (request.stop_token.stop_requested()) {
+        throw Error("Agent stop requested");
+    }
 
     UniqueHandle standard_output = open_log(request.stdout_path);
     UniqueHandle standard_error = open_log(request.stderr_path);
@@ -137,6 +151,13 @@ ProcessResult ProcessRunner::run(const ProcessRequest& request) const {
     if (!job) {
         throw Error("CreateJobObjectW failed with Win32 error " + std::to_string(GetLastError()));
     }
+    UniqueHandle cancel_event(CreateEventW(nullptr, TRUE, FALSE, nullptr));
+    if (!cancel_event) {
+        throw Error("CreateEventW failed with Win32 error " + std::to_string(GetLastError()));
+    }
+    std::stop_callback stop_callback(
+        request.stop_token,
+        [event = cancel_event.get()] { SetEvent(event); });
 
     JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
     limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
@@ -172,18 +193,28 @@ ProcessResult ProcessRunner::run(const ProcessRequest& request) const {
     UniqueHandle thread(process_info.hThread);
     try {
         ensure_win32(AssignProcessToJobObject(job.get(), process.get()), "AssignProcessToJobObject");
+        if (WaitForSingleObject(cancel_event.get(), 0) == WAIT_OBJECT_0) {
+            cancel_job(job.get(), process.get());
+        }
         if (ResumeThread(thread.get()) == static_cast<DWORD>(-1)) {
             throw Error("ResumeThread failed with Win32 error " + std::to_string(GetLastError()));
         }
 
-        const DWORD wait_result = WaitForSingleObject(process.get(), static_cast<DWORD>(request.timeout.count()));
+        const HANDLE wait_handles[] = {process.get(), cancel_event.get()};
+        const DWORD wait_result = WaitForMultipleObjects(
+            2,
+            wait_handles,
+            FALSE,
+            static_cast<DWORD>(request.timeout.count()));
         ProcessResult result;
         if (wait_result == WAIT_TIMEOUT) {
             result.timed_out = true;
             ensure_win32(TerminateJobObject(job.get(), ERROR_TIMEOUT), "TerminateJobObject");
             WaitForSingleObject(process.get(), 5'000);
+        } else if (wait_result == WAIT_OBJECT_0 + 1) {
+            cancel_job(job.get(), process.get());
         } else if (wait_result != WAIT_OBJECT_0) {
-            throw Error("WaitForSingleObject failed with Win32 error " + std::to_string(GetLastError()));
+            throw Error("WaitForMultipleObjects failed with Win32 error " + std::to_string(GetLastError()));
         }
 
         DWORD exit_code = 0;

@@ -10,8 +10,10 @@
 #include <ws2tcpip.h>
 
 #include <chrono>
+#include <exception>
 #include <memory>
 #include <string>
+#include <thread>
 #include <utility>
 
 #include <async_simple/coro/SyncAwait.h>
@@ -113,19 +115,30 @@ struct RpcClient::Impl {
         validate_identifier(boot_id, "boot_id");
     }
 
+    // 拒绝从创建底层连接之外的线程调用 coro_rpc。
+    void require_connection_thread() const {
+        if (client != nullptr && connection_thread != std::this_thread::get_id()) {
+            throw Error("RPC Client cannot be used from a different thread");
+        }
+    }
+
     // 调用一个版本化 RPC，并把传输错误转换为 Satsuma Error。
     template <auto Function, typename Request>
     [[nodiscard]] auto call(Request request) {
         if (client == nullptr) {
             throw Error("RPC Client is not connected");
         }
+        require_connection_thread();
         auto result = async_simple::coro::syncAwait(
             client->call_for<Function>(
                 std::chrono::milliseconds(config.rpc_timeout_ms),
                 std::move(request)));
+        // call_for 的 promise 先于 handler 擦除完成；同线程屏障保证下一次操作不与回调尾部重叠。
+        async_simple::coro::syncAwait(coro_io::post(
+            [] {},
+            &client->get_executor()));
         if (!result) {
             registered = false;
-            client->close();
             throw Error("RPC call failed: " + result.error().msg);
         }
         return std::move(result).value();
@@ -135,6 +148,7 @@ struct RpcClient::Impl {
     std::string session_id;                              // 当前会话 ID
     std::string boot_id;                                 // 当前启动 ID
     std::unique_ptr<coro_rpc::coro_rpc_client> client;   // yalantinglibs Client
+    std::thread::id connection_thread;                   // 底层 Client 所在线程
     bool registered{false};                              // Host 是否接受会话
 };
 
@@ -149,8 +163,10 @@ RpcClient::~RpcClient() {
 }
 
 SessionInfo RpcClient::connect() {
+    impl_->require_connection_thread();
     disconnect();
     impl_->client = std::make_unique<coro_rpc::coro_rpc_client>();
+    impl_->connection_thread = std::this_thread::get_id();
     const TcpEndpoint endpoint = parse_tcp_endpoint(impl_->config.host);
     if (!tcp_endpoint_reachable(
             endpoint,
@@ -167,6 +183,9 @@ SessionInfo RpcClient::connect() {
         disconnect();
         throw Error("RPC connect failed: " + std::string(error.message()));
     }
+    async_simple::coro::syncAwait(coro_io::post(
+        [] {},
+        &impl_->client->get_executor()));
 
     AgentHello request;
     request.lab_id = impl_->config.lab_id;
@@ -216,18 +235,22 @@ RpcAck RpcClient::report_job(JobStatus status) {
 }
 
 void RpcClient::disconnect() noexcept {
-    if (impl_->client != nullptr) {
-        impl_->client->close();
-        try {
-            async_simple::coro::syncAwait(coro_io::post(
-                [] {},
-                &impl_->client->get_executor()));
-        } catch (...) {
-            // disconnect 不向析构路径传播关闭错误
-        }
-        impl_->client.reset();
-    }
     impl_->registered = false;
+    if (impl_->client == nullptr) {
+        return;
+    }
+    if (impl_->connection_thread != std::this_thread::get_id()) {
+        std::terminate();
+    }
+
+    // Client 的关闭和析构必须留在创建连接的线程；异步回调由其内部共享状态保活。
+    std::unique_ptr<coro_rpc::coro_rpc_client> client = std::move(impl_->client);
+    impl_->connection_thread = {};
+    try {
+        client->close();
+    } catch (...) {
+        // disconnect 不向析构路径传播关闭错误
+    }
 }
 
 bool RpcClient::connected() const noexcept {

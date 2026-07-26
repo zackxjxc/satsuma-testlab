@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <optional>
+#include <stop_token>
 #include <string>
 #include <vector>
 
@@ -18,6 +19,7 @@ struct ProcessRequest {
     std::filesystem::path stdout_path;      // 持续落盘的 stdout 路径
     std::filesystem::path stderr_path;      // 持续落盘的 stderr 路径
     std::chrono::milliseconds timeout;      // 完整进程树超时
+    std::stop_token stop_token;             // Agent 生命周期停止信号
 };
 
 // 单次进程执行的低层结果。

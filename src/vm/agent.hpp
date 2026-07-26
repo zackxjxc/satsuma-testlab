@@ -1,15 +1,13 @@
 // VM Agent 任务领取、执行和结果落盘接口。
 #pragma once
 
-#include <cstdint>
 #include <filesystem>
-#include <optional>
+#include <stop_token>
 #include <string>
 
 #include "satsuma/core/config.hpp"
 #include "satsuma/core/task.hpp"
 #include "process_runner.hpp"
-#include "rpc_client.hpp"
 
 namespace satsuma::vm {
 
@@ -20,10 +18,10 @@ public:
     explicit Agent(AgentConfig config);
 
     // 扫描一次共享目录并返回新执行的步骤数。
-    [[nodiscard]] int run_once();
+    [[nodiscard]] int run_once(std::stop_token stop_token = {});
 
-    // 按配置的间隔持续扫描共享目录。
-    [[noreturn]] void run_watch();
+    // 按配置的间隔持续扫描共享目录，直到收到停止请求。
+    void run_watch(std::stop_token stop_token = {});
 
     // 完成一次连接、心跳和任务通知同步。
     [[nodiscard]] bool synchronize_rpc();
@@ -34,13 +32,15 @@ private:
         const std::filesystem::path& run_directory,
         const RunManifest& manifest,
         const TaskStep& step,
-        const std::string& job_id);
+        const std::string& job_id,
+        std::stop_token stop_token);
 
     // 部署并校验当前 VM 的全部 Artifact。
     void deploy_artifacts(
         const std::filesystem::path& run_directory,
         const std::filesystem::path& local_run_directory,
-        const RunManifest& manifest) const;
+        const RunManifest& manifest,
+        std::stop_token stop_token) const;
 
     // 写入当前运行可见的 Agent 状态。
     void write_state(
@@ -51,19 +51,10 @@ private:
     // 原子发布跨运行可见的 Agent 就绪状态。
     void write_presence() const;
 
-    // 尽力向 Host 上报 Job 状态，不影响文件通道执行结果。
-    void report_job_state(
-        const RunManifest& manifest,
-        const TaskStep& step,
-        const std::string& job_id,
-        const std::string& status,
-        const std::optional<std::uint32_t>& exit_code);
-
     AgentConfig config_;       // 当前 VM Agent 配置
     std::string session_id_;   // 当前进程会话 ID
     std::string boot_id_;      // 当前进程启动 ID
     ProcessRunner runner_;     // Windows Job Object 执行器
-    RpcClient rpc_client_;     // Host RPC 客户端
 };
 
 }  // namespace satsuma::vm

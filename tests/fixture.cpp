@@ -12,6 +12,7 @@ int main(const int argc, char* argv[]) {
     try {
         std::string message = "fixture-ok";
         std::filesystem::path output_path;
+        std::filesystem::path ready_path;  // 进程进入测试主体后的同步标记
         int sleep_ms = 0;
         for (int index = 1; index < argc; ++index) {
             const std::string argument = argv[index];
@@ -19,6 +20,8 @@ int main(const int argc, char* argv[]) {
                 message = argv[++index];
             } else if (argument == "--output" && index + 1 < argc) {
                 output_path = argv[++index];
+            } else if (argument == "--ready-file" && index + 1 < argc) {
+                ready_path = argv[++index];
             } else if (argument == "--sleep-ms" && index + 1 < argc) {
                 sleep_ms = std::stoi(argv[++index]);
             } else {
@@ -26,6 +29,16 @@ int main(const int argc, char* argv[]) {
             }
         }
 
+        if (!ready_path.empty()) {
+            if (!ready_path.parent_path().empty()) {
+                std::filesystem::create_directories(ready_path.parent_path());
+            }
+            std::ofstream ready(ready_path, std::ios::binary);
+            ready << "ready\n";
+            if (!ready) {
+                throw std::runtime_error("failed to write fixture ready marker");
+            }
+        }
         if (sleep_ms > 0) {
             std::this_thread::sleep_for(std::chrono::milliseconds(sleep_ms));
         }
