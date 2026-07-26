@@ -634,6 +634,17 @@ string(FIND "${check_output}" "\"status\": \"passed\"" check_agent_position)
 if(check_agent_position EQUAL -1)
     message(FATAL_ERROR "SatsumaHost active check did not confirm the Agent: ${check_output}")
 endif()
+file(GLOB diagnostic_claims "${share_path}/runs/check-*/state/client/client.claim.json")
+list(LENGTH diagnostic_claims diagnostic_claim_count)
+if(diagnostic_claim_count LESS 1)
+    message(FATAL_ERROR "SatsumaHost active check did not create a diagnostic claim")
+endif()
+list(GET diagnostic_claims -1 diagnostic_claim_path)
+file(READ "${diagnostic_claim_path}" diagnostic_claim_json)
+string(FIND "${diagnostic_claim_json}" "\"retry_safe\": true" diagnostic_retry_position)
+if(diagnostic_retry_position EQUAL -1)
+    message(FATAL_ERROR "Diagnostic echo claim was not marked retry-safe: ${diagnostic_claim_json}")
+endif()
 
 execute_process(
     COMMAND "${HOST_EXE}" vm start --id client

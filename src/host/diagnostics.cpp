@@ -213,6 +213,7 @@ nlohmann::json Diagnostics::run_probe(
         step.type = "echo";
         step.message = "satsuma-diagnostic:" + *plan.run_id + ":" + vm->id;
         step.timeout_seconds = static_cast<int>(timeout.count());
+        step.retry_safe = true;
         plan.steps.push_back(std::move(step));
     }
 
