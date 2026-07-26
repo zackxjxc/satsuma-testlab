@@ -5,6 +5,7 @@
 /out/
 /cmake-build-*/
 /CMakeUserPresets.json
+/lab.local.json
 *.user
 *.suo
 *.VC.db

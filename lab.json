@@ -4,7 +4,7 @@
   "lab_id": "local_windows_lab",
   "provider": {
     "type": "vmware_workstation",
-    "vmrun": "C:\\Program Files\\VMware\\VMware Workstation\\vmrun.exe"
+    "vmrun": "C:\\Program Files (x86)\\VMware\\VMware Workstation\\vmrun.exe"
   },
   "host": {
     "listen": "192.168.250.1:37100",
@@ -24,20 +24,7 @@
         "base": "clean",
         "ai_prefix": "satsuma-ai-",
         "max_ai_snapshots": 8
-      },
-      "management_ip": "192.168.250.11"
-    },
-    {
-      "id": "gateway",
-      "role": "gateway",
-      "vmx": "D:\\VM\\Gateway\\Gateway.vmx",
-      "agent_version": "0.1.0",
-      "snapshots": {
-        "base": "clean",
-        "ai_prefix": "satsuma-ai-",
-        "max_ai_snapshots": 8
-      },
-      "management_ip": "192.168.250.12"
+      }
     }
   ]
 }

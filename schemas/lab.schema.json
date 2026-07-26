@@ -42,7 +42,7 @@
       "items": {
         "type": "object",
         "additionalProperties": true,
-        "required": ["id", "vmx", "agent_version", "snapshots", "management_ip"],
+        "required": ["id", "vmx", "agent_version", "snapshots"],
         "properties": {
           "id": {"$ref": "#/$defs/identifier"},
           "role": {"type": "string", "minLength": 1},

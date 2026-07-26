@@ -40,7 +40,7 @@ struct VmConfig {
     std::filesystem::path vmx;   // VMX 文件路径
     std::string agent_version;   // 快照中的 Agent 版本
     SnapshotConfig snapshots;    // 快照保护策略
-    std::string management_ip;   // 管理网络地址
+    std::optional<std::string> management_ip; // 可选管理网络地址
 };
 
 // Host 使用的实验室配置。

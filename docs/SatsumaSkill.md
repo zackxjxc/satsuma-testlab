@@ -8,8 +8,9 @@
 1. 找到包含 `lab.json`、`schemas/` 和 `SatsumaHost.exe` 构建产物的 Satsuma 仓库。
 2. 完整读取 [SatsumaReadme.md](SatsumaReadme.md)、`lab.json`、`schemas/lab.schema.json`、
    `schemas/agent.schema.json` 和 `schemas/task.schema.json`。
-3. 读取目标项目的测试目标、构建产物和已有任务文件；不要猜测应该执行哪个程序或参数。
-4. 把仓库模板中的盘符、IP、VMX 和快照名视为示例，必须通过本机只读检查或用户确认后才能使用。
+3. 如果存在被 Git 忽略的 `lab.local.json`，将它作为本机真实配置读取，`lab.json` 只作为模板。
+4. 读取目标项目的测试目标、构建产物和已有任务文件；不要猜测应该执行哪个程序或参数。
+5. 把仓库模板中的盘符、IP、VMX 和快照名视为示例，必须通过本机只读检查或用户确认后才能使用。
 
 ## 2. 环境尚未配置时
 
@@ -19,9 +20,9 @@
 只读发现至少覆盖：
 
 - `SatsumaHost.exe`、`SatsumaVM.exe` 和 `vmrun.exe` 是否存在及其绝对路径。
-- `lab.json` 当前值、Host 共享目录、归档目录和每个 VMX 是否存在。
-- Host 当前 IPv4 地址，哪些值可能适合作为 Host-only 管理地址。
-- 配置中每台 VM 的 ID、管理 IP、基础快照和 Agent 版本。
+- `lab.local.json`（如果存在）当前值、Host 共享目录、归档目录和每个 VMX 是否存在。
+- Host 当前 IPv4 地址，哪些 VMware NAT 或 Host-only 地址可供 Guest 访问。
+- 配置中每台 VM 的 ID、可选管理 IP、基础快照和 Agent 版本。
 - 哪些事项只能进入 Guest 或 VMware GUI 后由用户确认。
 
 配置清单必须按以下结构输出：
@@ -29,7 +30,7 @@
 1. 已自动确认的本机值。
 2. Host 上需要用户完成的操作。
 3. 每台 VM 内需要用户完成的操作。
-4. `lab.json` 和每台 VM `agent.json` 应填写的确切值或待确认占位项。
+4. `lab.local.json` 和每台 VM `agent.json` 应填写的确切值或待确认占位项。
 5. 需要管理员权限、VMware GUI 或重启的步骤。
 6. 用户完成后由 AI 执行的验收命令和通过标准。
 
@@ -41,7 +42,7 @@ Host/VM 网络、VMware Shared Folder、计划任务或快照。
 
 正式检测前核对以下对应关系：
 
-| Host `lab.json` | VM `agent.json` | 要求 |
+| Host `lab.local.json` | VM `agent.json` | 要求 |
 |---|---|---|
 | `lab_id` | `lab_id` | 完全一致 |
 | `vms[].id` | `vm_id` | 当前 VM 必须唯一匹配 |
@@ -58,7 +59,7 @@ JSON 中 Windows 反斜杠需要转义。不得把密码、Token、源码目录�
 确认目标 VM 已启动且 `SatsumaVM.exe --watch` 正在运行后执行：
 
 ```text
-SatsumaHost.exe check --config lab.json --vm <vm-id> --timeout-seconds 30
+SatsumaHost.exe check --config lab.local.json --vm <vm-id> --timeout-seconds 30
 ```
 
 需要全部 VM 时省略 `--vm`。必须同时读取进程退出码和 stdout JSON：
@@ -91,10 +92,10 @@ SatsumaHost.exe check --config lab.json --vm <vm-id> --timeout-seconds 30
 
 ## 6. 执行和取证
 
-1. 使用 `SatsumaHost.exe run --config lab.json --plan <task.json>` 物化任务。
+1. 使用 `SatsumaHost.exe run --config lab.local.json --plan <task.json>` 物化任务。
 2. 保存 Host 返回的唯一 `run_id`，不得复用或手工覆盖旧运行目录。
 3. 等待 Agent 执行；`report` 尚未提供等待参数，需要有限间隔轮询，禁止无限等待。
-4. 使用 `SatsumaHost.exe report --config lab.json --run <run-id>` 获取汇总。
+4. 使用 `SatsumaHost.exe report --config lab.local.json --run <run-id>` 获取汇总。
 5. 先读取 `execution.json`、`stdout.log`、`stderr.log` 和声明收集的文件，再修改目标项目。
 6. 区分平台失败和业务失败：部署、超时、路径、Agent 与 VMware 属于平台证据；业务断言由 AI 分析。
 

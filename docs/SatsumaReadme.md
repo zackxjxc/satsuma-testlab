@@ -55,14 +55,14 @@ Debug/Release 构建或测试自动触发。
 ## 环境准备
 
 1. 安装 VMware Workstation 和 VMware Tools。
-2. 配置管理网络和独立实验网络；不要桥接到生产网络。
+2. 普通测试可直接使用 NAT 和 DHCP；危险网络测试再配置独立的 Host-only/LAN Segment。
 3. 只共享专用的 `vm-share`，不要共享源码根目录、个人目录或凭据。
-4. 根据本机路径填写根目录的 `lab.json`。
+4. 复制根目录模板为 `lab.local.json`，再填写本机路径。
 5. 为每台 VM 复制并填写一份 `agent.json`，然后以管理员权限启动 `SatsumaVM.exe`。
 6. 清理 VM 中的遗留进程和网络状态，保存名为 `clean` 的用户基础快照。
 
-以下路径和 IP 只是示例。建议先在纸面或临时文档中确定实际值，再统一写入 Host 和各 VM 的配置，
-不要直接使用仓库模板中的 `D:` 盘和 `192.168.250.*` 假定值。
+以下路径和 IP 只是示例。仓库跟踪 `lab.json` 模板，本机真实值写入已忽略的 `lab.local.json`，不要把
+VMX、快照、盘符或当前 DHCP 地址提交到仓库。
 
 ### 1. 准备 Host 目录和程序
 
@@ -93,16 +93,18 @@ Get-Item 'build/windows-default/bin/Release/SatsumaVM.exe'
 
 ### 2. 配置 VMware 网络
 
-每台测试 VM 建议配置两张网卡：
+最简环境可以直接使用 VMware 默认 NAT 和 DHCP。虚拟机名称、Windows 计算机名、网卡名称和固定
+Guest IP 都不是运行条件；Agent 主动连接 `host.listen`，Host 不依赖 Guest IP 反向连接。
+
+只有被测程序会修改路由、DNS、防火墙或虚拟适配器时，才建议使用两张隔离网卡：
 
 | 网卡 | 推荐模式 | 用途 |
 |---|---|---|
 | 管理网卡 | Host-only 自定义 VMnet | Agent 连接 Host RPC、环境诊断 |
 | 实验网卡 | 另一条 Host-only/LAN Segment | 被测程序通信，可由测试破坏 |
 
-不要把实验网卡桥接到办公网、家庭主网或生产网络。为管理 VMnet 确定 Host 地址，例如
-`192.168.250.1`，再为每台 VM 分配固定地址，例如 `client=192.168.250.11`、
-`gateway=192.168.250.12`。这些值分别写入 `lab.json` 的 `host.listen` 和 `management_ip`。
+不要把危险测试使用的实验网卡桥接到办公网、家庭主网或生产网络。无论使用 NAT 还是 Host-only，
+`host.listen` 都填写 Host 对应 VMware 虚拟网卡的地址和端口；Guest 保持 DHCP 即可。
 
 在 Host 上用只读命令确认地址确实绑定在本机网卡上：
 
@@ -110,9 +112,9 @@ Get-Item 'build/windows-default/bin/Release/SatsumaVM.exe'
 Get-NetIPAddress -AddressFamily IPv4 | Select-Object InterfaceAlias, IPAddress
 ```
 
-如果使用 RPC 实时状态，需要在 Host 防火墙中允许管理 VMnet 入站访问 TCP 37100。防火墙修改需要
-管理员权限，应由用户确认作用域后手工完成；不要把端口开放到公共网络。共享文件任务在 RPC 暂时
-不可用时仍可执行，但 Agent 会记录连接失败。
+如果使用 RPC 实时状态，需要在 Host 防火墙中允许对应 VMware NAT 或 Host-only 网段入站访问 TCP
+37100。防火墙修改需要管理员权限，应由用户确认作用域后手工完成；不要把端口开放到公共网络。
+共享文件任务在 RPC 暂时不可用时仍可执行，Agent 会记录连接失败并继续重连。
 
 ### 3. 配置 VMware Shared Folder
 
@@ -141,10 +143,16 @@ Set-Content -LiteralPath '\\vmware-host\Shared Folders\vm-share\client-probe.txt
 最后回到 Host 确认 `client-probe.txt` 可读。Gateway VM 使用不同文件名，避免互相覆盖。共享目录
 只能放可丢弃的任务、Artifact 和结果，不能共享仓库、用户目录、密钥或浏览器数据。
 
-### 4. 填写 Host 的 `lab.json`
+### 4. 填写 Host 的 `lab.local.json`
 
-Host 固定读取用户传给 `--config` 的 JSON。仓库根目录 [lab.json](../lab.json) 是模板，建议保留
-字段结构并只替换实际值；格式约束见 [lab.schema.json](../schemas/lab.schema.json)。
+Host 固定读取用户传给 `--config` 的 JSON。先复制仓库模板，保留模板本身不变：
+
+```powershell
+Copy-Item -LiteralPath 'lab.json' -Destination 'lab.local.json'
+```
+
+只修改 `lab.local.json` 中的实际值；格式约束见
+[lab.schema.json](../schemas/lab.schema.json)。
 
 | 字段 | 填写规则 |
 |---|---|
@@ -152,7 +160,7 @@ Host 固定读取用户传给 `--config` 的 JSON。仓库根目录 [lab.json](.
 | `lab_id` | 本实验室稳定 ID，只能使用字母、数字、下划线和连字符 |
 | `provider.type` | 固定为 `vmware_workstation` |
 | `provider.vmrun` | Host 上 `vmrun.exe` 的绝对路径 |
-| `host.listen` | 管理网 Host IP 和端口，如 `192.168.250.1:37100` |
+| `host.listen` | Guest 可达的 Host VMware 网卡地址和端口 |
 | `host.archive_root` | Guest 不可见、Host 可写的绝对目录 |
 | `shared_folder.host_root` | VMware 实际共享的 Host 绝对目录 |
 | `shared_folder.guest_root` | 同一共享在 Guest 中的 UNC 根路径 |
@@ -163,16 +171,22 @@ Host 固定读取用户传给 `--config` 的 JSON。仓库根目录 [lab.json](.
 | `vms[].snapshots.base` | 用户创建且不允许 AI 删除的基础快照名 |
 | `vms[].snapshots.ai_prefix` | AI 派生快照前缀，如 `satsuma-ai-` |
 | `vms[].snapshots.max_ai_snapshots` | 单台 VM 可保留的 AI 快照数量，范围 1–64 |
-| `vms[].management_ip` | 该 VM 的固定管理地址 |
+| `vms[].management_ip` | 可选元数据；使用 DHCP 时可以省略 |
 
 JSON 内 Windows 路径的反斜杠必须写成 `\\`。`vmrun`、VMX、共享目录和归档目录都必须使用
-当前电脑上的真实路径；不要把密码、Token 或其他凭据写入 `lab.json`。
+当前电脑上的真实路径；不要把密码、Token 或其他凭据写入配置文件。
 
 ### 5. 部署并填写每台 VM 的 `agent.json`
 
-在每台 VM 中创建 `C:\Satsuma\bin` 和 `C:\Satsuma\work`，把 Release 版 `SatsumaVM.exe`
-复制到 `C:\Satsuma\bin`。以 [agent-client.json](../examples/agent-client.json) 为模板，生成该 VM
-专用的 `C:\Satsuma\agent.json`；格式约束见 [agent.schema.json](../schemas/agent.schema.json)。
+以 [agent-client.json](../examples/agent-client.json) 为模板生成当前 VM 专用的 `agent.json`；格式约束见
+[agent.schema.json](../schemas/agent.schema.json)。在 Host 共享目录中准备部署文件：
+
+```powershell
+New-Item -ItemType Directory -Force -Path 'D:\vm-share\satsuma-bootstrap'
+Copy-Item 'build/windows-default/bin/Release/SatsumaVM.exe' 'D:\vm-share\satsuma-bootstrap/'
+Copy-Item 'scripts/install-agent.ps1' 'D:\vm-share\satsuma-bootstrap/'
+Copy-Item 'agent.json' 'D:\vm-share\satsuma-bootstrap/'
+```
 
 | 字段 | 填写规则 |
 |---|---|
@@ -188,13 +202,15 @@ JSON 内 Windows 路径的反斜杠必须写成 `\\`。`vmrun`、VMX、共享目
 | `reconnect_interval_ms` | RPC 断线重连间隔，范围 100–60000 |
 | `rpc_timeout_ms` | 单次 RPC 超时，范围 100–300000 |
 
-Client 和 Gateway 必须分别保存自己的配置，至少修改 `vm_id`；不要让两个 VM 使用同一个 ID。
-在 VM 的管理员 PowerShell 中首次前台运行：
+多台 VM 必须分别保存自己的配置，至少修改 `vm_id`；单台任意 VM 可以继续使用逻辑 ID `client`，
+它不要求 VMware 显示名称也叫 Client。在 Guest 的管理员 PowerShell 中执行一行安装命令：
 
 ```powershell
-$agentExe = 'C:\Satsuma\bin\SatsumaVM.exe'
-& $agentExe --config 'C:\Satsuma\agent.json' --watch
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File '\\vmware-host\Shared Folders\vm-share\satsuma-bootstrap\install-agent.ps1'
 ```
+
+脚本会创建 `C:\Satsuma\bin` 和 `C:\Satsuma\work`、复制并校验 Agent，然后以前台 `--watch`
+模式运行。被测 Artifact 始终复制到 Guest 本地工作目录执行，不直接从 UNC 路径运行。
 
 确认验收通过后，可由用户在 Windows“任务计划程序”中创建“计算机启动时”任务，勾选“使用最高
 权限运行”，程序填写 `SatsumaVM.exe` 的绝对路径，参数填写
@@ -222,21 +238,21 @@ $agentExe = 'C:\Satsuma\bin\SatsumaVM.exe'
 
    ```powershell
    & 'build/windows-default/bin/Release/SatsumaHost.exe' vm start `
-       --id client --config 'lab.json'
+       --id client --config 'lab.local.json'
    ```
 
 2. 确认 VM 中的 `SatsumaVM.exe --watch` 已运行。
 3. 如需 RPC 实时状态，在一个 Host 终端持续运行：
 
    ```powershell
-   & 'build/windows-default/bin/Release/SatsumaHost.exe' serve --config 'lab.json'
+   & 'build/windows-default/bin/Release/SatsumaHost.exe' serve --config 'lab.local.json'
    ```
 
 4. 在另一个 Host 终端执行主动检测：
 
    ```powershell
    & 'build/windows-default/bin/Release/SatsumaHost.exe' check `
-       --config 'lab.json' --vm client --timeout-seconds 30
+       --config 'lab.local.json' --vm client --timeout-seconds 30
    $LASTEXITCODE
    ```
 
@@ -247,14 +263,14 @@ $agentExe = 'C:\Satsuma\bin\SatsumaVM.exe'
 
    ```powershell
    & 'build/windows-default/bin/Release/SatsumaHost.exe' run `
-       --config 'lab.json' --plan 'examples/hello-vm-task.json'
+       --config 'lab.local.json' --plan 'examples/hello-vm-task.json'
    ```
 
 7. Agent 完成任务后查询报告：
 
    ```powershell
    & 'build/windows-default/bin/Release/SatsumaHost.exe' report `
-       --config 'lab.json' --run '<run-id>'
+       --config 'lab.local.json' --run '<run-id>'
    ```
 
 ## AI 主动检测模式
@@ -262,7 +278,7 @@ $agentExe = 'C:\Satsuma\bin\SatsumaVM.exe'
 正式发布测试任务前，AI 应主动检查目标 VM 的完整自动化通道：
 
 ```text
-SatsumaHost.exe check --config lab.json --vm client --timeout-seconds 30
+SatsumaHost.exe check --config lab.local.json --vm client --timeout-seconds 30
 ```
 
 `check` 会验证共享目录和归档目录的原子写入、`vmrun` 控制通道、VMX 和基础快照，然后发布唯一的
@@ -293,7 +309,7 @@ SatsumaHost.exe check --config lab.json --vm client --timeout-seconds 30
 在 Host 上物化任务：
 
 ```text
-SatsumaHost.exe run --config lab.json --plan examples/hello-vm-task.json
+SatsumaHost.exe run --config lab.local.json --plan examples/hello-vm-task.json
 ```
 
 在 Client VM 中领取一次任务，或持续轮询：
@@ -306,18 +322,18 @@ SatsumaVM.exe --config agent-client.json --watch
 Host 根据 `run` 输出的 `run_id` 查看报告：
 
 ```text
-SatsumaHost.exe report --config lab.json --run <run-id>
+SatsumaHost.exe report --config lab.local.json --run <run-id>
 ```
 
-Host 在当前目录读取 `lab.json` 时，可以执行 VM 和快照操作：
+Host 使用本机配置执行 VM 和快照操作：
 
 ```text
-SatsumaHost.exe vm start --id client
-SatsumaHost.exe vm stop --id client --mode hard
-SatsumaHost.exe vm restore --id client --snapshot clean
-SatsumaHost.exe snapshot list --vm client
-SatsumaHost.exe snapshot create-ai --vm client --name network-ready
-SatsumaHost.exe snapshot delete-ai --vm client --snapshot satsuma-ai-network-ready-20260723120000
+SatsumaHost.exe vm start --id client --config lab.local.json
+SatsumaHost.exe vm stop --id client --mode hard --config lab.local.json
+SatsumaHost.exe vm restore --id client --snapshot clean --config lab.local.json
+SatsumaHost.exe snapshot list --vm client --config lab.local.json
+SatsumaHost.exe snapshot create-ai --vm client --name network-ready --config lab.local.json
+SatsumaHost.exe snapshot delete-ai --vm client --snapshot <snapshot-name> --config lab.local.json
 ```
 
 基础快照是只读所有权，`delete-ai` 只接受配置中 AI 前缀开头且确实存在的快照。创建和删除记录保存在

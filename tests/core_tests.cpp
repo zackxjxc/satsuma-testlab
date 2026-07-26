@@ -90,7 +90,6 @@ void test_snapshot_configuration(const std::filesystem::path& root) {
                 {"ai_prefix", "satsuma-ai-"},
                 {"max_ai_snapshots", 8},
             }},
-            {"management_ip", "127.0.0.1"},
         }}},
     };
     const std::filesystem::path config_path = root / L"snapshot-lab.json";
@@ -98,6 +97,14 @@ void test_snapshot_configuration(const std::filesystem::path& root) {
     const satsuma::LabConfig config = satsuma::load_lab_config(config_path);
     expect(config.vms.at(0).snapshots.base == "clean", "snapshot base was not parsed");
     expect(config.vms.at(0).snapshots.max_ai_snapshots == 8, "snapshot quota was not parsed");
+    expect(!config.vms.at(0).management_ip.has_value(), "missing management IP was not accepted");
+
+    value["vms"][0]["management_ip"] = "127.0.0.1";
+    satsuma::write_json_atomic(config_path, value);
+    const satsuma::LabConfig config_with_management_ip = satsuma::load_lab_config(config_path);
+    expect(
+        config_with_management_ip.vms.at(0).management_ip == std::optional<std::string>("127.0.0.1"),
+        "optional management IP was not parsed");
 
     value["vms"][0]["snapshots"]["base"] = "satsuma-ai-user-base";
     satsuma::write_json_atomic(config_path, value);

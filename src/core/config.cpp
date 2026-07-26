@@ -103,7 +103,9 @@ LabConfig load_lab_config(const std::filesystem::path& path) {
         vm.snapshots.ai_prefix = required_string(snapshots, "ai_prefix");
         vm.snapshots.max_ai_snapshots = required_integer(snapshots, "max_ai_snapshots");
         validate_snapshot_config(vm.snapshots);
-        vm.management_ip = required_string(vm_value, "management_ip");
+        if (vm_value.contains("management_ip")) {
+            vm.management_ip = required_string(vm_value, "management_ip");
+        }
         if (!vm_ids.insert(vm.id).second) {
             throw Error("Duplicate VM id in lab.json: " + vm.id);
         }
