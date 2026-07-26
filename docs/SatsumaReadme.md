@@ -12,6 +12,7 @@ Satsuma 在 Windows 宿主机与 VMware 测试虚拟机之间物化任务、部�
 - Windows Job Object 进程树管理、超时终止、stdout/stderr 持续落盘和结果文件收集。
 - `SatsumaHost.exe report`：汇总当前运行的机器可读结果。
 - `SatsumaHost.exe orchestrate`：按单 VM 生命周期策略恢复、启动、检测、执行、归档并清理。
+- claim v2 有限租约：只自动回收显式 `retry_safe` 的过期步骤，其他步骤保留人工门禁。
 - `SatsumaHost.exe check`：检查 Host/VMware 环境，发送无害任务并确认 Agent 执行通道。
 - `coro_rpc` Agent 注册、心跳、任务轮询、状态上报和断线重连。
 - `vmrun` 运行状态、启动、软/硬关闭、快照恢复、列表、创建和删除封装。
@@ -21,7 +22,7 @@ Satsuma 在 Windows 宿主机与 VMware 测试虚拟机之间物化任务、部�
 JSON 任务可以通过 `lifecycle` 声明单 VM 的执行前恢复、成功/失败清理策略和 `finally` 步骤。
 `orchestrate` 原子保存每次阶段迁移，并将主任务和 `finally` 证据复制到 Guest 不可见的归档目录；
 恢复失败以退出码 4 和 `RECOVERY_FAILED` 单独报告。普通 `run` 会拒绝生命周期计划，避免静默忽略策略。
-当前尚不支持多 VM 生命周期、claim 租约或 Host 崩溃后的自动续跑。
+当前尚不支持多 VM 生命周期或 Host 崩溃后的自动续跑。
 
 ## 构建
 
@@ -340,6 +341,11 @@ SatsumaHost.exe orchestrate --config lab.local.json --plan task.json --timeout-s
 `lifecycle.finally` 中的步骤在主任务完成或失败后单独发布。自动恢复只接受配置中的用户基础快照或
 AI 前缀快照。状态保存在 `archive_root/runs/<run-id>/lifecycle.json`，证据保存在同目录的 `evidence/`。
 
+`echo` 默认 `retry_safe=true`，`execute` 默认 `false`；只有调用方确认步骤可幂等重放时，才应为
+`execute` 显式设置 `retry_safe=true`。claim 租约为步骤超时加 30 秒，到期后仍需确认 Agent `boot_id`
+已经变化才允许安全重试。旧格式、损坏或不可安全重试的 claim 会生成 `claim-recovery.json`，
+`orchestrate` 随即跳过 `finally` 和恢复动作，以退出码 5、`MANUAL_INTERVENTION_REQUIRED` 停止。
+
 在 Host 上物化任务：
 
 ```text
@@ -357,7 +363,10 @@ Host 根据 `run` 输出的 `run_id` 查看报告：
 
 ```text
 SatsumaHost.exe report --config lab.local.json --run <run-id>
+SatsumaHost.exe report --config lab.local.json --run <run-id> --wait-seconds 300
 ```
+
+有限等待在完成时返回 0，等待超时返回 3，人工门禁返回 5；不带 `--wait-seconds` 时仍为即时只读汇总。
 
 Host 使用本机配置执行 VM 和快照操作：
 

@@ -96,6 +96,7 @@ SatsumaHost.exe check --config lab.local.json --vm <vm-id> --timeout-seconds 30
 - `arguments` 的每个元素保持独立，不拼接 shell 命令。
 - `collect_files` 只使用 VM 本地运行根目录下的相对路径。
 - 每个步骤设置有限的 `timeout_seconds`；危险程序必须有可验证的外部状态或机器可读结果。
+- `echo` 默认可安全重试；`execute` 默认不可重试，只有确认幂等时才设置 `retry_safe: true`。
 - 被测程序优先输出明确退出码、UTF-8 日志和 JSON 总结，不把关键结果只留在 GUI。
 
 ## 6. 执行和取证
@@ -113,11 +114,15 @@ SatsumaHost.exe check --config lab.local.json --vm <vm-id> --timeout-seconds 30
 SatsumaHost.exe orchestrate --config lab.local.json --plan <task.json> --timeout-seconds <1-86400>
 ```
 
-退出码 0 表示 `COMPLETED`，退出码 1 表示业务或执行 `FAILED`，退出码 4 表示 `RECOVERY_FAILED`。
+退出码 0 表示 `COMPLETED`，退出码 1 表示业务或执行 `FAILED`，退出码 4 表示 `RECOVERY_FAILED`，
+退出码 5 表示 `MANUAL_INTERVENTION_REQUIRED`。
 必须读取 `archive_root/runs/<run-id>/lifecycle.json` 和 `evidence/`，不能仅凭主步骤退出码判断恢复结果。
 
 运行证据位于 `shared_folder.host_root/runs/<run_id>/`。不要直接修改已发布的 `task.json`、claim、
 `execution.json` 或最终日志；需要重试时生成新运行。
+
+普通运行可使用 `report --wait-seconds <1-86400>` 有限等待。退出码 0 表示报告完整，3 表示等待超时，
+5 表示过期危险 claim 需要人工处理；未指定时保持即时汇总行为。
 
 ## 7. VMware 与恢复边界
 
