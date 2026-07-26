@@ -15,6 +15,8 @@ Satsuma 在 Windows 宿主机与 VMware 测试虚拟机之间物化任务、部�
 - claim v2 有限租约：只自动回收显式 `retry_safe` 的过期步骤，其他步骤保留人工门禁。
 - `SatsumaHost.exe check`：检查 Host/VMware 环境，发送无害任务并确认 Agent 执行通道。
 - `SatsumaVM` Windows Service：LocalSystem 延迟自动启动、受控停止和失败恢复。
+- 独立 Agent 自更新：候选校验、本机切换、简单回滚、presence 确认和成功后完整暂存清理。
+- 文件协议 v2 多身份执行：`system` 与活动控制台 `interactive_user`，结果记录请求身份和 Session。
 - `vmrun` 运行状态、启动、软/硬关闭、快照恢复、列表、创建和删除封装。
 - Host VM 生命周期命令，以及带前缀、配额、所有权保护和元数据的 AI 快照命令。
 - 路径越界、绝对任务路径和重解析点校验。
@@ -62,7 +64,7 @@ Debug/Release 构建或测试自动触发。
 2. 普通测试可直接使用 NAT 和 DHCP；危险网络测试再配置独立的 Host-only/LAN Segment。
 3. 只共享专用的 `vm-share`，不要共享源码根目录、个人目录或凭据。
 4. 复制根目录模板为 `lab.local.json`，再填写本机路径。
-5. 为每台 VM 复制并填写一份 `agent.json`，然后运行事务化 `install-agent.ps1` 并确认 UAC。
+5. 为每台 VM 复制并填写一份 `agent.json`，然后运行 `install-agent.ps1` 并确认 UAC。
 6. 清理 VM 中的遗留进程和网络状态，保存名为 `clean` 的用户基础快照。
 
 以下路径和 IP 只是示例。仓库跟踪 `lab.json` 模板，本机真实值写入已忽略的 `lab.local.json`，不要把
@@ -195,7 +197,7 @@ Copy-Item 'agent.json' 'D:\vm-share\satsuma-bootstrap/'
 | 字段 | 填写规则 |
 |---|---|
 | `schema_version` | 固定为 `1` |
-| `protocol_version` | 固定为 `1` |
+| `protocol_version` | 固定为 `2`；v1 只用于旧配置自更新迁移，不允许启动当前 Agent |
 | `lab_id` | 必须与 Host `lab.json` 完全一致 |
 | `vm_id` | 必须等于 Host `vms[].id` 中当前 VM 的 ID |
 | `agent_version` | 必须与该 VM 的 `vms[].agent_version` 一致 |
@@ -239,6 +241,25 @@ PowerShell 可以关闭，不需要保留前台窗口。
 Agent 就绪后会在共享目录发布 `agents/<vm-id>.json`。被测 Artifact 始终复制到 Guest 本地工作目录执行，
 不直接从 UNC 路径运行。
 
+#### 任务运行身份
+
+任务计划中的 `execute.run_as` 可省略；Host 会将省略值解释为 `system`，并在发布的文件协议 v2
+`task.json` 中显式写出身份。可用值为：
+
+| 值 | 生产行为 |
+|---|---|
+| `system` | 由 LocalSystem Service 在 `agent.json.local_work_root/<run-id>` 中执行 |
+| `interactive_user` | 在当前活动控制台用户 Token 下执行，工作目录为该用户 `%LOCALAPPDATA%\SatsumaTestLab\<lab-id>\runs\<run-id>` |
+
+`echo` 不接受 `run_as`。`interactive_user` 只允许生产 LocalSystem Service 通过 `WTSQueryUserToken` 和
+`CreateProcessAsUserW` 启动；无活动控制台 Session 时，该步骤以
+`No active interactive user session is available` 失败，Agent 继续处理后续步骤，绝不回落为 SYSTEM。
+启动前和恢复挂起 helper 前都会核对 Session、用户 SID 和登录 `AuthenticationId`。Artifact 在用户
+impersonation 下部署，helper、目标及其子进程仍受同一个 Job Object、超时和 Service stop/cancel 约束。
+
+`execution.json` 始终记录 `run_as`；交互身份成功取得后还记录 `interactive_session_id`。前台
+`--once`/`--watch` 只用于诊断，不提供生产 SYSTEM 身份保证，非 LocalSystem 进程会拒绝交互用户步骤。
+
 #### Agent 自更新
 
 Host 通过独立更新通道发布候选，不把自更新伪装成普通 `execute` 步骤：
@@ -255,7 +276,8 @@ SatsumaHost.exe agent update `
 Host 在 `updates/<vm-id>/<update-id>` 的隐藏暂存目录中复制候选，计算大小和 SHA-256、写入不可变
 `update.json`，再整体改名发布。Agent 校验清单后复制为本机 `C:\Satsuma\bin\SatsumaVM.new.exe`，由该
 候选以独立、无 Job Object 的 `--apply-update` 模式有限停止 Service、切换文件并等待新 PID 发布匹配
-版本和 update ID 的 presence。
+版本和 update ID 的 presence。旧 v1 `agent.json` 会在成功切换时原子升级到文件协议 v2；失败回滚会
+恢复旧配置。
 
 成功结果写回前，助手必须删除 `SatsumaVM.bak.exe`、确认 `SatsumaVM.new.exe` 不存在，并删除本机配置
 备份、manifest 和状态文件；Host 读取成功结果后删除整个共享更新目录。哈希、停服、改名、启动或
@@ -419,8 +441,9 @@ SatsumaHost.exe snapshot delete-ai --vm client --snapshot <snapshot-name> --conf
 
 ## 权限与故障边界
 
-Host 通常不需要管理员权限。生产 Agent 由 LocalSystem Windows Service 运行，前台诊断则应使用管理员
-权限，才能约束和清理需要高权限的被测进程。
+Host 通常不需要管理员权限。生产 Agent 由 LocalSystem Windows Service 运行，只有这种承载方式才提供
+`run_as=system` 与 `run_as=interactive_user` 的生产身份保证。前台诊断可使用管理员权限约束和清理普通
+测试进程，但不能把前台调用方身份解释为 SYSTEM。
 任务中的 `program` 必须对应已登记的 Artifact，任务路径必须相对运行根目录。遇到 Artifact hash 不一致、
 路径越界或声明的结果文件缺失时，Agent 会生成失败结果，不会继续猜测。
 
