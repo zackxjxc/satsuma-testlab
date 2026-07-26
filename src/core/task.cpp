@@ -16,6 +16,13 @@
 namespace satsuma {
 namespace {
 
+// 区分用户任务计划与两个版本的 Agent 可见清单。
+enum class StepParseMode {
+    TaskPlan,
+    RunManifestV1,
+    RunManifestV2,
+};
+
 // 读取非空必需字符串字段。
 [[nodiscard]] std::string required_string(const nlohmann::json& value, const char* field) {
     if (!value.contains(field) || !value.at(field).is_string()) {
@@ -26,6 +33,18 @@ namespace {
         throw Error(std::string("Task field must not be empty: ") + field);
     }
     return result;
+}
+
+// 解析仅允许 SYSTEM 或当前交互用户的运行身份。
+[[nodiscard]] TaskRunAs parse_task_run_as(const nlohmann::json& value) {
+    const std::string name = required_string(value, "run_as");
+    if (name == "system") {
+        return TaskRunAs::System;
+    }
+    if (name == "interactive_user") {
+        return TaskRunAs::InteractiveUser;
+    }
+    throw Error("Unsupported task run_as: " + name);
 }
 
 // 验证 SHA-256 使用 64 位小写十六进制格式。
@@ -39,8 +58,8 @@ void validate_sha256(const std::string& hash) {
     }
 }
 
-// 从 JSON 解析并验证一个任务步骤。
-[[nodiscard]] TaskStep parse_step(const nlohmann::json& value) {
+// 按任务计划或指定文件协议解析并验证一个步骤。
+[[nodiscard]] TaskStep parse_step(const nlohmann::json& value, const StepParseMode mode) {
     TaskStep step;
     step.id = required_string(value, "id");
     step.vm = required_string(value, "vm");
@@ -65,9 +84,20 @@ void validate_sha256(const std::string& hash) {
     }
 
     if (step.type == "execute") {
+        const bool has_run_as = value.contains("run_as");
+        if (mode == StepParseMode::RunManifestV1 && has_run_as) {
+            throw Error("Run manifest protocol 1 does not accept run_as for step " + step.id);
+        }
+        if (mode == StepParseMode::RunManifestV2 && !has_run_as) {
+            throw Error("Run manifest protocol 2 requires run_as for execute step " + step.id);
+        }
+        step.run_as = has_run_as ? parse_task_run_as(value) : TaskRunAs::System;
         step.program = path_from_utf8(required_string(value, "program"));
         validate_relative_path(step.program);
     } else if (step.type == "echo") {
+        if (value.contains("run_as")) {
+            throw Error("echo step does not accept run_as: " + step.id);
+        }
         step.message = required_string(value, "message");
         if (!step.arguments.empty() || !step.collect_files.empty()) {
             throw Error("echo step does not accept arguments or collect_files: " + step.id);
@@ -155,14 +185,16 @@ void validate_snapshot_name(const std::string& snapshot, const std::string_view 
             throw Error("lifecycle.finally must be an array");
         }
         for (const auto& step_value : value.at("finally")) {
-            lifecycle.finally_steps.push_back(parse_step(step_value));
+            lifecycle.finally_steps.push_back(parse_step(step_value, StepParseMode::TaskPlan));
         }
     }
     return lifecycle;
 }
 
 // 将一个任务步骤转换为稳定的 JSON 表示。
-[[nodiscard]] nlohmann::json serialize_step(const TaskStep& step) {
+[[nodiscard]] nlohmann::json serialize_step(
+    const TaskStep& step,
+    const int protocol_version) {
     nlohmann::json value = {
         {"id", step.id},
         {"vm", step.vm},
@@ -171,6 +203,15 @@ void validate_snapshot_name(const std::string& snapshot, const std::string_view 
         {"retry_safe", step.retry_safe},
     };
     if (step.type == "execute") {
+        if (protocol_version == kLegacyRunManifestProtocolVersion) {
+            if (step.run_as != TaskRunAs::System) {
+                throw Error("Run manifest protocol 1 only supports system execute steps");
+            }
+        } else if (protocol_version == kRunManifestProtocolVersion) {
+            value["run_as"] = std::string(task_run_as_name(step.run_as));
+        } else {
+            throw Error("Unsupported run manifest protocol version");
+        }
         value["program"] = path_to_utf8(step.program);
         value["arguments"] = step.arguments;
         std::vector<std::string> files;
@@ -179,8 +220,13 @@ void validate_snapshot_name(const std::string& snapshot, const std::string_view 
             files.push_back(path_to_utf8(file));
         }
         value["collect_files"] = files;
-    } else {
+    } else if (step.type == "echo") {
+        if (step.run_as != TaskRunAs::System) {
+            throw Error("echo step only supports the system run identity");
+        }
         value["message"] = step.message;
+    } else {
+        throw Error("Unsupported task step type: " + step.type);
     }
     return value;
 }
@@ -207,6 +253,19 @@ void validate_plan_uniqueness(const TaskPlan& plan) {
         if (!artifact_paths.insert(key).second) {
             throw Error("Duplicate artifact destination: " + path_to_utf8(artifact.destination));
         }
+    }
+}
+
+// 验证执行结果的身份与交互 Session 证据一致。
+void validate_execution_identity(const ExecutionResult& result) {
+    if (result.run_as == TaskRunAs::System &&
+        result.interactive_session_id.has_value()) {
+        throw Error("SYSTEM execution result cannot contain an interactive Session ID");
+    }
+    if (result.run_as == TaskRunAs::InteractiveUser &&
+        result.status != "failed" &&
+        !result.interactive_session_id.has_value()) {
+        throw Error("Successful interactive execution result requires a Session ID");
     }
 }
 
@@ -251,7 +310,7 @@ TaskPlan load_task_plan(const std::filesystem::path& path) {
         throw Error("Task plan must contain at least one step");
     }
     for (const auto& step_value : value.at("steps")) {
-        plan.steps.push_back(parse_step(step_value));
+        plan.steps.push_back(parse_step(step_value, StepParseMode::TaskPlan));
     }
     if (value.contains("lifecycle")) {
         plan.lifecycle = parse_lifecycle_policy(value.at("lifecycle"));
@@ -259,6 +318,14 @@ TaskPlan load_task_plan(const std::filesystem::path& path) {
 
     validate_plan_uniqueness(plan);
     return plan;
+}
+
+std::string_view task_run_as_name(const TaskRunAs run_as) {
+    switch (run_as) {
+    case TaskRunAs::System: return "system";
+    case TaskRunAs::InteractiveUser: return "interactive_user";
+    }
+    throw Error("Unknown task run identity");
 }
 
 std::string_view vm_cleanup_action_name(const VmCleanupAction action) {
@@ -279,6 +346,11 @@ RunManifest load_run_manifest(const std::filesystem::path& path) {
 }
 
 void to_json(nlohmann::json& value, const RunManifest& manifest) {
+    if (manifest.schema_version != 1 ||
+        (manifest.protocol_version != kLegacyRunManifestProtocolVersion &&
+         manifest.protocol_version != kRunManifestProtocolVersion)) {
+        throw Error("Unsupported run manifest schema or protocol version");
+    }
     value = {
         {"schema_version", manifest.schema_version},
         {"protocol_version", manifest.protocol_version},
@@ -298,7 +370,7 @@ void to_json(nlohmann::json& value, const RunManifest& manifest) {
         });
     }
     for (const auto& step : manifest.steps) {
-        value["steps"].push_back(serialize_step(step));
+        value["steps"].push_back(serialize_step(step, manifest.protocol_version));
     }
 }
 
@@ -310,7 +382,9 @@ void from_json(const nlohmann::json& value, RunManifest& manifest) {
     manifest.request_id = required_string(value, "request_id");
     manifest.name = required_string(value, "name");
     manifest.created_at = required_string(value, "created_at");
-    if (manifest.schema_version != 1 || manifest.protocol_version != 1) {
+    if (manifest.schema_version != 1 ||
+        (manifest.protocol_version != kLegacyRunManifestProtocolVersion &&
+         manifest.protocol_version != kRunManifestProtocolVersion)) {
         throw Error("Unsupported run manifest schema or protocol version");
     }
 
@@ -327,12 +401,17 @@ void from_json(const nlohmann::json& value, RunManifest& manifest) {
     }
 
     manifest.steps.clear();
+    const StepParseMode step_mode =
+        manifest.protocol_version == kLegacyRunManifestProtocolVersion
+        ? StepParseMode::RunManifestV1
+        : StepParseMode::RunManifestV2;
     for (const auto& step_value : value.at("steps")) {
-        manifest.steps.push_back(parse_step(step_value));
+        manifest.steps.push_back(parse_step(step_value, step_mode));
     }
 }
 
 void to_json(nlohmann::json& value, const ExecutionResult& result) {
+    validate_execution_identity(result);
     value = {
         {"schema_version", result.schema_version},
         {"run_id", result.run_id},
@@ -340,6 +419,7 @@ void to_json(nlohmann::json& value, const ExecutionResult& result) {
         {"job_id", result.job_id},
         {"step_id", result.step_id},
         {"status", result.status},
+        {"run_as", std::string(task_run_as_name(result.run_as))},
         {"timed_out", result.timed_out},
         {"duration_ms", result.duration_ms},
         {"stdout", result.stdout_path},
@@ -352,6 +432,9 @@ void to_json(nlohmann::json& value, const ExecutionResult& result) {
     value["exit_code"] = result.exit_code.has_value()
         ? nlohmann::json(*result.exit_code)
         : nlohmann::json(nullptr);
+    if (result.interactive_session_id.has_value()) {
+        value["interactive_session_id"] = *result.interactive_session_id;
+    }
     for (const auto& file : result.files) {
         value["files"].push_back({{"path", file.path}, {"sha256", file.sha256}});
     }
@@ -364,6 +447,15 @@ void from_json(const nlohmann::json& value, ExecutionResult& result) {
     result.job_id = required_string(value, "job_id");
     result.step_id = required_string(value, "step_id");
     result.status = required_string(value, "status");
+    result.run_as = value.contains("run_as")
+        ? parse_task_run_as(value)
+        : TaskRunAs::System;
+    if (value.contains("interactive_session_id") &&
+        !value.at("interactive_session_id").is_null()) {
+        result.interactive_session_id = value.at("interactive_session_id").get<std::uint32_t>();
+    } else {
+        result.interactive_session_id.reset();
+    }
     if (value.contains("exit_code") && !value.at("exit_code").is_null()) {
         result.exit_code = value.at("exit_code").get<std::uint32_t>();
     } else {
@@ -387,6 +479,7 @@ void from_json(const nlohmann::json& value, ExecutionResult& result) {
     if (result.schema_version != 1) {
         throw Error("Unsupported execution result schema version");
     }
+    validate_execution_identity(result);
 }
 
 }  // namespace satsuma

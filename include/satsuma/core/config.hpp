@@ -6,6 +6,8 @@
 #include <string>
 #include <vector>
 
+#include "satsuma/core/file_protocol.hpp"
+
 namespace satsuma {
 
 // VMware Workstation Provider 配置。
@@ -56,7 +58,7 @@ struct LabConfig {
 // VM Agent 的本机配置。
 struct AgentConfig {
     int schema_version{1};                  // 配置 schema 版本
-    int protocol_version{1};                // 文件协议版本
+    int protocol_version{kRunManifestProtocolVersion}; // 文件协议版本
     std::string lab_id;                     // 实验室稳定 ID
     std::string vm_id;                      // 当前虚拟机稳定 ID
     std::string agent_version;              // 当前 Agent 语义版本

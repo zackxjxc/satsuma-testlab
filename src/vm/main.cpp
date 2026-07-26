@@ -9,6 +9,7 @@
 
 #include "agent.hpp"
 #include "autostart.hpp"
+#include "interactive_process.hpp"
 #include "service.hpp"
 #include "update.hpp"
 #include "satsuma/core/config.hpp"
@@ -34,6 +35,13 @@ void print_usage() {
         << "  SatsumaVM --config agent.json --remove-service\n"
         << "  SatsumaVM --config agent.json --apply-update update-manifest.json\n"
         << "  SatsumaVM --config agent.json --install-autostart\n";
+}
+
+// 拒绝把兼容读取的旧 agent.json 用于安装或执行新 Agent。
+void require_current_file_protocol(const satsuma::AgentConfig& config) {
+    if (config.protocol_version != satsuma::kRunManifestProtocolVersion) {
+        throw satsuma::Error("Agent execution requires file protocol version 2");
+    }
 }
 
 // 将 Windows Service 变更转换为稳定机器文本。
@@ -89,6 +97,10 @@ int wmain(const int argc, wchar_t* argv[]) {
     std::filesystem::path config_path;
     std::wstring mode;
     try {
+        if (argc == 3 && std::wstring(argv[1]) == L"--process-helper") {
+            return satsuma::vm::run_interactive_process_helper(
+                std::filesystem::path(argv[2]));
+        }
         if (argc == 2 && std::wstring(argv[1]) == L"--version") {
             std::cout << satsuma::kVersion << '\n';
             return 0;
@@ -131,6 +143,7 @@ int wmain(const int argc, wchar_t* argv[]) {
         }
 
         satsuma::AgentConfig config = satsuma::load_agent_config(config_path);
+        require_current_file_protocol(config);
         if (mode == L"--validate-config") {
             std::cout << nlohmann::json({
                 {"status", "valid"},

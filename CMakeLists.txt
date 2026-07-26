@@ -92,6 +92,7 @@ target_link_libraries(SatsumaHost PRIVATE SatsumaCore ${SATSUMA_YLT_TARGET})
 add_executable(SatsumaVM
     src/vm/agent.cpp
     src/vm/autostart.cpp
+    src/vm/interactive_process.cpp
     src/vm/main.cpp
     src/vm/process_runner.cpp
     src/vm/rpc_client.cpp
@@ -101,7 +102,17 @@ add_executable(SatsumaVM
 target_include_directories(SatsumaVM PRIVATE src/vm)
 target_link_libraries(
     SatsumaVM
-    PRIVATE SatsumaCore ${SATSUMA_YLT_TARGET} advapi32 ole32 oleaut32 shell32 taskschd ws2_32
+    PRIVATE
+        SatsumaCore
+        ${SATSUMA_YLT_TARGET}
+        advapi32
+        ole32
+        oleaut32
+        shell32
+        taskschd
+        userenv
+        ws2_32
+        wtsapi32
 )
 
 set_target_properties(SatsumaHost SatsumaVM PROPERTIES

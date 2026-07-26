@@ -8,6 +8,7 @@
 #include <iostream>
 #include <limits>
 #include <mutex>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -21,6 +22,7 @@
 #include "satsuma/core/path.hpp"
 #include "rpc_client.hpp"
 #include "satsuma/core/sha256.hpp"
+#include "interactive_process.hpp"
 #include "update.hpp"
 
 namespace satsuma::vm {
@@ -149,12 +151,37 @@ void publish_log(const std::filesystem::path& partial, const std::filesystem::pa
     return match == manifest.artifacts.end() ? nullptr : &*match;
 }
 
+// 返回当前 SatsumaVM helper 的绝对路径。
+[[nodiscard]] std::filesystem::path current_executable_path() {
+    std::wstring buffer(32'768, L'\0');
+    const DWORD length = GetModuleFileNameW(
+        nullptr,
+        buffer.data(),
+        static_cast<DWORD>(buffer.size()));
+    if (length == 0 || length >= buffer.size()) {
+        throw Error(
+            "Cannot resolve SatsumaVM executable path (Win32 error " +
+            std::to_string(GetLastError()) + ")");
+    }
+    buffer.resize(length);
+    return std::filesystem::path(std::move(buffer));
+}
+
 }  // namespace
 
-Agent::Agent(AgentConfig config)
+Agent::Agent(
+    AgentConfig config,
+    std::filesystem::path helper_executable)
     : config_(std::move(config)),
       session_id_(make_id("session")),
-      boot_id_(make_id("boot")) {}
+      boot_id_(make_id("boot")),
+      helper_executable_(helper_executable.empty()
+          ? current_executable_path()
+          : std::filesystem::absolute(std::move(helper_executable))) {
+    if (config_.protocol_version != kRunManifestProtocolVersion) {
+        throw Error("Agent execution requires file protocol version 2");
+    }
+}
 
 int Agent::run_once(const std::stop_token stop_token) {
     if (stop_token.stop_requested()) {
@@ -358,7 +385,8 @@ void Agent::deploy_artifacts(
     const std::filesystem::path& run_directory,
     const std::filesystem::path& local_run_directory,
     const RunManifest& manifest,
-    const std::stop_token stop_token) const {
+    const std::stop_token stop_token,
+    const InteractiveUserSession* interactive_session) const {
     for (const auto& artifact : manifest.artifacts) {
         throw_if_stop_requested(stop_token);
         if (artifact.vm != config_.vm_id) {
@@ -370,12 +398,16 @@ void Agent::deploy_artifacts(
             throw Error("Artifact is missing or has an invalid hash: " + path_to_utf8(artifact.path));
         }
 
-        const std::filesystem::path local_file = resolve_under_root(local_run_directory, artifact.path);
-        std::filesystem::create_directories(local_file.parent_path());
-        std::filesystem::copy_file(
-            shared_file,
-            local_file,
-            std::filesystem::copy_options::overwrite_existing);
+        const std::filesystem::path local_file = interactive_session != nullptr
+            ? interactive_session->deploy_file(shared_file, artifact.path)
+            : resolve_under_root(local_run_directory, artifact.path);
+        if (interactive_session == nullptr) {
+            std::filesystem::create_directories(local_file.parent_path());
+            std::filesystem::copy_file(
+                shared_file,
+                local_file,
+                std::filesystem::copy_options::overwrite_existing);
+        }
         if (sha256_file(local_file) != artifact.sha256) {
             throw Error("Local Artifact hash mismatch after copy: " + path_to_utf8(artifact.path));
         }
@@ -403,6 +435,7 @@ void Agent::execute_step(
     result.vm_id = config_.vm_id;
     result.job_id = job_id;
     result.step_id = step.id;
+    result.run_as = step.run_as;
     result.started_at = utc_timestamp();
     result.stdout_path = path_to_utf8(std::filesystem::relative(stdout_final, run_directory));
     result.stderr_path = path_to_utf8(std::filesystem::relative(stderr_final, run_directory));
@@ -422,11 +455,27 @@ void Agent::execute_step(
                 throw Error("Execute program is not a registered Artifact: " + path_to_utf8(step.program));
             }
 
-            const std::filesystem::path local_run_directory = resolve_under_root(
-                config_.local_work_root,
-                path_from_utf8(manifest.run_id));
-            std::filesystem::create_directories(local_run_directory);
-            deploy_artifacts(run_directory, local_run_directory, manifest, stop_token);
+            std::optional<InteractiveUserSession> interactive_session;
+            std::filesystem::path local_run_directory;
+            if (step.run_as == TaskRunAs::InteractiveUser) {
+                interactive_session.emplace(
+                    InteractiveUserSession::acquire(
+                        config_.lab_id,
+                        manifest.run_id));
+                local_run_directory = interactive_session->working_directory();
+                result.interactive_session_id = interactive_session->session_id();
+            } else {
+                local_run_directory = resolve_under_root(
+                    config_.local_work_root,
+                    path_from_utf8(manifest.run_id));
+                std::filesystem::create_directories(local_run_directory);
+            }
+            deploy_artifacts(
+                run_directory,
+                local_run_directory,
+                manifest,
+                stop_token,
+                interactive_session ? &*interactive_session : nullptr);
 
             ProcessRequest request;
             request.program = resolve_under_root(local_run_directory, step.program);
@@ -436,7 +485,9 @@ void Agent::execute_step(
             request.stderr_path = stderr_partial;
             request.timeout = std::chrono::seconds(step.timeout_seconds);
             request.stop_token = stop_token;
-            const ProcessResult process_result = runner_.run(request);
+            const ProcessResult process_result = interactive_session
+                ? interactive_session->run(helper_executable_, request)
+                : runner_.run(request);
             result.exit_code = process_result.exit_code;
             result.timed_out = process_result.timed_out;
             result.duration_ms = process_result.duration_ms;

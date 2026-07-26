@@ -134,8 +134,9 @@ AgentConfig load_agent_config(const std::filesystem::path& path) {
     config.reconnect_interval_ms = value.value("reconnect_interval_ms", 1000);
     config.rpc_timeout_ms = value.value("rpc_timeout_ms", 5000);
 
-    if (config.protocol_version != 1) {
-        throw Error("agent.json requires protocol_version 1");
+    if (config.protocol_version != kLegacyRunManifestProtocolVersion &&
+        config.protocol_version != kRunManifestProtocolVersion) {
+        throw Error("agent.json requires protocol_version 1 or 2");
     }
     if (config.poll_interval_ms < 100 || config.poll_interval_ms > 60'000) {
         throw Error("poll_interval_ms must be between 100 and 60000");

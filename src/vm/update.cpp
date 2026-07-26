@@ -252,6 +252,7 @@ void write_updated_config(
     const UpdatePaths& paths,
     const AgentUpdateManifest& manifest) {
     nlohmann::json config = load_json(paths.config);
+    config["protocol_version"] = kRunManifestProtocolVersion;
     config["agent_version"] = manifest.version;
     config["last_update_id"] = manifest.update_id;
     write_json_atomic(paths.config, config);
@@ -720,12 +721,13 @@ int apply_agent_update_helper(
                     paths.formal_binary,
                     paths.config);
             },
-            [&config](
+            [&paths](
                 const std::uint32_t process_id,
                 const std::string& version,
                 const std::string& update_id) {
+                const AgentConfig current_config = load_agent_config(paths.config);
                 wait_for_presence(
-                    config,
+                    current_config,
                     process_id,
                     version,
                     update_id);

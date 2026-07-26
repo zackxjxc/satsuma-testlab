@@ -11,11 +11,15 @@
 
 namespace satsuma::vm {
 
+class InteractiveUserSession;
+
 // 轮询共享目录并执行分配给当前 VM 的任务。
 class Agent {
 public:
     // 使用已验证的 VM 配置创建本次 Agent 会话。
-    explicit Agent(AgentConfig config);
+    explicit Agent(
+        AgentConfig config,
+        std::filesystem::path helper_executable = {});
 
     // 扫描一次共享目录并返回新执行的步骤数。
     [[nodiscard]] int run_once(std::stop_token stop_token = {});
@@ -40,7 +44,8 @@ private:
         const std::filesystem::path& run_directory,
         const std::filesystem::path& local_run_directory,
         const RunManifest& manifest,
-        std::stop_token stop_token) const;
+        std::stop_token stop_token,
+        const InteractiveUserSession* interactive_session) const;
 
     // 写入当前运行可见的 Agent 状态。
     void write_state(
@@ -54,6 +59,7 @@ private:
     AgentConfig config_;       // 当前 VM Agent 配置
     std::string session_id_;   // 当前进程会话 ID
     std::string boot_id_;      // 当前进程启动 ID
+    std::filesystem::path helper_executable_; // 交互用户 helper 路径
     ProcessRunner runner_;     // Windows Job Object 执行器
 };
 

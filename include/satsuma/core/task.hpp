@@ -10,6 +10,8 @@
 
 #include <nlohmann/json_fwd.hpp>
 
+#include "satsuma/core/file_protocol.hpp"
+
 namespace satsuma {
 
 // Host 输入任务中的 Artifact 描述。
@@ -27,6 +29,12 @@ struct ArtifactManifest {
     std::string sha256;                // Host 确认的 SHA-256
 };
 
+// execute 步骤使用的 Windows 运行身份。
+enum class TaskRunAs {
+    System,
+    InteractiveUser,
+};
+
 // 单个 VM 执行步骤。
 struct TaskStep {
     std::string id;                         // 运行内唯一步骤 ID
@@ -35,6 +43,7 @@ struct TaskStep {
     std::filesystem::path program;          // Artifact 相对路径
     std::vector<std::string> arguments;     // 原样传递的进程参数
     std::string message;                    // echo 步骤内容
+    TaskRunAs run_as{TaskRunAs::System};    // 被测进程运行身份
     int timeout_seconds{120};               // 进程树超时秒数
     bool retry_safe{false};                 // 旧 claim 到期后是否允许新启动身份重试
     std::vector<std::filesystem::path> collect_files; // 待收集的工作目录相对路径
@@ -80,7 +89,7 @@ struct TaskPlan {
 // Host 物化后供 VM 领取的不可变任务清单。
 struct RunManifest {
     int schema_version{1};                    // 清单 schema 版本
-    int protocol_version{1};                  // Host/VM 文件协议版本
+    int protocol_version{kRunManifestProtocolVersion}; // Host/VM 文件协议版本
     std::string lab_id;                       // 实验室稳定 ID
     std::string run_id;                       // 本次运行唯一 ID
     std::string request_id;                   // Host 请求唯一 ID
@@ -104,6 +113,8 @@ struct ExecutionResult {
     std::string job_id;             // 本次领取生成的 Job ID
     std::string step_id;            // 步骤 ID
     std::string status;             // exited、timed_out 或 failed
+    TaskRunAs run_as{TaskRunAs::System}; // 本步骤实际请求的运行身份
+    std::optional<std::uint32_t> interactive_session_id; // 交互用户 Session ID
     std::optional<std::uint32_t> exit_code; // 进程退出码
     bool timed_out{false};           // 是否由超时终止
     std::int64_t duration_ms{0};     // 执行耗时
@@ -120,6 +131,9 @@ struct ExecutionResult {
 
 // 读取并验证 VM 可见运行清单。
 [[nodiscard]] RunManifest load_run_manifest(const std::filesystem::path& path);
+
+// 返回任务运行身份的稳定协议名称。
+[[nodiscard]] std::string_view task_run_as_name(TaskRunAs run_as);
 
 // 返回 VM 清理动作的稳定协议名称。
 [[nodiscard]] std::string_view vm_cleanup_action_name(VmCleanupAction action);

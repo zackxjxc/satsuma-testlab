@@ -141,6 +141,10 @@
             "type": {"const": "execute"},
             "program": {"type": "string", "pattern": "^artifacts[/\\\\].+"},
             "arguments": {"type": "array", "items": {"type": "string"}},
+            "run_as": {
+              "enum": ["system", "interactive_user"],
+              "default": "system"
+            },
             "retry_safe": {"type": "boolean"},
             "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 86400},
             "collect_files": {"type": "array", "items": {"type": "string", "minLength": 1}}

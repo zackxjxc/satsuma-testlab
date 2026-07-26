@@ -69,6 +69,7 @@ RunManifest Controller::create_run(const TaskPlan& plan) const {
     validate_vm_references(config_, plan);
 
     RunManifest manifest;
+    manifest.protocol_version = kRunManifestProtocolVersion;
     manifest.lab_id = config_.lab_id;
     manifest.run_id = plan.run_id.value_or(make_id("run"));
     manifest.request_id = make_id("request");

@@ -17,7 +17,7 @@
   "properties": {
     "$schema": {"type": "string"},
     "schema_version": {"const": 1},
-    "protocol_version": {"const": 1},
+    "protocol_version": {"const": 2},
     "lab_id": {"$ref": "#/$defs/identifier"},
     "vm_id": {"$ref": "#/$defs/identifier"},
     "agent_version": {"type": "string", "minLength": 1, "maxLength": 64},
