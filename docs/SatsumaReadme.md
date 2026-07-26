@@ -11,14 +11,17 @@ Satsuma 在 Windows 宿主机与 VMware 测试虚拟机之间物化任务、部�
 - `SatsumaVM.exe`：轮询任务、独占领取步骤、校验并复制 Artifact 到 VM 本地目录。
 - Windows Job Object 进程树管理、超时终止、stdout/stderr 持续落盘和结果文件收集。
 - `SatsumaHost.exe report`：汇总当前运行的机器可读结果。
+- `SatsumaHost.exe orchestrate`：按单 VM 生命周期策略恢复、启动、检测、执行、归档并清理。
 - `SatsumaHost.exe check`：检查 Host/VMware 环境，发送无害任务并确认 Agent 执行通道。
 - `coro_rpc` Agent 注册、心跳、任务轮询、状态上报和断线重连。
 - `vmrun` 运行状态、启动、软/硬关闭、快照恢复、列表、创建和删除封装。
 - Host VM 生命周期命令，以及带前缀、配额、所有权保护和元数据的 AI 快照命令。
 - 路径越界、绝对任务路径和重解析点校验。
 
-JSON 任务的自动快照恢复和失败后自动恢复仍属于后续增量；当前版本通过显式 Host 命令提供 VMware
-带外操作，不会把尚未接入任务状态机的恢复流程报告为已完成。
+JSON 任务可以通过 `lifecycle` 声明单 VM 的执行前恢复、成功/失败清理策略和 `finally` 步骤。
+`orchestrate` 原子保存每次阶段迁移，并将主任务和 `finally` 证据复制到 Guest 不可见的归档目录；
+恢复失败以退出码 4 和 `RECOVERY_FAILED` 单独报告。普通 `run` 会拒绝生命周期计划，避免静默忽略策略。
+当前尚不支持多 VM 生命周期、claim 租约或 Host 崩溃后的自动续跑。
 
 ## 构建
 
@@ -326,6 +329,17 @@ SatsumaHost.exe check --config lab.local.json --vm client --timeout-seconds 30
 
 ## 运行文件通道示例
 
+带生命周期策略的单 VM 计划使用独立编排入口：
+
+```text
+SatsumaHost.exe orchestrate --config lab.local.json --plan task.json --timeout-seconds 300
+```
+
+`lifecycle.vms` 当前必须且只能包含一台 VM。每台策略必须同时定义 `on_success` 和 `on_failure`，动作可为
+`leave_running`、`stop` 或带 `snapshot` 的 `restore`；可选的 `restore_before` 在启动 VM 前恢复快照，
+`lifecycle.finally` 中的步骤在主任务完成或失败后单独发布。自动恢复只接受配置中的用户基础快照或
+AI 前缀快照。状态保存在 `archive_root/runs/<run-id>/lifecycle.json`，证据保存在同目录的 `evidence/`。
+
 在 Host 上物化任务：
 
 ```text
@@ -368,5 +382,6 @@ Host 通常不需要管理员权限。VM Agent 应以管理员权限运行，才
 任务中的 `program` 必须对应已登记的 Artifact，任务路径必须相对运行根目录。遇到 Artifact hash 不一致、
 路径越界或声明的结果文件缺失时，Agent 会生成失败结果，不会继续猜测。
 
-VM 卡死时可使用 Host 的硬关闭、恢复快照和重新启动命令完成带外恢复。当前 JSON 任务尚未自动串联
-这三步；任一命令失败时 Host 返回非零退出码，调用方必须停止后续测试并保留错误输出。
+VM 卡死时可使用 Host 的硬关闭、恢复快照和重新启动命令完成带外恢复。单 VM 生命周期计划也可由
+`orchestrate` 自动串联这些步骤；返回 `RECOVERY_FAILED` 时必须停止后续测试并保留归档，不能把它
+降级解释为普通业务失败。已存在的生命周期归档不会被覆盖，当前需人工判断后再决定如何处理未完成运行。

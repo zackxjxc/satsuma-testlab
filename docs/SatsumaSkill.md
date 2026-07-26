@@ -83,8 +83,10 @@ SatsumaHost.exe check --config lab.local.json --vm <vm-id> --timeout-seconds 30
 
 ## 5. 生成任务文件
 
-当前任务只支持 `echo` 和前台 `execute`，以 `schemas/task.schema.json` 和现有 C++ 校验为准。不得生成
-尚未实现的 `background`、任务内快照、`finally`、自动恢复或任意 Host 命令字段。
+任务步骤只支持 `echo` 和前台 `execute`，以 `schemas/task.schema.json` 和现有 C++ 校验为准。单 VM
+生命周期计划可以使用 `lifecycle.vms[].restore_before`、`on_success`、`on_failure` 和
+`lifecycle.finally`；必须通过 `orchestrate` 执行，普通 `run` 会明确拒绝。不得生成尚未实现的
+`background`、多 VM 生命周期、任意 Host 命令或 claim 重试字段。
 
 生成任务时遵守：
 
@@ -105,6 +107,15 @@ SatsumaHost.exe check --config lab.local.json --vm <vm-id> --timeout-seconds 30
 5. 先读取 `execution.json`、`stdout.log`、`stderr.log` 和声明收集的文件，再修改目标项目。
 6. 区分平台失败和业务失败：部署、超时、路径、Agent 与 VMware 属于平台证据；业务断言由 AI 分析。
 
+生命周期计划改用：
+
+```text
+SatsumaHost.exe orchestrate --config lab.local.json --plan <task.json> --timeout-seconds <1-86400>
+```
+
+退出码 0 表示 `COMPLETED`，退出码 1 表示业务或执行 `FAILED`，退出码 4 表示 `RECOVERY_FAILED`。
+必须读取 `archive_root/runs/<run-id>/lifecycle.json` 和 `evidence/`，不能仅凭主步骤退出码判断恢复结果。
+
 运行证据位于 `shared_folder.host_root/runs/<run_id>/`。不要直接修改已发布的 `task.json`、claim、
 `execution.json` 或最终日志；需要重试时生成新运行。
 
@@ -114,7 +125,8 @@ SatsumaHost.exe check --config lab.local.json --vm <vm-id> --timeout-seconds 30
 - 用户基础快照只读，禁止覆盖或删除；AI 只管理带 `ai_prefix` 的派生快照。
 - 用户已把配置中的 VM 声明为可丢弃测试机并授权生命周期操作后，AI 可以在该范围内启动、关闭和恢复，
   不要为每次相同操作重复要求用户确认；未知 VM、扩大网络范围或删除基础快照不在该授权内。
-- 当前 JSON 任务不会自动恢复快照。需要恢复时，先停止业务任务，再显式关闭、恢复和启动 VM。
+- 单 VM 生命周期计划可自动恢复配置中的基础快照或 AI 所有权快照；普通任务仍需显式执行 VM 命令。
+- 已存在生命周期归档时编排器拒绝复用 `run_id`。当前没有自动续跑，状态不明时必须保留人工门禁。
 - 任一带外操作失败时停止自动测试，保留错误输出，并要求用户处理 VMware 环境。
 - 被测程序只能在隔离 VM 中执行，不在 Host 添加运行被测 exe 的旁路命令。
 
