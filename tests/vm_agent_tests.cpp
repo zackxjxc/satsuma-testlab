@@ -2,6 +2,7 @@
 #include <chrono>
 #include <exception>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <stop_token>
 #include <stdexcept>
@@ -12,6 +13,7 @@
 #include <nlohmann/json.hpp>
 
 #include "agent.hpp"
+#include "interactive_process.hpp"
 #include "process_runner.hpp"
 #include "satsuma/core/errors.hpp"
 #include "satsuma/core/id.hpp"
@@ -29,6 +31,15 @@ void expect(const bool condition, const std::string& message) {
     if (!condition) {
         throw std::runtime_error(message);
     }
+}
+
+// 读取测试结果文本。
+[[nodiscard]] std::string read_text(const std::filesystem::path& path) {
+    std::ifstream input(path, std::ios::binary);
+    return {
+        std::istreambuf_iterator<char>(input),
+        std::istreambuf_iterator<char>(),
+    };
 }
 
 // 在有限时间内等待文件通道证据出现。
@@ -98,6 +109,64 @@ void write_cancellable_run(
     step.timeout_seconds = 60;
     manifest.steps.push_back(std::move(step));
     satsuma::write_json_atomic(run_directory / L"task.json", nlohmann::json(manifest));
+}
+
+// 创建一个交互用户 execute 步骤，可附带后续 echo 证明 Agent 继续运行。
+void write_interactive_run(
+    const std::filesystem::path& shared_root,
+    const std::filesystem::path& fixture,
+    const std::string& run_id,
+    const bool append_echo) {
+    const std::filesystem::path run_directory =
+        shared_root / L"runs" / satsuma::path_from_utf8(run_id);
+    const std::filesystem::path artifact =
+        run_directory / L"artifacts" / L"client" / L"fixture.exe";
+    std::filesystem::create_directories(artifact.parent_path());
+    std::filesystem::copy_file(
+        fixture,
+        artifact,
+        std::filesystem::copy_options::overwrite_existing);
+
+    satsuma::RunManifest manifest;
+    manifest.lab_id = "vm_agent_test";
+    manifest.run_id = run_id;
+    manifest.request_id = satsuma::make_id("request");
+    manifest.name = "interactive-user-execution";
+    manifest.created_at = satsuma::utc_timestamp();
+    manifest.artifacts.push_back({
+        "client",
+        satsuma::path_from_utf8("artifacts/client/fixture.exe"),
+        satsuma::sha256_file(artifact),
+    });
+    satsuma::TaskStep execute;
+    execute.id = "interactive_execute";
+    execute.vm = "client";
+    execute.type = "execute";
+    execute.program = satsuma::path_from_utf8("artifacts/client/fixture.exe");
+    execute.arguments = {
+        "--message", "interactive Agent argument with spaces",
+        "--output", "collected/result.json",
+        "--session-file", "collected/session.txt",
+        "--identity-file", "collected/identity.txt",
+    };
+    execute.run_as = satsuma::TaskRunAs::InteractiveUser;
+    execute.collect_files = {
+        satsuma::path_from_utf8("collected/result.json"),
+        satsuma::path_from_utf8("collected/session.txt"),
+        satsuma::path_from_utf8("collected/identity.txt"),
+    };
+    manifest.steps.push_back(std::move(execute));
+    if (append_echo) {
+        satsuma::TaskStep echo;
+        echo.id = "after_interactive_failure";
+        echo.vm = "client";
+        echo.type = "echo";
+        echo.message = "Agent continued";
+        manifest.steps.push_back(std::move(echo));
+    }
+    satsuma::write_json_atomic(
+        run_directory / L"task.json",
+        nlohmann::json(manifest));
 }
 
 // 验证停止信号通过 Win32 事件立即终止 Job Object。
@@ -216,16 +285,152 @@ void test_file_watch_and_agent_stop(
     const satsuma::ExecutionResult stopped =
         satsuma::load_json(stopped_result).get<satsuma::ExecutionResult>();
     expect(stopped.status == "failed", "Agent stop did not mark the step as failed");
+    expect(stopped.run_as == satsuma::TaskRunAs::System,
+        "default execute step did not retain the SYSTEM identity");
     expect(!stopped.timed_out, "Agent stop was incorrectly recorded as a timeout");
     expect(stopped.error == "Agent stop requested", "Agent stop did not preserve the stable error text");
+}
+
+// 验证 Agent 通过用户 helper 执行、收集文件并记录真实 Session。
+void test_agent_interactive_execution(
+    const std::filesystem::path& root,
+    const std::filesystem::path& fixture,
+    const std::filesystem::path& helper) {
+    const std::filesystem::path shared_root = root / L"share";
+    const std::string run_id = "run_interactive_success";
+    write_interactive_run(shared_root, fixture, run_id, false);
+
+    satsuma::AgentConfig config;
+    config.lab_id = "vm_agent_test";
+    config.vm_id = "client";
+    config.agent_version = "0.1.0";
+    config.host = "192.0.2.1:9";
+    config.shared_root = shared_root;
+    config.local_work_root = root / L"system-work";
+    satsuma::vm::Agent agent(config, helper);
+    expect(agent.run_once() == 1, "Agent did not claim the interactive step");
+
+    const std::filesystem::path result_path =
+        shared_root / L"runs" / satsuma::path_from_utf8(run_id) /
+        L"results" / L"client" / L"interactive_execute" / L"execution.json";
+    const satsuma::ExecutionResult result =
+        satsuma::load_json(result_path).get<satsuma::ExecutionResult>();
+    if (result.status == "failed" &&
+        result.error == satsuma::vm::kNoInteractiveUserSessionError) {
+        std::cout << "Agent interactive execution skipped: " << result.error << '\n';
+        return;
+    }
+    expect(result.status == "exited" && result.exit_code == 0,
+        "Agent interactive step did not exit successfully");
+    expect(result.run_as == satsuma::TaskRunAs::InteractiveUser &&
+           result.interactive_session_id.has_value(),
+        "Agent execution result did not record the interactive identity");
+    expect(result.files.size() == 3,
+        "Agent did not collect all interactive result files");
+
+    const std::filesystem::path result_directory = result_path.parent_path();
+    const std::string stdout_text = read_text(result_directory / L"stdout.log");
+    expect(stdout_text.find("interactive Agent argument with spaces") != std::string::npos,
+        "Agent interactive stdout or argument boundaries changed");
+    const std::filesystem::path collected_session =
+        result_directory / L"files" / L"collected" / L"session.txt";
+    expect(std::stoul(read_text(collected_session)) == *result.interactive_session_id,
+        "Agent collected a Session ID different from execution.json");
+    const std::filesystem::path collected_identity =
+        result_directory / L"files" / L"collected" / L"identity.txt";
+    const std::string identity_text = read_text(collected_identity);
+    expect(identity_text == "user\r\n" || identity_text == "user\n",
+        "Agent interactive target unexpectedly ran as LocalSystem");
+
+    try {
+        satsuma::vm::InteractiveUserSession cleanup =
+            satsuma::vm::InteractiveUserSession::acquire(config.lab_id, run_id);
+        std::error_code cleanup_error;
+        std::filesystem::remove_all(cleanup.working_directory(), cleanup_error);
+    } catch (...) {
+    }
+}
+
+// 验证无活动用户生成失败终态且不阻塞后续 SYSTEM 步骤。
+void test_agent_no_interactive_session(
+    const std::filesystem::path& root,
+    const std::filesystem::path& fixture,
+    const std::filesystem::path& helper) {
+    const std::filesystem::path shared_root = root / L"share";
+    const std::string run_id = "run_no_interactive_session";
+    write_interactive_run(shared_root, fixture, run_id, true);
+
+    satsuma::AgentConfig config;
+    config.lab_id = "vm_agent_test";
+    config.vm_id = "client";
+    config.agent_version = "0.1.0";
+    config.host = "192.0.2.1:9";
+    config.shared_root = shared_root;
+    config.local_work_root = root / L"system-work";
+    satsuma::vm::Agent agent(std::move(config), helper);
+
+    satsuma::vm::set_interactive_session_unavailable_for_test(true);
+    int executed = 0;
+    try {
+        executed = agent.run_once();
+        satsuma::vm::set_interactive_session_unavailable_for_test(false);
+    } catch (...) {
+        satsuma::vm::set_interactive_session_unavailable_for_test(false);
+        throw;
+    }
+    expect(executed == 2, "Agent did not continue after the interactive identity failure");
+
+    const std::filesystem::path results =
+        shared_root / L"runs" / satsuma::path_from_utf8(run_id) /
+        L"results" / L"client";
+    const satsuma::ExecutionResult failed = satsuma::load_json(
+        results / L"interactive_execute" / L"execution.json")
+            .get<satsuma::ExecutionResult>();
+    expect(failed.status == "failed" &&
+           failed.error == satsuma::vm::kNoInteractiveUserSessionError,
+        "no-session step did not preserve the stable failure");
+    expect(failed.run_as == satsuma::TaskRunAs::InteractiveUser &&
+           !failed.interactive_session_id.has_value(),
+        "no-session result reported an identity that was not acquired");
+    expect(std::filesystem::is_regular_file(
+        results / L"interactive_execute" / L"stdout.log"),
+        "no-session failure did not publish an empty stdout log");
+    expect(read_text(results / L"interactive_execute" / L"stdout.log").empty() &&
+           read_text(results / L"interactive_execute" / L"stderr.log").empty(),
+        "no-session failure published unexpected process logs");
+    const satsuma::ExecutionResult continued = satsuma::load_json(
+        results / L"after_interactive_failure" / L"execution.json")
+            .get<satsuma::ExecutionResult>();
+    expect(continued.status == "exited" && continued.exit_code == 0,
+        "Agent did not execute the SYSTEM step after a no-session failure");
+}
+
+// 验证兼容读取的 v1 配置不能构造生产 Agent。
+void test_agent_rejects_legacy_file_protocol(const std::filesystem::path& root) {
+    satsuma::AgentConfig config;
+    config.protocol_version = satsuma::kLegacyRunManifestProtocolVersion;
+    config.lab_id = "vm_agent_test";
+    config.vm_id = "client";
+    config.agent_version = "0.1.0";
+    config.host = "192.0.2.1:9";
+    config.shared_root = root / L"share";
+    config.local_work_root = root / L"work";
+    bool rejected = false;
+    try {
+        satsuma::vm::Agent agent(std::move(config));
+    } catch (const satsuma::Error& error) {
+        rejected = std::string(error.what()) ==
+            "Agent execution requires file protocol version 2";
+    }
+    expect(rejected, "production Agent accepted a legacy v1 file protocol config");
 }
 
 }  // namespace
 
 // 运行文件通道和取消测试并清理专用临时目录。
 int main(const int argc, char* argv[]) {
-    if (argc != 2) {
-        std::cerr << "Usage: SatsumaVmAgentTests <fixture.exe>\n";
+    if (argc != 3) {
+        std::cerr << "Usage: SatsumaVmAgentTests <fixture.exe> <SatsumaVM.exe>\n";
         return 2;
     }
     const std::filesystem::path root =
@@ -233,8 +438,18 @@ int main(const int argc, char* argv[]) {
         satsuma::path_from_utf8(satsuma::make_id("vm-agent-test"));
     try {
         const std::filesystem::path fixture = std::filesystem::absolute(argv[1]);
+        const std::filesystem::path helper = std::filesystem::absolute(argv[2]);
         test_process_runner_cancellation(root / L"process-runner", fixture);
         test_file_watch_and_agent_stop(root / L"agent-watch", fixture);
+        test_agent_interactive_execution(
+            root / L"interactive-agent",
+            fixture,
+            helper);
+        test_agent_no_interactive_session(
+            root / L"no-interactive-session",
+            fixture,
+            helper);
+        test_agent_rejects_legacy_file_protocol(root / L"legacy-protocol");
         std::filesystem::remove_all(root);
         std::cout << "SatsumaVmAgentTests passed\n";
         return 0;

@@ -4,6 +4,7 @@ target_link_libraries(SatsumaCoreTests PRIVATE SatsumaCore ${SATSUMA_YLT_TARGET}
 
 add_executable(SatsumaTestFixture fixture.cpp)
 target_compile_features(SatsumaTestFixture PRIVATE cxx_std_20)
+target_link_libraries(SatsumaTestFixture PRIVATE SatsumaCore advapi32)
 set_target_properties(SatsumaTestFixture PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
 )
@@ -42,6 +43,37 @@ add_test(
 )
 
 add_executable(
+    SatsumaVmInteractiveTests
+    interactive_process_tests.cpp
+    ../src/vm/interactive_process.cpp
+)
+target_include_directories(SatsumaVmInteractiveTests PRIVATE ../src/vm)
+target_compile_definitions(
+    SatsumaVmInteractiveTests
+    PRIVATE SATSUMA_INTERACTIVE_TESTS
+)
+target_link_libraries(
+    SatsumaVmInteractiveTests
+    PRIVATE SatsumaCore advapi32 userenv wtsapi32
+)
+if(MSVC)
+    target_compile_options(
+        SatsumaVmInteractiveTests
+        PRIVATE /W4 /permissive- /utf-8 /EHsc /external:anglebrackets /external:W0
+    )
+endif()
+add_test(
+    NAME SatsumaVmInteractiveTests
+    COMMAND SatsumaVmInteractiveTests
+        "$<TARGET_FILE:SatsumaVM>"
+        "$<TARGET_FILE:SatsumaTestFixture>"
+)
+set_tests_properties(
+    SatsumaVmInteractiveTests
+    PROPERTIES TIMEOUT 20 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE
+)
+
+add_executable(
     SatsumaVmAutostartTests
     autostart_tests.cpp
     ../src/vm/autostart.cpp
@@ -58,15 +90,17 @@ add_executable(
     SatsumaVmAgentTests
     vm_agent_tests.cpp
     ../src/vm/agent.cpp
+    ../src/vm/interactive_process.cpp
     ../src/vm/process_runner.cpp
     ../src/vm/rpc_client.cpp
     ../src/vm/service.cpp
     ../src/vm/update.cpp
 )
 target_include_directories(SatsumaVmAgentTests PRIVATE ../src/vm)
+target_compile_definitions(SatsumaVmAgentTests PRIVATE SATSUMA_INTERACTIVE_TESTS)
 target_link_libraries(
     SatsumaVmAgentTests
-    PRIVATE SatsumaCore ${SATSUMA_YLT_TARGET} advapi32 ws2_32
+    PRIVATE SatsumaCore ${SATSUMA_YLT_TARGET} advapi32 userenv ws2_32 wtsapi32
 )
 if(MSVC)
     target_compile_options(
@@ -74,13 +108,19 @@ if(MSVC)
         PRIVATE /W4 /permissive- /utf-8 /EHsc /external:anglebrackets /external:W0
     )
 endif()
-add_test(NAME SatsumaVmAgentTests COMMAND SatsumaVmAgentTests "$<TARGET_FILE:SatsumaTestFixture>")
+add_test(
+    NAME SatsumaVmAgentTests
+    COMMAND SatsumaVmAgentTests
+        "$<TARGET_FILE:SatsumaTestFixture>"
+        "$<TARGET_FILE:SatsumaVM>"
+)
 set_tests_properties(SatsumaVmAgentTests PROPERTIES TIMEOUT 15)
 
 add_executable(
     SatsumaVmServiceTests
     service_tests.cpp
     ../src/vm/agent.cpp
+    ../src/vm/interactive_process.cpp
     ../src/vm/process_runner.cpp
     ../src/vm/rpc_client.cpp
     ../src/vm/service.cpp
@@ -90,7 +130,7 @@ target_include_directories(SatsumaVmServiceTests PRIVATE ../src/vm)
 target_compile_definitions(SatsumaVmServiceTests PRIVATE SATSUMA_SERVICE_TESTS)
 target_link_libraries(
     SatsumaVmServiceTests
-    PRIVATE SatsumaCore ${SATSUMA_YLT_TARGET} advapi32 ws2_32
+    PRIVATE SatsumaCore ${SATSUMA_YLT_TARGET} advapi32 userenv ws2_32 wtsapi32
 )
 if(MSVC)
     target_compile_options(
@@ -105,6 +145,7 @@ add_executable(
     SatsumaVmUpdateTests
     update_tests.cpp
     ../src/vm/agent.cpp
+    ../src/vm/interactive_process.cpp
     ../src/vm/process_runner.cpp
     ../src/vm/rpc_client.cpp
     ../src/vm/service.cpp
@@ -114,7 +155,7 @@ target_include_directories(SatsumaVmUpdateTests PRIVATE ../src/vm)
 target_compile_definitions(SatsumaVmUpdateTests PRIVATE SATSUMA_UPDATE_TESTS)
 target_link_libraries(
     SatsumaVmUpdateTests
-    PRIVATE SatsumaCore ${SATSUMA_YLT_TARGET} advapi32 ws2_32
+    PRIVATE SatsumaCore ${SATSUMA_YLT_TARGET} advapi32 userenv ws2_32 wtsapi32
 )
 if(MSVC)
     target_compile_options(
@@ -183,6 +224,7 @@ add_executable(
     ../src/host/rpc_server.cpp
     ../src/host/rpc_service.cpp
     ../src/vm/agent.cpp
+    ../src/vm/interactive_process.cpp
     ../src/vm/process_runner.cpp
     ../src/vm/rpc_client.cpp
     ../src/vm/service.cpp
@@ -190,7 +232,10 @@ add_executable(
 )
 target_include_directories(SatsumaRpcServerTests PRIVATE ../src/host ../src/vm)
 target_link_libraries(SatsumaRpcServerTests PRIVATE SatsumaCore ${SATSUMA_YLT_TARGET})
-target_link_libraries(SatsumaRpcServerTests PRIVATE advapi32 ws2_32)
+target_link_libraries(
+    SatsumaRpcServerTests
+    PRIVATE advapi32 userenv ws2_32 wtsapi32
+)
 if(MSVC)
     target_compile_options(
         SatsumaRpcServerTests

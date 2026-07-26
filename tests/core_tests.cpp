@@ -212,13 +212,23 @@ void test_protocol_round_trip() {
     step.type = "execute";
     step.program = satsuma::path_from_utf8("artifacts/client/test.exe");
     step.arguments = {"argument with spaces", "quote\"value"};
+    step.run_as = satsuma::TaskRunAs::InteractiveUser;
     step.retry_safe = true;
     manifest.steps.push_back(step);
 
     const nlohmann::json encoded = manifest;
+    expect(
+        encoded.at("protocol_version") == satsuma::kRunManifestProtocolVersion,
+        "run manifest did not use the current file protocol");
+    expect(
+        encoded.at("steps").at(0).at("run_as") == "interactive_user",
+        "run manifest did not serialize the execute identity");
     const satsuma::RunManifest decoded = encoded.get<satsuma::RunManifest>();
     expect(decoded.run_id == manifest.run_id, "run manifest ID changed during JSON round trip");
     expect(decoded.steps.at(0).arguments == step.arguments, "task arguments changed during JSON round trip");
+    expect(
+        decoded.steps.at(0).run_as == satsuma::TaskRunAs::InteractiveUser,
+        "task run identity changed during JSON round trip");
     expect(decoded.steps.at(0).retry_safe, "task retry safety changed during JSON round trip");
 
     satsuma::ExecutionResult result;
@@ -227,15 +237,168 @@ void test_protocol_round_trip() {
     result.job_id = "job_1";
     result.step_id = "execute";
     result.status = "exited";
+    result.run_as = satsuma::TaskRunAs::InteractiveUser;
+    result.interactive_session_id = 23;
     result.exit_code = 0;
     result.stdout_path = "results/client/execute/stdout.log";
     result.stderr_path = "results/client/execute/stderr.log";
     result.started_at = "2026-07-23T00:00:00.000Z";
     result.finished_at = "2026-07-23T00:00:01.000Z";
-    const satsuma::ExecutionResult decoded_result = nlohmann::json(result).get<satsuma::ExecutionResult>();
+    const nlohmann::json encoded_result = result;
+    const satsuma::ExecutionResult decoded_result =
+        encoded_result.get<satsuma::ExecutionResult>();
     expect(
         decoded_result.exit_code == std::uint32_t{0},
         "execution result exit code changed during JSON round trip");
+    expect(
+        decoded_result.run_as == satsuma::TaskRunAs::InteractiveUser &&
+            decoded_result.interactive_session_id == std::uint32_t{23},
+        "execution result identity changed during JSON round trip");
+
+    nlohmann::json legacy_result = encoded_result;
+    legacy_result.erase("run_as");
+    legacy_result.erase("interactive_session_id");
+    const satsuma::ExecutionResult decoded_legacy_result =
+        legacy_result.get<satsuma::ExecutionResult>();
+    expect(
+        decoded_legacy_result.run_as == satsuma::TaskRunAs::System &&
+            !decoded_legacy_result.interactive_session_id.has_value(),
+        "legacy execution result did not default to the system identity");
+
+    nlohmann::json invalid_result = encoded_result;
+    invalid_result["run_as"] = "administrator";
+    expect_error(
+        [&invalid_result] {
+            static_cast<void>(invalid_result.get<satsuma::ExecutionResult>());
+        },
+        "execution result accepted an unsupported run identity");
+
+    invalid_result = encoded_result;
+    invalid_result["run_as"] = "system";
+    expect_error(
+        [&invalid_result] {
+            static_cast<void>(invalid_result.get<satsuma::ExecutionResult>());
+        },
+        "SYSTEM execution result accepted an interactive Session ID");
+
+    invalid_result = encoded_result;
+    invalid_result.erase("interactive_session_id");
+    expect_error(
+        [&invalid_result] {
+            static_cast<void>(invalid_result.get<satsuma::ExecutionResult>());
+        },
+        "successful interactive result accepted a missing Session ID");
+}
+
+// 验证任务计划默认身份以及运行清单 v1/v2 的兼容门禁。
+void test_task_run_as_protocol(const std::filesystem::path& root) {
+    nlohmann::json execute_step = {
+        {"id", "execute"},
+        {"vm", "client"},
+        {"type", "execute"},
+        {"program", "artifacts/client/test.exe"},
+    };
+    nlohmann::json plan_value = {
+        {"schema_version", 1},
+        {"name", "run-as-policy"},
+        {"steps", nlohmann::json::array({execute_step})},
+    };
+    const std::filesystem::path plan_path = root / L"run-as-plan.json";
+    satsuma::write_json_atomic(plan_path, plan_value);
+    expect(
+        satsuma::load_task_plan(plan_path).steps.at(0).run_as == satsuma::TaskRunAs::System,
+        "task plan did not default execute.run_as to system");
+
+    plan_value["steps"][0]["run_as"] = "interactive_user";
+    satsuma::write_json_atomic(plan_path, plan_value);
+    expect(
+        satsuma::load_task_plan(plan_path).steps.at(0).run_as ==
+            satsuma::TaskRunAs::InteractiveUser,
+        "task plan did not parse interactive_user");
+
+    plan_value["steps"][0]["run_as"] = "administrator";
+    satsuma::write_json_atomic(plan_path, plan_value);
+    expect_error(
+        [&plan_path] { static_cast<void>(satsuma::load_task_plan(plan_path)); },
+        "task plan accepted an unsupported run identity");
+
+    plan_value["steps"][0] = {
+        {"id", "echo"},
+        {"vm", "client"},
+        {"type", "echo"},
+        {"message", "hello"},
+        {"run_as", "system"},
+    };
+    satsuma::write_json_atomic(plan_path, plan_value);
+    expect_error(
+        [&plan_path] { static_cast<void>(satsuma::load_task_plan(plan_path)); },
+        "echo step accepted an explicit run identity");
+
+    satsuma::RunManifest manifest;
+    manifest.lab_id = "test_lab";
+    manifest.run_id = "run_identity";
+    manifest.request_id = "request_identity";
+    manifest.name = "identity-protocol";
+    manifest.created_at = "2026-07-27T00:00:00.000Z";
+    satsuma::TaskStep step;
+    step.id = "execute";
+    step.vm = "client";
+    step.type = "execute";
+    step.program = satsuma::path_from_utf8("artifacts/client/test.exe");
+    manifest.steps.push_back(step);
+
+    const nlohmann::json version_two = manifest;
+    expect(
+        version_two.at("steps").at(0).at("run_as") == "system",
+        "protocol v2 did not explicitly serialize system run_as");
+
+    nlohmann::json missing_v2_identity = version_two;
+    missing_v2_identity["steps"][0].erase("run_as");
+    expect_error(
+        [&missing_v2_identity] {
+            static_cast<void>(missing_v2_identity.get<satsuma::RunManifest>());
+        },
+        "protocol v2 accepted an execute step without run_as");
+
+    nlohmann::json version_one = version_two;
+    version_one["protocol_version"] = satsuma::kLegacyRunManifestProtocolVersion;
+    version_one["steps"][0].erase("run_as");
+    const satsuma::RunManifest decoded_version_one =
+        version_one.get<satsuma::RunManifest>();
+    expect(
+        decoded_version_one.steps.at(0).run_as == satsuma::TaskRunAs::System,
+        "protocol v1 execute step did not use the implicit system identity");
+
+    version_one["steps"][0]["run_as"] = "system";
+    expect_error(
+        [&version_one] {
+            static_cast<void>(version_one.get<satsuma::RunManifest>());
+        },
+        "protocol v1 accepted an explicit run_as field");
+
+    manifest.protocol_version = satsuma::kLegacyRunManifestProtocolVersion;
+    const nlohmann::json serialized_version_one = manifest;
+    expect(
+        !serialized_version_one.at("steps").at(0).contains("run_as"),
+        "protocol v1 serializer emitted run_as");
+
+    manifest.steps.at(0).run_as = satsuma::TaskRunAs::InteractiveUser;
+    expect_error(
+        [&manifest] { static_cast<void>(nlohmann::json(manifest)); },
+        "protocol v1 serialized an interactive_user step");
+
+    manifest.protocol_version = satsuma::kRunManifestProtocolVersion;
+    satsuma::TaskStep echo_step;
+    echo_step.id = "echo";
+    echo_step.vm = "client";
+    echo_step.type = "echo";
+    echo_step.message = "hello";
+    manifest.steps = {echo_step};
+    const nlohmann::json version_two_echo = manifest;
+    expect(
+        !version_two_echo.at("steps").at(0).contains("run_as"),
+        "protocol v2 serialized run_as for an echo step");
+    static_cast<void>(version_two_echo.get<satsuma::RunManifest>());
 }
 
 // 验证任务生命周期策略解析和普通 run 的安全边界所需模型。
@@ -501,6 +664,7 @@ int main() {
         test_ai_snapshot_plan();
         test_ai_snapshot_deletion();
         test_protocol_round_trip();
+        test_task_run_as_protocol(root);
         test_task_lifecycle_policy(root);
         test_run_lifecycle(root);
         test_claim_recovery_decision(root);

@@ -74,7 +74,7 @@ file(WRITE "${TEST_ROOT}/lab.json" "${lab_json}")
 set(agent_json [=[
 {
   "schema_version": 1,
-  "protocol_version": 1,
+  "protocol_version": 2,
   "lab_id": "integration_lab",
   "vm_id": "client",
   "agent_version": "0.1.0",
@@ -436,7 +436,7 @@ endif()
 set(claim_task_template [=[
 {
   "schema_version": 1,
-  "protocol_version": 1,
+  "protocol_version": 2,
   "lab_id": "integration_lab",
   "run_id": "@RUN_ID@",
   "request_id": "request_claim_recovery",

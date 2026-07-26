@@ -154,8 +154,9 @@ void test_successful_update(const std::filesystem::path& root) {
             "successful update retained a staging or backup file");
     }
     const nlohmann::json config = satsuma::load_json(fixture.paths.config);
-    expect(config.at("agent_version") == "0.1.1",
-        "successful update did not persist the version");
+    expect(config.at("protocol_version") == satsuma::kRunManifestProtocolVersion &&
+           config.at("agent_version") == "0.1.1",
+        "successful update did not persist the current protocol and version");
     expect(config.at("last_update_id") == "update_001",
         "successful update did not persist the update ID");
     expect(satsuma::load_agent_update_result(fixture.paths.result).process_id == 4321,
@@ -220,9 +221,10 @@ void test_committed_cleanup_retry(const std::filesystem::path& root) {
             fixture.manifest),
         "new Agent did not finish committed update cleanup");
     const nlohmann::json config = satsuma::load_json(fixture.paths.config);
-    expect(config.at("agent_version") == "0.1.1" &&
+    expect(config.at("protocol_version") == satsuma::kRunManifestProtocolVersion &&
+           config.at("agent_version") == "0.1.1" &&
            config.at("last_update_id") == "update_001",
-        "committed cleanup retry changed the updated config");
+        "committed cleanup retry changed the updated protocol or config");
     expect(std::filesystem::is_regular_file(fixture.paths.result) &&
            !std::filesystem::exists(fixture.paths.state) &&
            !std::filesystem::exists(fixture.paths.manifest),
@@ -372,9 +374,10 @@ void test_start_failure_rollback(const std::filesystem::path& root) {
     expect(read_text(fixture.paths.new_binary) == "new-binary",
         "start failure did not move the failed candidate back to new");
     const nlohmann::json config = satsuma::load_json(fixture.paths.config);
-    expect(config.at("agent_version") == "0.1.0" &&
+    expect(config.at("protocol_version") == satsuma::kLegacyRunManifestProtocolVersion &&
+        config.at("agent_version") == "0.1.0" &&
         !config.contains("last_update_id"),
-        "start failure did not restore the old config");
+        "start failure did not restore the old protocol and config");
 }
 
 // 验证第二次改名失败会立即把 bak 恢复为正式文件。
