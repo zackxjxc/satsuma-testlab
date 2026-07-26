@@ -8,13 +8,13 @@ Satsuma 在 Windows 宿主机与 VMware 测试虚拟机之间物化任务、部�
 版本 `0.1.0` 已提供：
 
 - `SatsumaHost.exe run`：校验任务和 VM ID，计算 Artifact SHA-256，并原子发布运行目录。
-- `SatsumaVM.exe`：轮询任务、独占领取步骤、校验并复制 Artifact 到 VM 本地目录。
+- `SatsumaVM.exe --watch`：仅通过共享文件轮询任务、独占领取步骤，并将 Artifact 复制到 VM 本地目录。
 - Windows Job Object 进程树管理、超时终止、stdout/stderr 持续落盘和结果文件收集。
 - `SatsumaHost.exe report`：汇总当前运行的机器可读结果。
 - `SatsumaHost.exe orchestrate`：按单 VM 生命周期策略恢复、启动、检测、执行、归档并清理。
 - claim v2 有限租约：只自动回收显式 `retry_safe` 的过期步骤，其他步骤保留人工门禁。
 - `SatsumaHost.exe check`：检查 Host/VMware 环境，发送无害任务并确认 Agent 执行通道。
-- `coro_rpc` Agent 注册、心跳、任务轮询、状态上报和断线重连。
+- `SatsumaVM` Windows Service：LocalSystem 延迟自动启动、受控停止和失败恢复。
 - `vmrun` 运行状态、启动、软/硬关闭、快照恢复、列表、创建和删除封装。
 - Host VM 生命周期命令，以及带前缀、配额、所有权保护和元数据的 AI 快照命令。
 - 路径越界、绝对任务路径和重解析点校验。
@@ -62,7 +62,7 @@ Debug/Release 构建或测试自动触发。
 2. 普通测试可直接使用 NAT 和 DHCP；危险网络测试再配置独立的 Host-only/LAN Segment。
 3. 只共享专用的 `vm-share`，不要共享源码根目录、个人目录或凭据。
 4. 复制根目录模板为 `lab.local.json`，再填写本机路径。
-5. 为每台 VM 复制并填写一份 `agent.json`，然后以管理员权限启动 `SatsumaVM.exe`。
+5. 为每台 VM 复制并填写一份 `agent.json`，然后运行事务化 `install-agent.ps1` 并确认 UAC。
 6. 清理 VM 中的遗留进程和网络状态，保存名为 `clean` 的用户基础快照。
 
 以下路径和 IP 只是示例。仓库跟踪 `lab.json` 模板，本机真实值写入已忽略的 `lab.local.json`，不要把
@@ -98,17 +98,17 @@ Get-Item 'build/windows-default/bin/Release/SatsumaVM.exe'
 ### 2. 配置 VMware 网络
 
 最简环境可以直接使用 VMware 默认 NAT 和 DHCP。虚拟机名称、Windows 计算机名、网卡名称和固定
-Guest IP 都不是运行条件；Agent 主动连接 `host.listen`，Host 不依赖 Guest IP 反向连接。
+Guest IP 都不是文件任务通道的运行条件；Host 不依赖 Guest IP 反向连接。
 
 只有被测程序会修改路由、DNS、防火墙或虚拟适配器时，才建议使用两张隔离网卡：
 
 | 网卡 | 推荐模式 | 用途 |
 |---|---|---|
-| 管理网卡 | Host-only 自定义 VMnet | Agent 连接 Host RPC、环境诊断 |
+| 管理网卡 | Host-only 自定义 VMnet | 可选 RPC 诊断、环境诊断 |
 | 实验网卡 | 另一条 Host-only/LAN Segment | 被测程序通信，可由测试破坏 |
 
-不要把危险测试使用的实验网卡桥接到办公网、家庭主网或生产网络。无论使用 NAT 还是 Host-only，
-`host.listen` 都填写 Host 对应 VMware 虚拟网卡的地址和端口；Guest 保持 DHCP 即可。
+不要把危险测试使用的实验网卡桥接到办公网、家庭主网或生产网络。`host.listen` 仍需填写 Guest 可达的
+Host VMware 虚拟网卡地址和端口，供显式 RPC 诊断使用；Guest 保持 DHCP 即可。
 
 在 Host 上用只读命令确认地址确实绑定在本机网卡上：
 
@@ -116,9 +116,9 @@ Guest IP 都不是运行条件；Agent 主动连接 `host.listen`，Host 不依�
 Get-NetIPAddress -AddressFamily IPv4 | Select-Object InterfaceAlias, IPAddress
 ```
 
-如果使用 RPC 实时状态，需要在 Host 防火墙中允许对应 VMware NAT 或 Host-only 网段入站访问 TCP
-37100。防火墙修改需要管理员权限，应由用户确认作用域后手工完成；不要把端口开放到公共网络。
-共享文件任务在 RPC 暂时不可用时仍可执行，Agent 会记录连接失败并继续重连。
+`--watch` 文件循环和生产 Windows Service 不启动、调用或等待 RPC，不需要开放 TCP 37100。只有显式运行
+`SatsumaHost serve` 与 `SatsumaVM --rpc-once` 做诊断时才需要对应端口；防火墙修改需要管理员权限，
+应由用户确认作用域后手工完成，且不得把端口开放到公共网络。
 
 ### 3. 配置 VMware Shared Folder
 
@@ -203,27 +203,41 @@ Copy-Item 'agent.json' 'D:\vm-share\satsuma-bootstrap/'
 | `shared_root` | 当前 VM 实测可读写的 Shared Folder UNC 路径 |
 | `local_work_root` | VM 内本地执行目录，不要设为共享目录 |
 | `poll_interval_ms` | 文件任务轮询间隔，范围 100–60000 |
-| `reconnect_interval_ms` | RPC 断线重连间隔，范围 100–60000 |
-| `rpc_timeout_ms` | 单次 RPC 超时，范围 100–300000 |
+| `reconnect_interval_ms` | Shared Folder 不可用后的重试间隔，范围 100–60000 |
+| `rpc_timeout_ms` | RPC 诊断超时，范围 100–300000；Service 文件主线不使用 |
 
 多台 VM 必须分别保存自己的配置，至少修改 `vm_id`；单台任意 VM 可以继续使用逻辑 ID `client`，
 它不要求 VMware 显示名称也叫 Client。在 Guest 的任意 PowerShell 中执行一行安装命令：
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File '\\vmware-host\Shared Folders\vm-share\satsuma-bootstrap\install-agent.ps1'
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+    -File '\\vmware-host\Shared Folders\vm-share\satsuma-bootstrap\install-agent.ps1'
 ```
 
-脚本在需要时自动显示一次 UAC 提示，然后在本地固定磁盘的专用 `Satsuma` 目录中创建
-`C:\Satsuma\bin` 和 `C:\Satsuma\work`、收紧 ACL、暂存并校验新 Agent。更新失败会恢复旧文件、旧任务
-和旧进程。最后由 `SatsumaVM.exe --install-autostart` 原生创建或更新 `\Satsuma\SatsumaVM Agent`
-计划任务，并在后台立即启动。脚本完成后可以关闭 PowerShell，不需要保留前台窗口。
+共享目录中的候选二进制如果使用唯一文件名，不要覆盖旧文件；通过参数明确选择本次候选：
 
-计划任务只接受受保护的本地安装布局，使用 `SYSTEM` 和最高权限，在开机 15 秒后执行本地
-`SatsumaVM.exe --config C:\Satsuma\agent.json --watch`；崩溃后每分钟重启，且拒绝并行启动第二实例。
-每次 `--watch` 启动还会重新核对并更新任务定义。`--once` 和 `--rpc-once` 不修改系统计划任务，适合
-诊断和自动化测试；`--validate-config` 只解析配置，也不修改系统。Agent 就绪后会在共享目录发布
-`agents/<vm-id>.json`，安装脚本会核对任务动作、实际镜像路径、PID 和该状态文件。被测 Artifact 始终
-复制到 Guest 本地工作目录执行，不直接从 UNC 路径运行。
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+    -File '\\vmware-host\Shared Folders\vm-share\satsuma-bootstrap\install-agent.ps1' `
+    -AgentFileName 'SatsumaVM-service-<timestamp>.exe'
+```
+
+脚本在需要时自动显示一次 UAC 提示，然后在本地固定磁盘的 `C:\Satsuma` 中创建 `bin` 和 `work`。
+它先把共享目录候选复制为固定的 `SatsumaVM.new.exe`，核对 SHA-256 并执行配置预检，再有限等待当前
+Service 停止、停止并注销旧计划任务，最后切换文件并注册 Service。安装使用一个管理员全局 Mutex 防止
+两个脚本同时切换文件；失败时只尝试恢复本次 `.bak` 文件和旧 Service，复杂故障直接恢复 Guest 快照。
+
+安装成功后，`SatsumaVM.exe --install-service` 创建或更新服务名 `SatsumaVM`、显示名 `SatsumaVM Agent`
+的 Windows Service。Service 使用 LocalSystem、延迟自动启动和 5/15/60 秒失败重启策略；SCM 命令固定为
+`"C:\Satsuma\bin\SatsumaVM.exe" --config C:\Satsuma\agent.json --service`。安装只等待 SCM 进入
+`RUNNING` 并返回有效 PID，不把共享目录 presence 当成 SCM 注册事务。`--remove-service` 会有限等待停止，
+删除后等待 SCM 对象消失；Service 不存在时幂等返回。安装成功后脚本删除 `.bak`、`.new` 和配置暂存文件，
+PowerShell 可以关闭，不需要保留前台窗口。
+
+`--watch` 是不注册系统启动项的纯文件前台模式，适合诊断；`--service` 只应由 SCM 启动；`--rpc-once`
+仅保留为非生产 RPC 诊断入口。`--once`、`--watch`、`--rpc-once` 和 `--validate-config` 都不会修改 Service。
+Agent 就绪后会在共享目录发布 `agents/<vm-id>.json`。被测 Artifact 始终复制到 Guest 本地工作目录执行，
+不直接从 UNC 路径运行。
 
 ### 6. 创建用户基础快照
 
@@ -234,9 +248,9 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File '\\vmware-host\Shared Fo
 - 临时 Artifact、路由、DNS、虚拟适配器和测试进程已经清理。
 - `clean` 不以 `satsuma-ai-` 开头，并与 `lab.json` 中的基础快照名完全一致。
 
-推荐在安装脚本验收成功后关闭 VM，再创建关机快照。恢复快照并启动 VM 后，计划任务会创建全新的
-Agent 进程，不会复用旧进程内存和 RPC 会话。开机时 RPC 或 Shared Folder 暂时未就绪不会导致 Agent
-退出，它会按配置的重连间隔继续尝试。
+推荐在安装脚本验收成功后关闭 VM，再创建关机快照。恢复快照并启动 VM 后，SCM 会为 Windows Service
+创建全新的 Agent 进程，不会复用旧进程内存。开机时 Shared Folder 暂时未就绪不会导致 Agent 退出，
+Service 会继续轮询文件通道。
 
 用户基础快照属于只读基线。AI 只能通过 `SatsumaHost snapshot create-ai/delete-ai` 管理带配置
 前缀的派生快照，不能覆盖或删除 `clean`。
@@ -250,14 +264,8 @@ Agent 进程，不会复用旧进程内存和 RPC 会话。开机时 RPC 或 Sha
        --id client --config 'lab.local.json'
    ```
 
-2. 等待开机计划任务自动启动 `SatsumaVM.exe --watch`。
-3. 如需 RPC 实时状态，在一个 Host 终端持续运行：
-
-   ```powershell
-   & 'build/windows-default/bin/Release/SatsumaHost.exe' serve --config 'lab.local.json'
-   ```
-
-4. 在另一个 Host 终端执行主动检测：
+2. 等待 Windows Service 自动启动 `SatsumaVM.exe --service` 并持续发布 presence。
+3. 在 Host 终端执行主动检测：
 
    ```powershell
    & 'build/windows-default/bin/Release/SatsumaHost.exe' check `
@@ -265,17 +273,17 @@ Agent 进程，不会复用旧进程内存和 RPC 会话。开机时 RPC 或 Sha
    $LASTEXITCODE
    ```
 
-5. 只有退出码为 0 且 JSON 顶层 `status` 为 `ready`，才运行真实测试。两台 VM 都准备完成后，省略
+4. 只有退出码为 0 且 JSON 顶层 `status` 为 `ready`，才运行真实测试。两台 VM 都准备完成后，省略
    `--vm` 可以一次检测 `lab.json` 中的全部 VM。
 
-6. 运行无害示例并读取 Host 返回的 `run_id`：
+5. 运行无害示例并读取 Host 返回的 `run_id`：
 
    ```powershell
    & 'build/windows-default/bin/Release/SatsumaHost.exe' run `
        --config 'lab.local.json' --plan 'examples/hello-vm-task.json'
    ```
 
-7. Agent 完成任务后查询报告：
+6. Agent 完成任务后查询报告：
 
    ```powershell
    & 'build/windows-default/bin/Release/SatsumaHost.exe' report `
@@ -352,7 +360,7 @@ AI 前缀快照。状态保存在 `archive_root/runs/<run-id>/lifecycle.json`，
 SatsumaHost.exe run --config lab.local.json --plan examples/hello-vm-task.json
 ```
 
-在 Client VM 中领取一次任务，或持续轮询：
+Windows Service 正常运行时无需手工启动 Agent。仅在前台诊断时，可领取一次任务或持续轮询：
 
 ```text
 SatsumaVM.exe --config agent-client.json --once
@@ -387,7 +395,8 @@ SatsumaHost.exe snapshot delete-ai --vm client --snapshot <snapshot-name> --conf
 
 ## 权限与故障边界
 
-Host 通常不需要管理员权限。VM Agent 应以管理员权限运行，才能约束和清理需要高权限的被测进程。
+Host 通常不需要管理员权限。生产 Agent 由 LocalSystem Windows Service 运行，前台诊断则应使用管理员
+权限，才能约束和清理需要高权限的被测进程。
 任务中的 `program` 必须对应已登记的 Artifact，任务路径必须相对运行根目录。遇到 Artifact hash 不一致、
 路径越界或声明的结果文件缺失时，Agent 会生成失败结果，不会继续猜测。
 

@@ -36,13 +36,16 @@
 
 如果用户要求把清单保存为文件，使用 Markdown，并明确区分“已确认”“待用户操作”“尚未验证”。
 不得虚构 VM 内状态、共享目录可写性、快照存在性或管理员操作成功。未经明确授权，不修改防火墙、
-Host/VM 网络、VMware Shared Folder 或快照。Agent 计划任务由安装脚本和 `SatsumaVM --watch` 自行维护，
-不要求用户进入任务计划程序手工配置。
+Host/VM 网络、VMware Shared Folder 或快照。Agent Windows Service 由安装脚本和
+`SatsumaVM --install-service` 维护，不要求用户进入服务管理器手工配置。
 
 Guest 已能访问 Shared Folder 时，只要求用户执行一次 `scripts/install-agent.ps1` 并确认 Windows UAC。
-脚本只接受本地固定磁盘中的专用 `Satsuma` 安装根，完成 ACL 收紧、暂存哈希校验、旧实例停止、失败
-回滚、SYSTEM 开机任务注册和后台启动。AI 不应再要求用户保持前台终端、每次开机手工启动 Agent，或
-把当前控制台程序错误注册成 Windows Service。
+脚本只接受本地固定磁盘中的专用 `Satsuma` 安装根，完成 ACL 收紧、暂存哈希校验、Service 所有权预检、
+旧实例停止、失败回滚、LocalSystem Windows Service 注册和持续 presence 验证。AI 不应要求用户保持
+前台终端、每次开机手工启动 Agent，或绕过安装脚本直接使用 `sc.exe` 接管同名 Service。
+
+`--watch` 文件循环和生产 `--service` 只使用共享文件通道，不启动、不调用也不等待 RPC。`--rpc-once` 仅用于
+显式诊断；不要把 `SatsumaHost serve` 或 TCP 37100 当作业务任务的前置条件。
 
 ## 3. 配置一致性
 
@@ -62,7 +65,7 @@ JSON 中 Windows 反斜杠需要转义。不得把密码、Token、源码目录�
 
 ## 4. 主动检测是业务任务的前置门禁
 
-确认目标 VM 已启动后执行；安装完成的 Agent 会由开机计划任务自动运行：
+确认目标 VM 已启动后执行；安装完成的 Agent 会由 Windows Service 自动运行：
 
 ```text
 SatsumaHost.exe check --config lab.local.json --vm <vm-id> --timeout-seconds 30
@@ -86,7 +89,10 @@ SatsumaHost.exe check --config lab.local.json --vm <vm-id> --timeout-seconds 30
 任务步骤只支持 `echo` 和前台 `execute`，以 `schemas/task.schema.json` 和现有 C++ 校验为准。单 VM
 生命周期计划可以使用 `lifecycle.vms[].restore_before`、`on_success`、`on_failure` 和
 `lifecycle.finally`；必须通过 `orchestrate` 执行，普通 `run` 会明确拒绝。不得生成尚未实现的
-`background`、多 VM 生命周期、任意 Host 命令或 claim 重试字段。
+`background`、多 VM 生命周期或任意 Host 命令，也不得直接生成或修改 claim 内部字段。
+
+文件控制 mailbox、Host stop/cancel API、单调 sequence 和 ACK 尚未实现。AI 不得手工向共享目录写入
+自定义 mailbox 文件或把文件存在当作控制成功；应等待双端协议、补偿扫描和持久证据一起交付。
 
 生成任务时遵守：
 
@@ -103,8 +109,8 @@ SatsumaHost.exe check --config lab.local.json --vm <vm-id> --timeout-seconds 30
 
 1. 使用 `SatsumaHost.exe run --config lab.local.json --plan <task.json>` 物化任务。
 2. 保存 Host 返回的唯一 `run_id`，不得复用或手工覆盖旧运行目录。
-3. 等待 Agent 执行；`report` 尚未提供等待参数，需要有限间隔轮询，禁止无限等待。
-4. 使用 `SatsumaHost.exe report --config lab.local.json --run <run-id>` 获取汇总。
+3. 使用 `SatsumaHost.exe report --config lab.local.json --run <run-id> --wait-seconds <1-86400>` 有限等待。
+4. 等待超时时读取退出码 3 和当前汇总；需要即时只读状态时省略 `--wait-seconds`。
 5. 先读取 `execution.json`、`stdout.log`、`stderr.log` 和声明收集的文件，再修改目标项目。
 6. 区分平台失败和业务失败：部署、超时、路径、Agent 与 VMware 属于平台证据；业务断言由 AI 分析。
 
