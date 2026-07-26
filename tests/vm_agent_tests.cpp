@@ -198,6 +198,12 @@ void test_file_watch_and_agent_stop(
     expect(
         std::filesystem::is_regular_file(shared_root / L"agents" / L"client.json"),
         "Agent did not publish presence through the file channel");
+    const nlohmann::json presence = satsuma::load_json(
+        shared_root / L"agents" / L"client.json");
+    expect(
+        presence.value("agent_version", std::string{}) == "0.1.0" &&
+            presence.value("update_id", std::string{}).empty(),
+        "Agent presence did not publish its version and update identity");
 
     const satsuma::ExecutionResult echo =
         satsuma::load_json(echo_result).get<satsuma::ExecutionResult>();

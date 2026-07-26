@@ -21,6 +21,7 @@
 #include "satsuma/core/sha256.hpp"
 #include "satsuma/core/snapshot.hpp"
 #include "satsuma/core/task.hpp"
+#include "satsuma/core/update.hpp"
 #include "satsuma/core/windows_command_line.hpp"
 
 namespace {
@@ -64,6 +65,17 @@ void test_file_primitives(const std::filesystem::path& root) {
     satsuma::write_json_atomic(json_path, {{"message", "hello"}, {"value", 7}});
     const nlohmann::json value = satsuma::load_json(json_path);
     expect(value.at("message") == "hello" && value.at("value") == 7, "atomic JSON round trip failed");
+
+    const std::filesystem::path removed_parent = root / L"removed";
+    expect_error(
+        [&removed_parent] {
+            satsuma::write_json_atomic_existing_parent(
+                removed_parent / L"result.json",
+                {{"status", "failed"}});
+        },
+        "existing-parent JSON write accepted a removed directory");
+    expect(!std::filesystem::exists(removed_parent),
+        "existing-parent JSON write recreated a removed directory");
 
     const std::filesystem::path hash_path = root / L"abc.txt";
     std::ofstream output(hash_path, std::ios::binary);
@@ -404,6 +416,67 @@ void test_rpc_protocol_validation() {
         "unknown Agent status was accepted");
 }
 
+// 验证独立更新清单和终态结果的严格协议。
+void test_agent_update_protocol(const std::filesystem::path& root) {
+    satsuma::AgentUpdateManifest manifest;
+    manifest.lab_id = "test_lab";
+    manifest.vm_id = "client";
+    manifest.update_id = "update_001";
+    manifest.version = "0.1.1";
+    manifest.binary = L"SatsumaVM.exe";
+    manifest.size = 1234;
+    manifest.sha256 = std::string(64, 'a');
+    manifest.created_at = "2026-07-27T00:00:00.000Z";
+    const nlohmann::json encoded = manifest;
+    const satsuma::AgentUpdateManifest decoded =
+        encoded.get<satsuma::AgentUpdateManifest>();
+    expect(decoded.update_id == manifest.update_id, "update manifest ID changed");
+    expect(decoded.binary == manifest.binary, "update manifest binary changed");
+    expect(decoded.size == manifest.size, "update manifest size changed");
+
+    const std::filesystem::path manifest_path = root / L"update.json";
+    satsuma::write_json_atomic(manifest_path, encoded);
+    expect(
+        satsuma::load_agent_update_manifest(manifest_path).version == manifest.version,
+        "update manifest file did not round-trip");
+
+    nlohmann::json invalid = encoded;
+    invalid["sha256"] = "ABC";
+    expect_error(
+        [&invalid] { static_cast<void>(invalid.get<satsuma::AgentUpdateManifest>()); },
+        "invalid update hash was accepted");
+    invalid = encoded;
+    invalid["binary"] = "nested/SatsumaVM.exe";
+    expect_error(
+        [&invalid] { static_cast<void>(invalid.get<satsuma::AgentUpdateManifest>()); },
+        "nested update binary was accepted");
+    invalid = encoded;
+    invalid["size"] = 0;
+    expect_error(
+        [&invalid] { static_cast<void>(invalid.get<satsuma::AgentUpdateManifest>()); },
+        "zero-sized update was accepted");
+
+    satsuma::AgentUpdateResult result;
+    result.update_id = manifest.update_id;
+    result.vm_id = manifest.vm_id;
+    result.version = manifest.version;
+    result.status = "succeeded";
+    result.rollback_status = "none";
+    result.process_id = 4321;
+    result.completed_at = "2026-07-27T00:01:00.000Z";
+    const satsuma::AgentUpdateResult decoded_result =
+        nlohmann::json(result).get<satsuma::AgentUpdateResult>();
+    expect(decoded_result.process_id == 4321, "update result PID changed");
+
+    nlohmann::json invalid_result = result;
+    invalid_result["process_id"] = 0;
+    expect_error(
+        [&invalid_result] {
+            static_cast<void>(invalid_result.get<satsuma::AgentUpdateResult>());
+        },
+        "successful update without a PID was accepted");
+}
+
 // 验证 CreateProcessW 参数引用和结尾反斜杠处理。
 void test_windows_command_line() {
     expect(satsuma::quote_windows_argument(L"plain") == L"plain", "plain argument was quoted unexpectedly");
@@ -432,6 +505,7 @@ int main() {
         test_run_lifecycle(root);
         test_claim_recovery_decision(root);
         test_rpc_protocol_validation();
+        test_agent_update_protocol(root);
         test_windows_command_line();
         std::filesystem::remove_all(root);
         std::cout << "SatsumaCoreTests passed\n";

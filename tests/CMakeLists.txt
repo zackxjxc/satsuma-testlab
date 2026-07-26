@@ -19,6 +19,29 @@ endif()
 add_test(NAME SatsumaCoreTests COMMAND SatsumaCoreTests)
 
 add_executable(
+    SatsumaHostUpdateTests
+    host_update_tests.cpp
+    ../src/host/controller.cpp
+)
+target_include_directories(SatsumaHostUpdateTests PRIVATE ../src/host)
+target_link_libraries(SatsumaHostUpdateTests PRIVATE SatsumaCore)
+if(MSVC)
+    target_compile_options(
+        SatsumaHostUpdateTests
+        PRIVATE /W4 /permissive- /utf-8 /EHsc /external:anglebrackets /external:W0
+    )
+endif()
+add_test(NAME SatsumaHostUpdateTests COMMAND SatsumaHostUpdateTests)
+
+add_test(
+    NAME SatsumaSelfRenameTest
+    COMMAND "${CMAKE_COMMAND}"
+        "-DFIXTURE_EXE=$<TARGET_FILE:SatsumaTestFixture>"
+        "-DTEST_ROOT=${CMAKE_CURRENT_BINARY_DIR}/self-rename-test"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/self_rename_test.cmake"
+)
+
+add_executable(
     SatsumaVmAutostartTests
     autostart_tests.cpp
     ../src/vm/autostart.cpp
@@ -37,9 +60,14 @@ add_executable(
     ../src/vm/agent.cpp
     ../src/vm/process_runner.cpp
     ../src/vm/rpc_client.cpp
+    ../src/vm/service.cpp
+    ../src/vm/update.cpp
 )
 target_include_directories(SatsumaVmAgentTests PRIVATE ../src/vm)
-target_link_libraries(SatsumaVmAgentTests PRIVATE SatsumaCore ${SATSUMA_YLT_TARGET} ws2_32)
+target_link_libraries(
+    SatsumaVmAgentTests
+    PRIVATE SatsumaCore ${SATSUMA_YLT_TARGET} advapi32 ws2_32
+)
 if(MSVC)
     target_compile_options(
         SatsumaVmAgentTests
@@ -56,6 +84,7 @@ add_executable(
     ../src/vm/process_runner.cpp
     ../src/vm/rpc_client.cpp
     ../src/vm/service.cpp
+    ../src/vm/update.cpp
 )
 target_include_directories(SatsumaVmServiceTests PRIVATE ../src/vm)
 target_compile_definitions(SatsumaVmServiceTests PRIVATE SATSUMA_SERVICE_TESTS)
@@ -71,6 +100,30 @@ if(MSVC)
 endif()
 add_test(NAME SatsumaVmServiceTests COMMAND SatsumaVmServiceTests "$<TARGET_FILE:SatsumaVM>")
 set_tests_properties(SatsumaVmServiceTests PROPERTIES TIMEOUT 10)
+
+add_executable(
+    SatsumaVmUpdateTests
+    update_tests.cpp
+    ../src/vm/agent.cpp
+    ../src/vm/process_runner.cpp
+    ../src/vm/rpc_client.cpp
+    ../src/vm/service.cpp
+    ../src/vm/update.cpp
+)
+target_include_directories(SatsumaVmUpdateTests PRIVATE ../src/vm)
+target_compile_definitions(SatsumaVmUpdateTests PRIVATE SATSUMA_UPDATE_TESTS)
+target_link_libraries(
+    SatsumaVmUpdateTests
+    PRIVATE SatsumaCore ${SATSUMA_YLT_TARGET} advapi32 ws2_32
+)
+if(MSVC)
+    target_compile_options(
+        SatsumaVmUpdateTests
+        PRIVATE /W4 /permissive- /utf-8 /EHsc /external:anglebrackets /external:W0
+    )
+endif()
+add_test(NAME SatsumaVmUpdateTests COMMAND SatsumaVmUpdateTests)
+set_tests_properties(SatsumaVmUpdateTests PROPERTIES TIMEOUT 15)
 
 find_program(SATSUMA_WINDOWS_POWERSHELL powershell.exe REQUIRED)
 add_test(
@@ -132,10 +185,12 @@ add_executable(
     ../src/vm/agent.cpp
     ../src/vm/process_runner.cpp
     ../src/vm/rpc_client.cpp
+    ../src/vm/service.cpp
+    ../src/vm/update.cpp
 )
 target_include_directories(SatsumaRpcServerTests PRIVATE ../src/host ../src/vm)
 target_link_libraries(SatsumaRpcServerTests PRIVATE SatsumaCore ${SATSUMA_YLT_TARGET})
-target_link_libraries(SatsumaRpcServerTests PRIVATE ws2_32)
+target_link_libraries(SatsumaRpcServerTests PRIVATE advapi32 ws2_32)
 if(MSVC)
     target_compile_options(
         SatsumaRpcServerTests
