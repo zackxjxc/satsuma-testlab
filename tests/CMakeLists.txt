@@ -18,6 +18,18 @@ endif()
 
 add_test(NAME SatsumaCoreTests COMMAND SatsumaCoreTests)
 
+add_executable(
+    SatsumaVmAutostartTests
+    autostart_tests.cpp
+    ../src/vm/autostart.cpp
+)
+target_include_directories(SatsumaVmAutostartTests PRIVATE ../src/vm)
+target_link_libraries(SatsumaVmAutostartTests PRIVATE SatsumaCore advapi32 ole32 oleaut32 taskschd)
+if(MSVC)
+    target_compile_options(SatsumaVmAutostartTests PRIVATE /W4 /permissive- /utf-8 /EHsc)
+endif()
+add_test(NAME SatsumaVmAutostartTests COMMAND SatsumaVmAutostartTests)
+
 add_test(
     NAME SatsumaDemoAppTest
     COMMAND "${CMAKE_COMMAND}"

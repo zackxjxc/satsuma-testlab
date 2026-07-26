@@ -3,6 +3,16 @@ if(NOT DEFINED VM_EXE OR NOT DEFINED AGENT_CONFIG)
     message(FATAL_ERROR "Agent diagnostic driver arguments are incomplete")
 endif()
 
+execute_process(
+    COMMAND "${VM_EXE}" --config "${AGENT_CONFIG}" --validate-config
+    RESULT_VARIABLE validate_result
+    OUTPUT_VARIABLE validate_output
+    ERROR_VARIABLE validate_error
+)
+if(NOT validate_result EQUAL 0 OR NOT validate_output MATCHES "\\\"status\\\":\\\"valid\\\"")
+    message(FATAL_ERROR "SatsumaVM config validation failed: ${validate_error}\n${validate_output}")
+endif()
+
 foreach(attempt RANGE 1 100)
     execute_process(
         COMMAND "${VM_EXE}" --config "${AGENT_CONFIG}" --once
