@@ -49,6 +49,38 @@ endif()
 add_test(NAME SatsumaVmAgentTests COMMAND SatsumaVmAgentTests "$<TARGET_FILE:SatsumaTestFixture>")
 set_tests_properties(SatsumaVmAgentTests PROPERTIES TIMEOUT 15)
 
+add_executable(
+    SatsumaVmServiceTests
+    service_tests.cpp
+    ../src/vm/agent.cpp
+    ../src/vm/process_runner.cpp
+    ../src/vm/rpc_client.cpp
+    ../src/vm/service.cpp
+)
+target_include_directories(SatsumaVmServiceTests PRIVATE ../src/vm)
+target_compile_definitions(SatsumaVmServiceTests PRIVATE SATSUMA_SERVICE_TESTS)
+target_link_libraries(
+    SatsumaVmServiceTests
+    PRIVATE SatsumaCore ${SATSUMA_YLT_TARGET} advapi32 ws2_32
+)
+if(MSVC)
+    target_compile_options(
+        SatsumaVmServiceTests
+        PRIVATE /W4 /permissive- /utf-8 /EHsc /external:anglebrackets /external:W0
+    )
+endif()
+add_test(NAME SatsumaVmServiceTests COMMAND SatsumaVmServiceTests "$<TARGET_FILE:SatsumaVM>")
+set_tests_properties(SatsumaVmServiceTests PROPERTIES TIMEOUT 10)
+
+find_program(SATSUMA_WINDOWS_POWERSHELL powershell.exe REQUIRED)
+add_test(
+    NAME SatsumaInstallAgentScriptTest
+    COMMAND "${CMAKE_COMMAND}"
+        "-DSCRIPT=${CMAKE_SOURCE_DIR}/scripts/install-agent.ps1"
+        "-DPOWERSHELL=${SATSUMA_WINDOWS_POWERSHELL}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/install_agent_script_test.cmake"
+)
+
 add_test(
     NAME SatsumaDemoAppTest
     COMMAND "${CMAKE_COMMAND}"

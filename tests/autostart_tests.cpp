@@ -6,6 +6,7 @@
 #include <string>
 
 #include "autostart.hpp"
+#include "satsuma/core/errors.hpp"
 #include "satsuma/core/id.hpp"
 #include "satsuma/core/path.hpp"
 
@@ -75,6 +76,28 @@ void test_file_identity(const std::filesystem::path& root) {
         "different files shared an identity");
 }
 
+// 验证外部目录中的配置硬链接不能成为持久 Service 参数。
+void test_external_config_hard_link_rejected(const std::filesystem::path& root) {
+    const std::filesystem::path install_root = root / L"layout";
+    const std::filesystem::path executable = install_root / L"bin" / L"SatsumaVM.exe";
+    const std::filesystem::path config = install_root / L"agent.json";
+    const std::filesystem::path work_root = install_root / L"work";
+    const std::filesystem::path external_config = root / L"external" / L"agent.json";
+    std::filesystem::create_directories(executable.parent_path());
+    std::filesystem::create_directories(work_root);
+    std::filesystem::create_directories(external_config.parent_path());
+    std::ofstream(executable, std::ios::binary) << "test executable";
+    std::ofstream(config, std::ios::binary) << "{}";
+    std::filesystem::create_hard_link(config, external_config);
+
+    try {
+        satsuma::vm::validate_agent_install_layout(executable, external_config, work_root);
+    } catch (const satsuma::Error&) {
+        return;
+    }
+    throw std::runtime_error("external config hard link passed install layout validation");
+}
+
 }  // namespace
 
 // 顺序运行无副作用测试并清理临时文件。
@@ -86,6 +109,7 @@ int main() {
         test_autostart_spec(root);
         test_standard_volume_parent_acl();
         test_file_identity(root);
+        test_external_config_hard_link_rejected(root);
         std::filesystem::remove_all(root);
         std::cout << "SatsumaVmAutostartTests passed\n";
         return 0;
