@@ -19,6 +19,7 @@ struct AgentAutostartSpec {
 enum class AutostartChange {
     Created,
     Updated,
+    Unchanged,
 };
 
 // Agent 计划任务的注册结果。
@@ -33,6 +34,20 @@ struct AgentAutostartResult {
 [[nodiscard]] AgentAutostartSpec make_agent_autostart_spec(
     const std::filesystem::path& executable,
     const std::filesystem::path& config);
+
+#ifdef SATSUMA_AUTOSTART_TESTS
+// 验证父目录 ACL，并允许只在父目录创建其他子项。
+void validate_agent_autostart_parent_acl_for_test(const std::filesystem::path& path);
+
+// 使用 Win32 文件身份判断两个路径是否引用同一对象。
+[[nodiscard]] bool agent_autostart_same_file_for_test(
+    const std::filesystem::path& left,
+    const std::filesystem::path& right);
+
+// 在内存任务定义中验证全部自启动策略可以往返。
+[[nodiscard]] bool agent_autostart_definition_round_trip_for_test(
+    const AgentAutostartSpec& spec);
+#endif
 
 // 创建或覆盖 SYSTEM 开机任务，并按需立即启动。
 [[nodiscard]] AgentAutostartResult ensure_agent_autostart(

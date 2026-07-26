@@ -26,7 +26,6 @@ namespace {
 
 using Microsoft::WRL::ComPtr;
 
-constexpr std::wstring_view kTaskFolder = L"\\Satsuma";
 constexpr std::wstring_view kTaskName = L"SatsumaVM Agent";
 constexpr std::string_view kTaskPath = "\\Satsuma\\SatsumaVM Agent";
 constexpr std::wstring_view kInstallMutexName = L"Global\\SatsumaVM-Autostart";
@@ -62,6 +61,51 @@ public:
 private:
     HANDLE value_ = nullptr;  // 被管理的 HANDLE
 };
+
+// 标识一个固定卷中的文件或目录对象。
+struct FileIdentity {
+    DWORD volume_serial_number{};  // 所在卷序列号
+    DWORD file_index_high{};       // 文件 ID 高位
+    DWORD file_index_low{};        // 文件 ID 低位
+
+    [[nodiscard]] bool operator==(const FileIdentity&) const = default;
+};
+
+// 读取路径指向对象的稳定 Win32 身份。
+[[nodiscard]] FileIdentity read_file_identity(const std::filesystem::path& path) {
+    const UniqueHandle handle(CreateFileW(
+        path.c_str(),
+        FILE_READ_ATTRIBUTES,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        nullptr,
+        OPEN_EXISTING,
+        FILE_FLAG_BACKUP_SEMANTICS,
+        nullptr));
+    if (!handle) {
+        throw Error(
+            "Cannot open SatsumaVM install path for identity check: " + path_to_utf8(path) +
+            " (Win32 error " + std::to_string(GetLastError()) + ")");
+    }
+
+    BY_HANDLE_FILE_INFORMATION information{};
+    if (!GetFileInformationByHandle(handle.get(), &information)) {
+        throw Error(
+            "Cannot read SatsumaVM install path identity: " + path_to_utf8(path) +
+            " (Win32 error " + std::to_string(GetLastError()) + ")");
+    }
+    return {
+        information.dwVolumeSerialNumber,
+        information.nFileIndexHigh,
+        information.nFileIndexLow,
+    };
+}
+
+// 比较两个路径是否引用同一个文件系统对象。
+[[nodiscard]] bool same_file_identity(
+    const std::filesystem::path& left,
+    const std::filesystem::path& right) {
+    return read_file_identity(left) == read_file_identity(right);
+}
 
 // 串行化同一 Guest 内的计划任务更新。
 class AutostartMutex {
@@ -147,6 +191,35 @@ public:
 
 private:
     BSTR value_ = nullptr;  // 被管理的 BSTR
+};
+
+// 自动释放 COM 属性读取返回的 BSTR。
+class ReturnedBstr {
+public:
+    ReturnedBstr() = default;
+
+    ReturnedBstr(const ReturnedBstr&) = delete;
+    ReturnedBstr& operator=(const ReturnedBstr&) = delete;
+
+    // 释放 COM 分配的 BSTR。
+    ~ReturnedBstr() {
+        SysFreeString(value_);
+    }
+
+    // 返回接收 BSTR 的地址。
+    [[nodiscard]] BSTR* address() noexcept {
+        return &value_;
+    }
+
+    // 返回可比较的 UTF-16 文本。
+    [[nodiscard]] std::wstring_view view() const noexcept {
+        return value_ == nullptr
+            ? std::wstring_view{}
+            : std::wstring_view(value_, SysStringLen(value_));
+    }
+
+private:
+    BSTR value_ = nullptr;  // 被管理的返回值
 };
 
 // 自动初始化并清理 VARIANT。
@@ -339,6 +412,9 @@ void validate_machine_acl(
                         std::to_string(GetLastError()) + ")");
         }
         const auto* header = static_cast<const ACE_HEADER*>(raw_ace);
+        if ((header->AceFlags & INHERIT_ONLY_ACE) != 0) {
+            continue;
+        }
         if (header->AceType != ACCESS_ALLOWED_ACE_TYPE &&
             header->AceType != ACCESS_ALLOWED_OBJECT_ACE_TYPE &&
             header->AceType != ACCESS_ALLOWED_CALLBACK_ACE_TYPE &&
@@ -373,12 +449,14 @@ void validate_installed_layout(
     const std::filesystem::path expected_work_root = install_root / L"work";
     const std::filesystem::path normalized_work_root = std::filesystem::canonical(local_work_root);
 
-    if (!path_equal(spec.executable, expected_executable) ||
-        !path_equal(spec.config, expected_config) ||
-        !path_equal(normalized_work_root, expected_work_root)) {
+    if (!same_file_identity(spec.executable, expected_executable) ||
+        !same_file_identity(spec.config, expected_config) ||
+        !same_file_identity(normalized_work_root, expected_work_root)) {
         throw Error(
-            "Autostart requires <install-root>\\bin\\SatsumaVM.exe, "
-            "<install-root>\\agent.json, and <install-root>\\work");
+            "Autostart layout mismatch: executable=" + path_to_utf8(spec.executable) +
+            ", config=" + path_to_utf8(spec.config) +
+            ", work=" + path_to_utf8(normalized_work_root) +
+            ", expected_root=" + path_to_utf8(install_root));
     }
 
     const std::filesystem::path drive_root = install_root.root_path();
@@ -463,7 +541,7 @@ void validate_installed_layout(
     ComPtr<ITaskFolder> root;
     ScopedCom::check(service->GetFolder(root_path.get(), &root), "ITaskService::GetFolder");
 
-    const UniqueBstr folder_path(kTaskFolder);
+    const UniqueBstr folder_path(L"Satsuma");
     ComPtr<ITaskFolder> folder;
     const HRESULT lookup = root->GetFolder(folder_path.get(), &folder);
     if (SUCCEEDED(lookup)) {
@@ -502,6 +580,151 @@ void stop_running_task(IRegisteredTask* task) {
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
     throw Error("Timed out while stopping the existing SatsumaVM task instance");
+}
+
+// 比较 Task Scheduler 规范化后的 UTF-16 文本。
+[[nodiscard]] bool text_equal_case_insensitive(
+    const std::wstring_view left,
+    const std::wstring_view right) {
+    if (left.size() != right.size()) {
+        return false;
+    }
+    return left.empty() || _wcsnicmp(left.data(), right.data(), left.size()) == 0;
+}
+
+// 检查现有任务的 SYSTEM 身份和最高权限。
+[[nodiscard]] bool principal_matches(ITaskDefinition* definition) {
+    ComPtr<IPrincipal> principal;
+    ScopedCom::check(definition->get_Principal(&principal), "get_Principal");
+
+    ReturnedBstr user_id;
+    TASK_LOGON_TYPE logon_type = TASK_LOGON_NONE;
+    TASK_RUNLEVEL_TYPE run_level = TASK_RUNLEVEL_LUA;
+    ScopedCom::check(principal->get_UserId(user_id.address()), "IPrincipal::get_UserId");
+    ScopedCom::check(principal->get_LogonType(&logon_type), "IPrincipal::get_LogonType");
+    ScopedCom::check(principal->get_RunLevel(&run_level), "IPrincipal::get_RunLevel");
+    const bool system_user =
+        text_equal_case_insensitive(user_id.view(), L"S-1-5-18") ||
+        text_equal_case_insensitive(user_id.view(), L"SYSTEM");
+    return system_user &&
+           logon_type == TASK_LOGON_SERVICE_ACCOUNT &&
+           run_level == TASK_RUNLEVEL_HIGHEST;
+}
+
+// 检查现有任务只执行当前受保护的 Agent。
+[[nodiscard]] bool action_matches(
+    ITaskDefinition* definition,
+    const AgentAutostartSpec& spec) {
+    ComPtr<IActionCollection> actions;
+    ScopedCom::check(definition->get_Actions(&actions), "get_Actions");
+    LONG count = 0;
+    ScopedCom::check(actions->get_Count(&count), "IActionCollection::get_Count");
+    if (count != 1) {
+        return false;
+    }
+
+    ComPtr<IAction> action;
+    ScopedCom::check(actions->get_Item(1, &action), "IActionCollection::get_Item");
+    TASK_ACTION_TYPE action_type = TASK_ACTION_EXEC;
+    ScopedCom::check(action->get_Type(&action_type), "IAction::get_Type");
+    if (action_type != TASK_ACTION_EXEC) {
+        return false;
+    }
+
+    ComPtr<IExecAction> execute;
+    ScopedCom::check(action.As(&execute), "QueryInterface(IExecAction)");
+    ReturnedBstr executable;
+    ReturnedBstr arguments;
+    ReturnedBstr working_directory;
+    ScopedCom::check(execute->get_Path(executable.address()), "IExecAction::get_Path");
+    ScopedCom::check(execute->get_Arguments(arguments.address()), "IExecAction::get_Arguments");
+    ScopedCom::check(
+        execute->get_WorkingDirectory(working_directory.address()),
+        "IExecAction::get_WorkingDirectory");
+    return text_equal_case_insensitive(executable.view(), spec.executable.native()) &&
+           arguments.view() == spec.arguments &&
+           text_equal_case_insensitive(working_directory.view(), spec.working_directory.native());
+}
+
+// 检查现有任务只有一个带固定延迟的开机触发器。
+[[nodiscard]] bool trigger_matches(ITaskDefinition* definition) {
+    ComPtr<ITriggerCollection> triggers;
+    ScopedCom::check(definition->get_Triggers(&triggers), "get_Triggers");
+    LONG count = 0;
+    ScopedCom::check(triggers->get_Count(&count), "ITriggerCollection::get_Count");
+    if (count != 1) {
+        return false;
+    }
+
+    ComPtr<ITrigger> trigger;
+    ScopedCom::check(triggers->get_Item(1, &trigger), "ITriggerCollection::get_Item");
+    TASK_TRIGGER_TYPE2 trigger_type = TASK_TRIGGER_EVENT;
+    ScopedCom::check(trigger->get_Type(&trigger_type), "ITrigger::get_Type");
+    if (trigger_type != TASK_TRIGGER_BOOT) {
+        return false;
+    }
+
+    ComPtr<IBootTrigger> boot_trigger;
+    ScopedCom::check(trigger.As(&boot_trigger), "QueryInterface(IBootTrigger)");
+    ReturnedBstr delay;
+    VARIANT_BOOL enabled = VARIANT_FALSE;
+    ScopedCom::check(boot_trigger->get_Delay(delay.address()), "IBootTrigger::get_Delay");
+    ScopedCom::check(boot_trigger->get_Enabled(&enabled), "IBootTrigger::get_Enabled");
+    return delay.view() == L"PT15S" && enabled == VARIANT_TRUE;
+}
+
+// 检查现有任务的无限运行、单实例和失败重启策略。
+[[nodiscard]] bool settings_match(ITaskDefinition* definition) {
+    ComPtr<ITaskSettings> settings;
+    ScopedCom::check(definition->get_Settings(&settings), "get_Settings");
+    VARIANT_BOOL enabled = VARIANT_FALSE;
+    VARIANT_BOOL start_when_available = VARIANT_FALSE;
+    VARIANT_BOOL disallow_on_batteries = VARIANT_TRUE;
+    VARIANT_BOOL stop_on_batteries = VARIANT_TRUE;
+    ReturnedBstr execution_time_limit;
+    ReturnedBstr restart_interval;
+    int restart_count = 0;
+    TASK_INSTANCES_POLICY instances = TASK_INSTANCES_PARALLEL;
+    ScopedCom::check(settings->get_Enabled(&enabled), "ITaskSettings::get_Enabled");
+    ScopedCom::check(
+        settings->get_StartWhenAvailable(&start_when_available),
+        "ITaskSettings::get_StartWhenAvailable");
+    ScopedCom::check(
+        settings->get_ExecutionTimeLimit(execution_time_limit.address()),
+        "ITaskSettings::get_ExecutionTimeLimit");
+    ScopedCom::check(
+        settings->get_RestartInterval(restart_interval.address()),
+        "ITaskSettings::get_RestartInterval");
+    ScopedCom::check(settings->get_RestartCount(&restart_count), "ITaskSettings::get_RestartCount");
+    ScopedCom::check(
+        settings->get_MultipleInstances(&instances),
+        "ITaskSettings::get_MultipleInstances");
+    ScopedCom::check(
+        settings->get_DisallowStartIfOnBatteries(&disallow_on_batteries),
+        "ITaskSettings::get_DisallowStartIfOnBatteries");
+    ScopedCom::check(
+        settings->get_StopIfGoingOnBatteries(&stop_on_batteries),
+        "ITaskSettings::get_StopIfGoingOnBatteries");
+    return enabled == VARIANT_TRUE &&
+           start_when_available == VARIANT_TRUE &&
+           execution_time_limit.view() == L"PT0S" &&
+           restart_interval.view() == L"PT1M" &&
+           restart_count == 999 &&
+           instances == TASK_INSTANCES_IGNORE_NEW &&
+           disallow_on_batteries == VARIANT_FALSE &&
+           stop_on_batteries == VARIANT_FALSE;
+}
+
+// 判断现有任务是否已经完全符合当前 Agent 规范。
+[[nodiscard]] bool task_definition_matches(
+    IRegisteredTask* task,
+    const AgentAutostartSpec& spec) {
+    ComPtr<ITaskDefinition> definition;
+    ScopedCom::check(task->get_Definition(&definition), "IRegisteredTask::get_Definition");
+    return principal_matches(definition.Get()) &&
+           action_matches(definition.Get(), spec) &&
+           trigger_matches(definition.Get()) &&
+           settings_match(definition.Get());
 }
 
 // 配置开机触发、崩溃重启和 SYSTEM 最高权限。
@@ -590,6 +813,31 @@ AgentAutostartSpec make_agent_autostart_spec(
     return spec;
 }
 
+#ifdef SATSUMA_AUTOSTART_TESTS
+void validate_agent_autostart_parent_acl_for_test(const std::filesystem::path& path) {
+    validate_machine_acl(path, false, true);
+}
+
+bool agent_autostart_same_file_for_test(
+    const std::filesystem::path& left,
+    const std::filesystem::path& right) {
+    return same_file_identity(left, right);
+}
+
+bool agent_autostart_definition_round_trip_for_test(const AgentAutostartSpec& spec) {
+    ScopedCom com;
+    const ComPtr<ITaskService> service = connect_task_service();
+    ComPtr<ITaskDefinition> definition;
+    ScopedCom::check(service->NewTask(0, &definition), "ITaskService::NewTask");
+    configure_task_policy(definition.Get());
+    configure_task_action(definition.Get(), spec);
+    return principal_matches(definition.Get()) &&
+           action_matches(definition.Get(), spec) &&
+           trigger_matches(definition.Get()) &&
+           settings_match(definition.Get());
+}
+#endif
+
 AgentAutostartResult ensure_agent_autostart(
     const std::filesystem::path& config,
     const std::filesystem::path& local_work_root,
@@ -608,30 +856,37 @@ AgentAutostartResult ensure_agent_autostart(
     if (!existed && !is_missing_object(lookup)) {
         ScopedCom::check(lookup, "ITaskFolder::GetTask");
     }
+    const bool definition_matches = existed && task_definition_matches(existing_task.Get(), spec);
     if (start_now && existed) {
         stop_running_task(existing_task.Get());
     }
 
-    ComPtr<ITaskDefinition> definition;
-    ScopedCom::check(service->NewTask(0, &definition), "ITaskService::NewTask");
-    configure_task_policy(definition.Get());
-    configure_task_action(definition.Get(), spec);
-
-    ScopedVariant system_user;
-    system_user.set_string(L"S-1-5-18");
     ScopedVariant empty;
     ComPtr<IRegisteredTask> registered_task;
-    ScopedCom::check(
-        folder->RegisterTaskDefinition(
-            task_name.get(),
-            definition.Get(),
-            TASK_CREATE_OR_UPDATE,
-            system_user.get(),
-            empty.get(),
-            TASK_LOGON_SERVICE_ACCOUNT,
-            empty.get(),
-            &registered_task),
-        "ITaskFolder::RegisterTaskDefinition");
+    AutostartChange change = AutostartChange::Unchanged;
+    if (definition_matches) {
+        registered_task = existing_task;
+    } else {
+        ComPtr<ITaskDefinition> definition;
+        ScopedCom::check(service->NewTask(0, &definition), "ITaskService::NewTask");
+        configure_task_policy(definition.Get());
+        configure_task_action(definition.Get(), spec);
+
+        ScopedVariant system_user;
+        system_user.set_string(L"S-1-5-18");
+        ScopedCom::check(
+            folder->RegisterTaskDefinition(
+                task_name.get(),
+                definition.Get(),
+                TASK_CREATE_OR_UPDATE,
+                system_user.get(),
+                empty.get(),
+                TASK_LOGON_SERVICE_ACCOUNT,
+                empty.get(),
+                &registered_task),
+            "ITaskFolder::RegisterTaskDefinition");
+        change = existed ? AutostartChange::Updated : AutostartChange::Created;
+    }
 
     DWORD engine_process_id = 0;
     if (start_now) {
@@ -646,7 +901,7 @@ AgentAutostartResult ensure_agent_autostart(
     }
 
     return {
-        existed ? AutostartChange::Updated : AutostartChange::Created,
+        change,
         std::string(kTaskPath),
         start_now,
         engine_process_id,

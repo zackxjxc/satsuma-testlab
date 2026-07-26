@@ -205,6 +205,7 @@ $workRoot = Join-Path $InstallRoot 'work'
 $targetAgent = Join-Path $binRoot 'SatsumaVM.exe'
 $targetConfig = Join-Path $InstallRoot 'agent.json'
 $targetScript = Join-Path $InstallRoot 'install-agent.ps1'
+$startupErrorLog = Join-Path $InstallRoot 'agent-startup-error.log'
 $taskPath = '\Satsuma\'
 $taskName = 'SatsumaVM Agent'
 $systemSid = New-Object Security.Principal.SecurityIdentifier('S-1-5-18')
@@ -312,6 +313,7 @@ try {
             throw 'SatsumaVM.exe 切换后哈希不一致。'
         }
 
+        Remove-Item -Force -LiteralPath $startupErrorLog -ErrorAction SilentlyContinue
         Write-Host 'Satsuma VM Agent 已安装，正在注册并启动后台计划任务。'
         $installOutput = @(& $targetAgent --config $targetConfig --install-autostart)
         $agentExitCode = $LASTEXITCODE
@@ -365,7 +367,29 @@ try {
             }
         } while (-not $verified -and [DateTime]::UtcNow -lt $startDeadline)
         if (-not $verified) {
-            throw 'SatsumaVM 新计划任务未通过进程身份验证。'
+            $startupError = if (Test-Path -LiteralPath $startupErrorLog -PathType Leaf) {
+                [string](Get-Content -Raw -Encoding UTF8 -LiteralPath $startupErrorLog)
+            } else {
+                $null
+            }
+            $verificationDetails = [ordered]@{
+                task_state = if ($null -ne $registeredTask) { "$($registeredTask.State)" } else { $null }
+                action_execute = if ($null -ne $registeredAction) { $registeredAction.Execute } else { $null }
+                action_arguments = if ($null -ne $registeredAction) { $registeredAction.Arguments } else { $null }
+                expected_execute = $targetAgent
+                expected_arguments = $expectedArguments
+                engine_process_id = $engineProcessId
+                presence_exists = Test-Path -LiteralPath $presenceFile -PathType Leaf
+                presence_process_id = if ($null -ne $presence) { $presence.process_id } else { $null }
+                presence_process_path = if ($null -ne $presenceProcess) {
+                    $presenceProcess.ExecutablePath
+                } else {
+                    $null
+                }
+                startup_error = $startupError
+            }
+            $verificationJson = $verificationDetails | ConvertTo-Json -Compress
+            throw "SatsumaVM 新计划任务未通过进程身份验证：$verificationJson"
         }
 
         try {
