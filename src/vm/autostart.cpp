@@ -443,6 +443,9 @@ void validate_machine_acl(
 void validate_installed_layout(
     const AgentAutostartSpec& spec,
     const std::filesystem::path& local_work_root) {
+    if (local_work_root.empty()) {
+        throw Error("Agent local_work_root is empty during autostart validation");
+    }
     const std::filesystem::path install_root = spec.executable.parent_path().parent_path();
     const std::filesystem::path expected_executable = install_root / L"bin" / L"SatsumaVM.exe";
     const std::filesystem::path expected_config = install_root / L"agent.json";

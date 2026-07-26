@@ -93,6 +93,12 @@ int wmain(const int argc, wchar_t* argv[]) {
             }).dump() << '\n';
             return 0;
         }
+        if (mode == L"--watch") {
+            const satsuma::vm::AgentAutostartResult result =
+                satsuma::vm::ensure_agent_autostart(config_path, config.local_work_root, false);
+            std::cerr << "SatsumaVM autostart " << autostart_change_name(result.change)
+                      << ": " << result.task_path << '\n';
+        }
 
         satsuma::vm::Agent agent(std::move(config));
         if (mode == L"--once") {
@@ -107,11 +113,8 @@ int wmain(const int argc, wchar_t* argv[]) {
             return 0;
         }
         if (mode == L"--watch") {
-            const satsuma::vm::AgentAutostartResult result =
-                satsuma::vm::ensure_agent_autostart(config_path, config.local_work_root, false);
-            std::cerr << "SatsumaVM autostart " << autostart_change_name(result.change)
-                      << ": " << result.task_path << '\n';
             agent.run_watch();
+            return 0;
         }
 
         print_usage();
