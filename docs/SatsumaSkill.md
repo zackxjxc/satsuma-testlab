@@ -36,7 +36,13 @@
 
 如果用户要求把清单保存为文件，使用 Markdown，并明确区分“已确认”“待用户操作”“尚未验证”。
 不得虚构 VM 内状态、共享目录可写性、快照存在性或管理员操作成功。未经明确授权，不修改防火墙、
-Host/VM 网络、VMware Shared Folder、计划任务或快照。
+Host/VM 网络、VMware Shared Folder 或快照。Agent 计划任务由安装脚本和 `SatsumaVM --watch` 自行维护，
+不要求用户进入任务计划程序手工配置。
+
+Guest 已能访问 Shared Folder 时，只要求用户执行一次 `scripts/install-agent.ps1` 并确认 Windows UAC。
+脚本只接受本地固定磁盘中的专用 `Satsuma` 安装根，完成 ACL 收紧、暂存哈希校验、旧实例停止、失败
+回滚、SYSTEM 开机任务注册和后台启动。AI 不应再要求用户保持前台终端、每次开机手工启动 Agent，或
+把当前控制台程序错误注册成 Windows Service。
 
 ## 3. 配置一致性
 
@@ -56,7 +62,7 @@ JSON 中 Windows 反斜杠需要转义。不得把密码、Token、源码目录�
 
 ## 4. 主动检测是业务任务的前置门禁
 
-确认目标 VM 已启动且 `SatsumaVM.exe --watch` 正在运行后执行：
+确认目标 VM 已启动后执行；安装完成的 Agent 会由开机计划任务自动运行：
 
 ```text
 SatsumaHost.exe check --config lab.local.json --vm <vm-id> --timeout-seconds 30
@@ -106,6 +112,8 @@ SatsumaHost.exe check --config lab.local.json --vm <vm-id> --timeout-seconds 30
 
 - VM 生命周期和快照只通过 `SatsumaHost.exe vm/snapshot` 命令操作，不直接调用 `vmrun`。
 - 用户基础快照只读，禁止覆盖或删除；AI 只管理带 `ai_prefix` 的派生快照。
+- 用户已把配置中的 VM 声明为可丢弃测试机并授权生命周期操作后，AI 可以在该范围内启动、关闭和恢复，
+  不要为每次相同操作重复要求用户确认；未知 VM、扩大网络范围或删除基础快照不在该授权内。
 - 当前 JSON 任务不会自动恢复快照。需要恢复时，先停止业务任务，再显式关闭、恢复和启动 VM。
 - 任一带外操作失败时停止自动测试，保留错误输出，并要求用户处理 VMware 环境。
 - 被测程序只能在隔离 VM 中执行，不在 Host 添加运行被测 exe 的旁路命令。

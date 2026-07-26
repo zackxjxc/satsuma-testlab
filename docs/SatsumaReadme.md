@@ -203,19 +203,23 @@ Copy-Item 'agent.json' 'D:\vm-share\satsuma-bootstrap/'
 | `rpc_timeout_ms` | 单次 RPC 超时，范围 100–300000 |
 
 多台 VM 必须分别保存自己的配置，至少修改 `vm_id`；单台任意 VM 可以继续使用逻辑 ID `client`，
-它不要求 VMware 显示名称也叫 Client。在 Guest 的管理员 PowerShell 中执行一行安装命令：
+它不要求 VMware 显示名称也叫 Client。在 Guest 的任意 PowerShell 中执行一行安装命令：
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File '\\vmware-host\Shared Folders\vm-share\satsuma-bootstrap\install-agent.ps1'
 ```
 
-脚本会创建 `C:\Satsuma\bin` 和 `C:\Satsuma\work`、复制并校验 Agent，然后以前台 `--watch`
-模式运行。被测 Artifact 始终复制到 Guest 本地工作目录执行，不直接从 UNC 路径运行。
+脚本在需要时自动显示一次 UAC 提示，然后在本地固定磁盘的专用 `Satsuma` 目录中创建
+`C:\Satsuma\bin` 和 `C:\Satsuma\work`、收紧 ACL、暂存并校验新 Agent。更新失败会恢复旧文件、旧任务
+和旧进程。最后由 `SatsumaVM.exe --install-autostart` 原生创建或更新 `\Satsuma\SatsumaVM Agent`
+计划任务，并在后台立即启动。脚本完成后可以关闭 PowerShell，不需要保留前台窗口。
 
-确认验收通过后，可由用户在 Windows“任务计划程序”中创建“计算机启动时”任务，勾选“使用最高
-权限运行”，程序填写 `SatsumaVM.exe` 的绝对路径，参数填写
-`--config C:\Satsuma\agent.json --watch`，起始目录填写 `C:\Satsuma\bin`。首版不安装服务，
-也不会替用户创建管理员计划任务。
+计划任务只接受受保护的本地安装布局，使用 `SYSTEM` 和最高权限，在开机 15 秒后执行本地
+`SatsumaVM.exe --config C:\Satsuma\agent.json --watch`；崩溃后每分钟重启，且拒绝并行启动第二实例。
+每次 `--watch` 启动还会重新核对并更新任务定义。`--once` 和 `--rpc-once` 不修改系统计划任务，适合
+诊断和自动化测试；`--validate-config` 只解析配置，也不修改系统。Agent 就绪后会在共享目录发布
+`agents/<vm-id>.json`，安装脚本会核对任务动作、实际镜像路径、PID 和该状态文件。被测 Artifact 始终
+复制到 Guest 本地工作目录执行，不直接从 UNC 路径运行。
 
 ### 6. 创建用户基础快照
 
@@ -226,8 +230,9 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File '\\vmware-host\Shared Fo
 - 临时 Artifact、路由、DNS、虚拟适配器和测试进程已经清理。
 - `clean` 不以 `satsuma-ai-` 开头，并与 `lab.json` 中的基础快照名完全一致。
 
-推荐创建关机快照，并使用上面的最高权限计划任务在开机后启动 Agent。这样恢复快照后不会复用旧
-进程内存和 RPC 会话。如果不配置计划任务，每次恢复和启动 VM 后都需要用户手工启动 Agent。
+推荐在安装脚本验收成功后关闭 VM，再创建关机快照。恢复快照并启动 VM 后，计划任务会创建全新的
+Agent 进程，不会复用旧进程内存和 RPC 会话。开机时 RPC 或 Shared Folder 暂时未就绪不会导致 Agent
+退出，它会按配置的重连间隔继续尝试。
 
 用户基础快照属于只读基线。AI 只能通过 `SatsumaHost snapshot create-ai/delete-ai` 管理带配置
 前缀的派生快照，不能覆盖或删除 `clean`。
@@ -241,7 +246,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File '\\vmware-host\Shared Fo
        --id client --config 'lab.local.json'
    ```
 
-2. 确认 VM 中的 `SatsumaVM.exe --watch` 已运行。
+2. 等待开机计划任务自动启动 `SatsumaVM.exe --watch`。
 3. 如需 RPC 实时状态，在一个 Host 终端持续运行：
 
    ```powershell

@@ -9,5 +9,6 @@ Satsuma 是面向 AI 自动化测试的 Windows/VMware 双端执行工具。
 - Guest 安装脚本：[install-agent.ps1](scripts/install-agent.ps1)
 - 独立示例软件：[demo_app.cpp](examples/demo_app.cpp)
 
-首次使用时把 `lab.json` 复制为已忽略的 `lab.local.json`，再按用户指南配置 VMware 和 Agent。
+首次使用时把 `lab.json` 复制为已忽略的 `lab.local.json`，再按用户指南配置 VMware 和 Agent。Guest 能
+访问 Shared Folder 后只需执行一次安装脚本；脚本会安装 Agent，并原生维护 SYSTEM 开机计划任务。
 普通虚拟机可以使用 NAT、DHCP 和任意名称；示例路径和 IP 必须按实际环境修改后使用。
