@@ -51,6 +51,7 @@ add_library(SatsumaCore STATIC
     src/core/endpoint.cpp
     src/core/id.cpp
     src/core/json_io.cpp
+    src/core/lifecycle.cpp
     src/core/path.cpp
     src/core/rpc_protocol.cpp
     src/core/sha256.cpp

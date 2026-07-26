@@ -127,6 +127,48 @@ set(task_json [=[
 string(REPLACE "@FIXTURE@" "${fixture_path}" task_json "${task_json}")
 file(WRITE "${TEST_ROOT}/task.json" "${task_json}")
 
+set(lifecycle_task_json [=[
+{
+  "schema_version": 1,
+  "name": "lifecycle-requires-orchestrator",
+  "steps": [
+    {
+      "id": "echo",
+      "vm": "client",
+      "type": "echo",
+      "message": "must not run"
+    }
+  ],
+  "lifecycle": {
+    "vms": [
+      {
+        "vm": "client",
+        "restore_before": "clean",
+        "on_success": {"action": "stop"},
+        "on_failure": {"action": "restore", "snapshot": "clean"}
+      }
+    ]
+  }
+}
+]=])
+file(WRITE "${TEST_ROOT}/lifecycle-task.json" "${lifecycle_task_json}")
+
+execute_process(
+    COMMAND "${HOST_EXE}" run
+        --config "${TEST_ROOT}/lab.json"
+        --plan "${TEST_ROOT}/lifecycle-task.json"
+    RESULT_VARIABLE lifecycle_run_result
+    OUTPUT_VARIABLE lifecycle_run_output
+    ERROR_VARIABLE lifecycle_run_error
+)
+if(lifecycle_run_result EQUAL 0)
+    message(FATAL_ERROR "SatsumaHost run silently ignored lifecycle policy: ${lifecycle_run_output}")
+endif()
+string(FIND "${lifecycle_run_error}" "require the Host orchestrator" lifecycle_error_position)
+if(lifecycle_error_position EQUAL -1)
+    message(FATAL_ERROR "SatsumaHost run returned an unexpected lifecycle error: ${lifecycle_run_error}")
+endif()
+
 execute_process(
     COMMAND "${CMAKE_COMMAND}"
         "-DVM_EXE=${VM_EXE}"

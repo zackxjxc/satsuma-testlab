@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <nlohmann/json_fwd.hpp>
@@ -38,6 +39,33 @@ struct TaskStep {
     std::vector<std::filesystem::path> collect_files; // 待收集的工作目录相对路径
 };
 
+// 生命周期结束时对单台 VM 执行的动作。
+enum class VmCleanupAction {
+    LeaveRunning,
+    Stop,
+    Restore,
+};
+
+// 成功或失败后的单台 VM 清理策略。
+struct VmCleanupPolicy {
+    VmCleanupAction action{VmCleanupAction::LeaveRunning};  // 清理动作
+    std::optional<std::string> snapshot;                    // restore 动作使用的快照
+};
+
+// 单台 VM 在任务生命周期中的恢复和清理策略。
+struct VmLifecyclePolicy {
+    std::string vm;                               // 目标虚拟机 ID
+    std::optional<std::string> restore_before;    // 执行前恢复的快照
+    VmCleanupPolicy on_success;                   // 业务成功后的清理策略
+    VmCleanupPolicy on_failure;                   // 业务失败后的清理策略
+};
+
+// Host 编排器专用的任务生命周期策略。
+struct TaskLifecyclePolicy {
+    std::vector<VmLifecyclePolicy> vms;  // 按 VM 定义的恢复和清理策略
+    std::vector<TaskStep> finally_steps; // 无论业务结果如何都需要执行的步骤
+};
+
 // AI 或用户提供的任务计划。
 struct TaskPlan {
     int schema_version{1};                 // 输入 schema 版本
@@ -45,6 +73,7 @@ struct TaskPlan {
     std::optional<std::string> run_id;     // 可选的调用方运行 ID
     std::vector<ArtifactInput> artifacts;  // 待部署文件
     std::vector<TaskStep> steps;           // 有序步骤列表
+    std::optional<TaskLifecyclePolicy> lifecycle; // 可选的 Host 生命周期策略
 };
 
 // Host 物化后供 VM 领取的不可变任务清单。
@@ -90,6 +119,9 @@ struct ExecutionResult {
 
 // 读取并验证 VM 可见运行清单。
 [[nodiscard]] RunManifest load_run_manifest(const std::filesystem::path& path);
+
+// 返回 VM 清理动作的稳定协议名称。
+[[nodiscard]] std::string_view vm_cleanup_action_name(VmCleanupAction action);
 
 // 将运行清单转换为 JSON。
 void to_json(nlohmann::json& value, const RunManifest& manifest);

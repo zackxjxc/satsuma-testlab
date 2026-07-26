@@ -59,6 +59,9 @@ RunManifest Controller::create_run(const std::filesystem::path& plan_path) const
 }
 
 RunManifest Controller::create_run(const TaskPlan& plan) const {
+    if (plan.lifecycle.has_value()) {
+        throw Error("Task lifecycle policies require the Host orchestrator and cannot use run");
+    }
     validate_vm_references(config_, plan);
 
     RunManifest manifest;

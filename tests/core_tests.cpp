@@ -14,6 +14,7 @@
 #include "satsuma/core/errors.hpp"
 #include "satsuma/core/id.hpp"
 #include "satsuma/core/json_io.hpp"
+#include "satsuma/core/lifecycle.hpp"
 #include "satsuma/core/path.hpp"
 #include "satsuma/core/rpc_protocol.hpp"
 #include "satsuma/core/sha256.hpp"
@@ -222,6 +223,107 @@ void test_protocol_round_trip() {
         "execution result exit code changed during JSON round trip");
 }
 
+// 验证任务生命周期策略解析和普通 run 的安全边界所需模型。
+void test_task_lifecycle_policy(const std::filesystem::path& root) {
+    nlohmann::json value = {
+        {"schema_version", 1},
+        {"name", "lifecycle-policy"},
+        {"steps", {{{"id", "execute"}, {"vm", "client"}, {"type", "echo"}, {"message", "run"}}}},
+        {"lifecycle", {
+            {"vms", {{
+                {"vm", "client"},
+                {"restore_before", "satsuma-ai-ready"},
+                {"on_success", {{"action", "restore"}, {"snapshot", "satsuma-ai-ready"}}},
+                {"on_failure", {{"action", "stop"}}},
+            }}},
+            {"finally", {{{"id", "cleanup"}, {"vm", "client"}, {"type", "echo"}, {"message", "done"}}}},
+        }},
+    };
+    const std::filesystem::path plan_path = root / L"lifecycle-plan.json";
+    satsuma::write_json_atomic(plan_path, value);
+    const satsuma::TaskPlan plan = satsuma::load_task_plan(plan_path);
+    expect(plan.lifecycle.has_value(), "task lifecycle policy was not parsed");
+    expect(plan.lifecycle->vms.size() == 1, "task lifecycle VM policy count changed");
+    expect(
+        plan.lifecycle->vms.at(0).on_success.action == satsuma::VmCleanupAction::Restore,
+        "task success cleanup action changed");
+    expect(
+        plan.lifecycle->finally_steps.at(0).id == "cleanup",
+        "task finally step was not parsed");
+
+    value["lifecycle"]["vms"][0]["on_failure"] = {
+        {"action", "stop"},
+        {"snapshot", "unexpected"},
+    };
+    satsuma::write_json_atomic(plan_path, value);
+    expect_error(
+        [&plan_path] { static_cast<void>(satsuma::load_task_plan(plan_path)); },
+        "non-restore cleanup action accepted a snapshot");
+
+    value["lifecycle"]["vms"][0]["on_failure"] = {{"action", "restore"}};
+    satsuma::write_json_atomic(plan_path, value);
+    expect_error(
+        [&plan_path] { static_cast<void>(satsuma::load_task_plan(plan_path)); },
+        "restore cleanup action accepted a missing snapshot");
+}
+
+// 验证生命周期迁移图、原子持久化和恢复失败终态。
+void test_run_lifecycle(const std::filesystem::path& root) {
+    const std::filesystem::path state_path = root / L"lifecycle" / L"state.json";
+    satsuma::RunLifecycleState state = satsuma::make_run_lifecycle_state(
+        "run_lifecycle_1",
+        "2026-07-26T00:00:00.000Z");
+    satsuma::persist_run_transition(
+        state_path,
+        state,
+        satsuma::RunPhase::RestoringBefore,
+        "2026-07-26T00:00:01.000Z",
+        "restore requested");
+    satsuma::persist_run_transition(
+        state_path,
+        state,
+        satsuma::RunPhase::StartingVm,
+        "2026-07-26T00:00:02.000Z",
+        "snapshot restored");
+
+    const satsuma::RunLifecycleState loaded = satsuma::load_run_lifecycle_state(state_path);
+    expect(loaded.phase == satsuma::RunPhase::StartingVm, "persisted lifecycle phase changed");
+    expect(loaded.sequence == 2 && loaded.transitions.size() == 2, "lifecycle history was not preserved");
+    expect_error(
+        [&state] {
+            satsuma::apply_run_transition(
+                state,
+                satsuma::RunPhase::Completed,
+                "2026-07-26T00:00:03.000Z",
+                "invalid shortcut");
+        },
+        "invalid lifecycle shortcut was accepted");
+
+    satsuma::RunLifecycleState recovery = satsuma::make_run_lifecycle_state(
+        "run_lifecycle_2",
+        "2026-07-26T00:00:00.000Z");
+    satsuma::apply_run_transition(
+        recovery,
+        satsuma::RunPhase::RestoringBefore,
+        "2026-07-26T00:00:01.000Z",
+        "restore requested");
+    satsuma::apply_run_transition(
+        recovery,
+        satsuma::RunPhase::RecoveryFailed,
+        "2026-07-26T00:00:02.000Z",
+        "vmrun restore failed");
+    expect(satsuma::is_terminal_run_phase(recovery.phase), "recovery failure was not terminal");
+    expect_error(
+        [&recovery] {
+            satsuma::apply_run_transition(
+                recovery,
+                satsuma::RunPhase::StartingVm,
+                "2026-07-26T00:00:03.000Z",
+                "unsafe retry");
+        },
+        "terminal recovery failure accepted another transition");
+}
+
 // 验证 RPC 请求的版本、实验室和状态边界。
 void test_rpc_protocol_validation() {
     satsuma::AgentHello hello;
@@ -284,6 +386,8 @@ int main() {
         test_ai_snapshot_plan();
         test_ai_snapshot_deletion();
         test_protocol_round_trip();
+        test_task_lifecycle_policy(root);
+        test_run_lifecycle(root);
         test_rpc_protocol_validation();
         test_windows_command_line();
         std::filesystem::remove_all(root);

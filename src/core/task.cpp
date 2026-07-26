@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cctype>
 #include <set>
+#include <string_view>
 
 #include <nlohmann/json.hpp>
 
@@ -76,6 +77,89 @@ void validate_sha256(const std::string& hash) {
     return step;
 }
 
+// 验证任务中的快照名称可安全传给 VMware Provider。
+void validate_snapshot_name(const std::string& snapshot, const std::string_view field) {
+    if (snapshot.empty() || snapshot.size() > 128 || snapshot.find('\0') != std::string::npos) {
+        throw Error(std::string(field) + " must contain between 1 and 128 characters");
+    }
+}
+
+// 解析成功或失败后的单台 VM 清理策略。
+[[nodiscard]] VmCleanupPolicy parse_cleanup_policy(
+    const nlohmann::json& value,
+    const std::string_view field) {
+    if (!value.is_object()) {
+        throw Error(std::string(field) + " must be an object");
+    }
+    VmCleanupPolicy policy;
+    const std::string action = required_string(value, "action");
+    if (action == "leave_running") {
+        policy.action = VmCleanupAction::LeaveRunning;
+    } else if (action == "stop") {
+        policy.action = VmCleanupAction::Stop;
+    } else if (action == "restore") {
+        policy.action = VmCleanupAction::Restore;
+    } else {
+        throw Error("Unsupported VM cleanup action: " + action);
+    }
+
+    if (value.contains("snapshot")) {
+        policy.snapshot = required_string(value, "snapshot");
+        validate_snapshot_name(*policy.snapshot, field);
+    }
+    if (policy.action == VmCleanupAction::Restore && !policy.snapshot.has_value()) {
+        throw Error(std::string(field) + " restore action requires snapshot");
+    }
+    if (policy.action != VmCleanupAction::Restore && policy.snapshot.has_value()) {
+        throw Error(std::string(field) + " only accepts snapshot for restore action");
+    }
+    return policy;
+}
+
+// 解析 Host 编排器专用的任务生命周期策略。
+[[nodiscard]] TaskLifecyclePolicy parse_lifecycle_policy(const nlohmann::json& value) {
+    if (!value.is_object()) {
+        throw Error("lifecycle must be an object");
+    }
+    TaskLifecyclePolicy lifecycle;
+    if (!value.contains("vms") || !value.at("vms").is_array() || value.at("vms").empty()) {
+        throw Error("lifecycle.vms must contain at least one VM policy");
+    }
+
+    std::set<std::string> vm_ids;
+    for (const auto& vm_value : value.at("vms")) {
+        if (!vm_value.is_object()) {
+            throw Error("lifecycle.vms entries must be objects");
+        }
+        VmLifecyclePolicy policy;
+        policy.vm = required_string(vm_value, "vm");
+        validate_identifier(policy.vm, "lifecycle VM id");
+        if (!vm_ids.insert(policy.vm).second) {
+            throw Error("Duplicate lifecycle VM policy: " + policy.vm);
+        }
+        if (vm_value.contains("restore_before")) {
+            policy.restore_before = required_string(vm_value, "restore_before");
+            validate_snapshot_name(*policy.restore_before, "restore_before");
+        }
+        if (!vm_value.contains("on_success") || !vm_value.contains("on_failure")) {
+            throw Error("Lifecycle VM policy requires on_success and on_failure: " + policy.vm);
+        }
+        policy.on_success = parse_cleanup_policy(vm_value.at("on_success"), "on_success");
+        policy.on_failure = parse_cleanup_policy(vm_value.at("on_failure"), "on_failure");
+        lifecycle.vms.push_back(std::move(policy));
+    }
+
+    if (value.contains("finally")) {
+        if (!value.at("finally").is_array()) {
+            throw Error("lifecycle.finally must be an array");
+        }
+        for (const auto& step_value : value.at("finally")) {
+            lifecycle.finally_steps.push_back(parse_step(step_value));
+        }
+    }
+    return lifecycle;
+}
+
 // 将一个任务步骤转换为稳定的 JSON 表示。
 [[nodiscard]] nlohmann::json serialize_step(const TaskStep& step) {
     nlohmann::json value = {
@@ -105,6 +189,13 @@ void validate_plan_uniqueness(const TaskPlan& plan) {
     for (const auto& step : plan.steps) {
         if (!step_ids.insert(step.id).second) {
             throw Error("Duplicate task step id: " + step.id);
+        }
+    }
+    if (plan.lifecycle.has_value()) {
+        for (const auto& step : plan.lifecycle->finally_steps) {
+            if (!step_ids.insert(step.id).second) {
+                throw Error("Duplicate task or finally step id: " + step.id);
+            }
         }
     }
 
@@ -160,9 +251,21 @@ TaskPlan load_task_plan(const std::filesystem::path& path) {
     for (const auto& step_value : value.at("steps")) {
         plan.steps.push_back(parse_step(step_value));
     }
+    if (value.contains("lifecycle")) {
+        plan.lifecycle = parse_lifecycle_policy(value.at("lifecycle"));
+    }
 
     validate_plan_uniqueness(plan);
     return plan;
+}
+
+std::string_view vm_cleanup_action_name(const VmCleanupAction action) {
+    switch (action) {
+    case VmCleanupAction::LeaveRunning: return "leave_running";
+    case VmCleanupAction::Stop: return "stop";
+    case VmCleanupAction::Restore: return "restore";
+    }
+    throw Error("Unknown VM cleanup action");
 }
 
 RunManifest load_run_manifest(const std::filesystem::path& path) {
