@@ -246,6 +246,237 @@ if(NOT EXISTS "${archive_path}/runs/orchestration_run/evidence/main/task.json" O
     message(FATAL_ERROR "SatsumaHost orchestrate did not archive main and finally evidence")
 endif()
 
+# 已完成的同一编排再次调用时只返回持久化终态，不重复执行任务或清理策略。
+execute_process(
+    COMMAND "${HOST_EXE}" orchestrate
+        --config "${TEST_ROOT}/lab.json"
+        --plan "${TEST_ROOT}/orchestration-task.json"
+        --timeout-seconds 10
+    RESULT_VARIABLE completed_resume_result
+    OUTPUT_VARIABLE completed_resume_output
+    ERROR_VARIABLE completed_resume_error
+)
+if(NOT completed_resume_result EQUAL 0)
+    message(FATAL_ERROR
+        "Completed orchestration was not idempotent: "
+        "${completed_resume_error}\n${completed_resume_output}")
+endif()
+string(FIND "${completed_resume_output}" "\"resumed\": true" completed_resumed_position)
+string(FIND "${completed_resume_output}" "\"status\": \"COMPLETED\"" completed_status_position)
+if(completed_resumed_position EQUAL -1 OR completed_status_position EQUAL -1)
+    message(FATAL_ERROR
+        "Completed orchestration did not return its persisted terminal state: ${completed_resume_output}")
+endif()
+
+# 构造 Host 在 executing 阶段退出后的持久化归档和已经发布的主任务。
+set(executing_resume_plan [=[
+{
+  "schema_version": 1,
+  "name": "host-executing-resume",
+  "run_id": "orchestration_executing_resume",
+  "steps": [
+    {
+      "id": "resume_echo",
+      "vm": "client",
+      "type": "echo",
+      "message": "resume persisted execution"
+    }
+  ],
+  "lifecycle": {
+    "vms": [
+      {
+        "vm": "client",
+        "on_success": {"action": "stop"},
+        "on_failure": {"action": "restore", "snapshot": "clean"}
+      }
+    ]
+  }
+}
+]=])
+set(executing_main_plan [=[
+{
+  "schema_version": 1,
+  "name": "host-executing-resume",
+  "run_id": "orchestration_executing_resume",
+  "steps": [
+    {
+      "id": "resume_echo",
+      "vm": "client",
+      "type": "echo",
+      "message": "resume persisted execution"
+    }
+  ]
+}
+]=])
+set(executing_plan_path "${TEST_ROOT}/orchestration-executing-resume.json")
+set(executing_main_path "${TEST_ROOT}/orchestration-executing-main.json")
+file(WRITE "${executing_plan_path}" "${executing_resume_plan}")
+file(WRITE "${executing_main_path}" "${executing_main_plan}")
+execute_process(
+    COMMAND "${HOST_EXE}" run
+        --config "${TEST_ROOT}/lab.json"
+        --plan "${executing_main_path}"
+    RESULT_VARIABLE executing_publish_result
+    OUTPUT_VARIABLE executing_publish_output
+    ERROR_VARIABLE executing_publish_error
+)
+if(NOT executing_publish_result EQUAL 0)
+    message(FATAL_ERROR
+        "Executing resume fixture could not publish its main task: "
+        "${executing_publish_error}\n${executing_publish_output}")
+endif()
+
+set(executing_archive "${archive_path}/runs/orchestration_executing_resume")
+set(executing_state "${executing_archive}/lifecycle.json")
+file(MAKE_DIRECTORY "${executing_archive}")
+file(COPY_FILE "${executing_plan_path}" "${executing_archive}/plan.json")
+file(SHA256 "${executing_plan_path}" executing_plan_sha256)
+file(WRITE "${executing_archive}/orchestration.json" [=[
+{
+  "schema_version": 1,
+  "run_id": "orchestration_executing_resume",
+  "vm_id": "client",
+  "main_run_id": "orchestration_executing_resume",
+  "finally_run_id": "finally_executing_resume",
+  "plan_sha256": "@PLAN_SHA256@"
+}
+]=])
+file(READ "${executing_archive}/orchestration.json" executing_identity_json)
+string(REPLACE "@PLAN_SHA256@" "${executing_plan_sha256}"
+    executing_identity_json "${executing_identity_json}")
+file(WRITE "${executing_archive}/orchestration.json" "${executing_identity_json}")
+file(WRITE "${executing_state}" [=[
+{
+  "schema_version": 1,
+  "run_id": "orchestration_executing_resume",
+  "phase": "executing",
+  "sequence": 4,
+  "updated_at": "2026-07-27T00:00:04.000Z",
+  "transitions": [
+    {
+      "sequence": 1,
+      "from": "preparing",
+      "to": "starting_vm",
+      "occurred_at": "2026-07-27T00:00:01.000Z",
+      "message": "start target VM"
+    },
+    {
+      "sequence": 2,
+      "from": "starting_vm",
+      "to": "waiting_agent",
+      "occurred_at": "2026-07-27T00:00:02.000Z",
+      "message": "wait for Agent diagnostic echo"
+    },
+    {
+      "sequence": 3,
+      "from": "waiting_agent",
+      "to": "deploying",
+      "occurred_at": "2026-07-27T00:00:03.000Z",
+      "message": "publish main task"
+    },
+    {
+      "sequence": 4,
+      "from": "deploying",
+      "to": "executing",
+      "occurred_at": "2026-07-27T00:00:04.000Z",
+      "message": "wait for main task results"
+    }
+  ]
+}
+]=])
+
+execute_process(
+    COMMAND "${CMAKE_COMMAND}"
+        "-DVM_EXE=${VM_EXE}"
+        "-DAGENT_CONFIG=${TEST_ROOT}/agent.json"
+        "-DLIFECYCLE_STATE=${executing_state}"
+        -P "${CMAKE_CURRENT_LIST_DIR}/run_agent_until_lifecycle_terminal.cmake"
+    COMMAND "${HOST_EXE}" orchestrate
+        --config "${TEST_ROOT}/lab.json"
+        --plan "${executing_plan_path}"
+        --timeout-seconds 10
+    RESULTS_VARIABLE executing_resume_results
+    OUTPUT_VARIABLE executing_resume_output
+    ERROR_VARIABLE executing_resume_error
+)
+if(NOT executing_resume_results STREQUAL "0;0")
+    message(FATAL_ERROR
+        "Persisted executing orchestration did not resume (${executing_resume_results}): "
+        "${executing_resume_error}\n${executing_resume_output}")
+endif()
+string(FIND "${executing_resume_output}" "\"resumed\": true" executing_resumed_position)
+string(FIND "${executing_resume_output}" "\"status\": \"COMPLETED\"" executing_status_position)
+if(executing_resumed_position EQUAL -1 OR executing_status_position EQUAL -1 OR
+   NOT EXISTS "${executing_archive}/evidence/main/task.json")
+    message(FATAL_ERROR
+        "Persisted executing orchestration omitted its completed evidence: ${executing_resume_output}")
+endif()
+
+# starting_vm 可能已经产生外部副作用，Host 重启后必须保持人工门禁。
+string(REPLACE "orchestration_executing_resume" "orchestration_unsafe_resume"
+    unsafe_resume_plan "${executing_resume_plan}")
+set(unsafe_plan_path "${TEST_ROOT}/orchestration-unsafe-resume.json")
+set(unsafe_archive "${archive_path}/runs/orchestration_unsafe_resume")
+set(unsafe_state "${unsafe_archive}/lifecycle.json")
+file(WRITE "${unsafe_plan_path}" "${unsafe_resume_plan}")
+file(MAKE_DIRECTORY "${unsafe_archive}")
+file(COPY_FILE "${unsafe_plan_path}" "${unsafe_archive}/plan.json")
+file(SHA256 "${unsafe_plan_path}" unsafe_plan_sha256)
+file(WRITE "${unsafe_archive}/orchestration.json" [=[
+{
+  "schema_version": 1,
+  "run_id": "orchestration_unsafe_resume",
+  "vm_id": "client",
+  "main_run_id": "orchestration_unsafe_resume",
+  "finally_run_id": "finally_unsafe_resume",
+  "plan_sha256": "@PLAN_SHA256@"
+}
+]=])
+file(READ "${unsafe_archive}/orchestration.json" unsafe_identity_json)
+string(REPLACE "@PLAN_SHA256@" "${unsafe_plan_sha256}"
+    unsafe_identity_json "${unsafe_identity_json}")
+file(WRITE "${unsafe_archive}/orchestration.json" "${unsafe_identity_json}")
+file(WRITE "${unsafe_state}" [=[
+{
+  "schema_version": 1,
+  "run_id": "orchestration_unsafe_resume",
+  "phase": "starting_vm",
+  "sequence": 1,
+  "updated_at": "2026-07-27T00:00:01.000Z",
+  "transitions": [
+    {
+      "sequence": 1,
+      "from": "preparing",
+      "to": "starting_vm",
+      "occurred_at": "2026-07-27T00:00:01.000Z",
+      "message": "start target VM"
+    }
+  ]
+}
+]=])
+execute_process(
+    COMMAND "${HOST_EXE}" orchestrate
+        --config "${TEST_ROOT}/lab.json"
+        --plan "${unsafe_plan_path}"
+        --timeout-seconds 10
+    RESULT_VARIABLE unsafe_resume_result
+    OUTPUT_VARIABLE unsafe_resume_output
+    ERROR_VARIABLE unsafe_resume_error
+)
+if(NOT unsafe_resume_result EQUAL 5)
+    message(FATAL_ERROR
+        "Unsafe persisted phase did not return the manual gate: "
+        "${unsafe_resume_error}\n${unsafe_resume_output}")
+endif()
+string(FIND "${unsafe_resume_output}"
+    "\"status\": \"MANUAL_INTERVENTION_REQUIRED\"" unsafe_resume_status_position)
+file(READ "${unsafe_state}" unsafe_state_json)
+string(FIND "${unsafe_state_json}"
+    "\"phase\": \"manual_intervention_required\"" unsafe_state_position)
+if(unsafe_resume_status_position EQUAL -1 OR unsafe_state_position EQUAL -1)
+    message(FATAL_ERROR "Unsafe persisted phase did not preserve its manual gate")
+endif()
+
 set(orchestration_failure_json [=[
 {
   "schema_version": 1,
