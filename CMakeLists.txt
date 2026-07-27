@@ -97,6 +97,8 @@ target_link_libraries(SatsumaHost PRIVATE SatsumaCore ${SATSUMA_YLT_TARGET})
 add_executable(SatsumaVM
     src/vm/agent.cpp
     src/vm/autostart.cpp
+    src/vm/claim_renewal.cpp
+    src/vm/claim_store.cpp
     src/vm/interactive_process.cpp
     src/vm/main.cpp
     src/vm/process_runner.cpp

@@ -121,6 +121,8 @@ add_executable(
     SatsumaVmAgentTests
     vm_agent_tests.cpp
     ../src/vm/agent.cpp
+    ../src/vm/claim_renewal.cpp
+    ../src/vm/claim_store.cpp
     ../src/vm/interactive_process.cpp
     ../src/vm/process_runner.cpp
     ../src/vm/rpc_client.cpp
@@ -148,9 +150,40 @@ add_test(
 set_tests_properties(SatsumaVmAgentTests PROPERTIES TIMEOUT 15)
 
 add_executable(
+    SatsumaVmAgentClaimTests
+    vm_agent_claim_tests.cpp
+    ../src/vm/agent.cpp
+    ../src/vm/claim_renewal.cpp
+    ../src/vm/claim_store.cpp
+    ../src/vm/interactive_process.cpp
+    ../src/vm/process_runner.cpp
+    ../src/vm/rpc_client.cpp
+    ../src/vm/service.cpp
+    ../src/vm/update.cpp
+)
+target_include_directories(SatsumaVmAgentClaimTests PRIVATE ../src/vm)
+target_link_libraries(
+    SatsumaVmAgentClaimTests
+    PRIVATE SatsumaCore ${SATSUMA_YLT_TARGET} advapi32 userenv ws2_32 wtsapi32
+)
+if(MSVC)
+    target_compile_options(
+        SatsumaVmAgentClaimTests
+        PRIVATE /W4 /permissive- /utf-8 /EHsc /external:anglebrackets /external:W0
+    )
+endif()
+add_test(
+    NAME SatsumaVmAgentClaimTests
+    COMMAND SatsumaVmAgentClaimTests "$<TARGET_FILE:SatsumaTestFixture>"
+)
+set_tests_properties(SatsumaVmAgentClaimTests PROPERTIES TIMEOUT 20)
+
+add_executable(
     SatsumaVmServiceTests
     service_tests.cpp
     ../src/vm/agent.cpp
+    ../src/vm/claim_renewal.cpp
+    ../src/vm/claim_store.cpp
     ../src/vm/interactive_process.cpp
     ../src/vm/process_runner.cpp
     ../src/vm/rpc_client.cpp
@@ -176,6 +209,8 @@ add_executable(
     SatsumaVmUpdateTests
     update_tests.cpp
     ../src/vm/agent.cpp
+    ../src/vm/claim_renewal.cpp
+    ../src/vm/claim_store.cpp
     ../src/vm/interactive_process.cpp
     ../src/vm/process_runner.cpp
     ../src/vm/rpc_client.cpp
@@ -255,6 +290,8 @@ add_executable(
     ../src/host/rpc_server.cpp
     ../src/host/rpc_service.cpp
     ../src/vm/agent.cpp
+    ../src/vm/claim_renewal.cpp
+    ../src/vm/claim_store.cpp
     ../src/vm/interactive_process.cpp
     ../src/vm/process_runner.cpp
     ../src/vm/rpc_client.cpp

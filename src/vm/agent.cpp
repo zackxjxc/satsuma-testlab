@@ -6,7 +6,6 @@
 #include <condition_variable>
 #include <fstream>
 #include <iostream>
-#include <limits>
 #include <mutex>
 #include <optional>
 #include <utility>
@@ -20,6 +19,7 @@
 #include "satsuma/core/id.hpp"
 #include "satsuma/core/json_io.hpp"
 #include "satsuma/core/path.hpp"
+#include "claim_store.hpp"
 #include "rpc_client.hpp"
 #include "satsuma/core/sha256.hpp"
 #include "interactive_process.hpp"
@@ -44,58 +44,6 @@ void throw_if_stop_requested(const std::stop_token stop_token) {
     if (stop_token.stop_requested()) {
         throw Error("Agent stop requested");
     }
-}
-
-// 独占创建 claim 文件；已存在表示步骤已由其他会话领取。
-[[nodiscard]] bool create_claim(const std::filesystem::path& path, const nlohmann::json& value) {
-    std::filesystem::create_directories(path.parent_path());
-    const std::string payload = value.dump(2) + "\n";
-    HANDLE file = CreateFileW(
-        path.c_str(),
-        GENERIC_WRITE,
-        FILE_SHARE_READ,
-        nullptr,
-        CREATE_NEW,
-        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH,
-        nullptr);
-    if (file == INVALID_HANDLE_VALUE) {
-        if (GetLastError() == ERROR_FILE_EXISTS) {
-            return false;
-        }
-        throw Error("Cannot create claim file (Win32 error " + std::to_string(GetLastError()) + ")");
-    }
-
-    DWORD bytes_written = 0;
-    const BOOL write_ok = WriteFile(
-        file,
-        payload.data(),
-        static_cast<DWORD>(payload.size()),
-        &bytes_written,
-        nullptr);
-    const BOOL flush_ok = write_ok ? FlushFileBuffers(file) : FALSE;
-    const DWORD error = (!write_ok || !flush_ok) ? GetLastError() : ERROR_SUCCESS;
-    CloseHandle(file);
-    if (!write_ok || !flush_ok || bytes_written != payload.size()) {
-        DeleteFileW(path.c_str());
-        throw Error("Cannot persist claim file (Win32 error " + std::to_string(error) + ")");
-    }
-    return true;
-}
-
-// 原子归档过期 claim；并发下只有一个 Agent 能成功取得回收权。
-[[nodiscard]] bool archive_expired_claim(
-    const std::filesystem::path& path,
-    const std::uint32_t attempt) {
-    std::filesystem::path archived = path;
-    archived += path_from_utf8(".expired-attempt-" + std::to_string(attempt) + "-" + make_id("claim"));
-    if (MoveFileExW(path.c_str(), archived.c_str(), MOVEFILE_WRITE_THROUGH)) {
-        return true;
-    }
-    const DWORD error = GetLastError();
-    if (error == ERROR_FILE_NOT_FOUND || error == ERROR_ALREADY_EXISTS) {
-        return false;
-    }
-    throw Error("Cannot archive expired claim file (Win32 error " + std::to_string(error) + ")");
 }
 
 // 使用 Win32 写穿方式创建 UTF-8 日志。
@@ -137,6 +85,47 @@ void publish_log(const std::filesystem::path& partial, const std::filesystem::pa
     }
 }
 
+// 将补充错误追加到执行结果并保持稳定分隔符。
+void append_result_error(ExecutionResult& result, const std::string& error) {
+    result.status = "failed";
+    if (!result.error.empty()) {
+        result.error += "; ";
+    }
+    result.error += error;
+}
+
+// 将 partial 日志收束为当前 job 的完整暂存文件。
+void finalize_staged_log(
+    const std::filesystem::path& partial,
+    const std::filesystem::path& staged,
+    ExecutionResult& result) {
+    try {
+        publish_log(partial, staged);
+    } catch (const std::exception& error) {
+        append_result_error(result, error.what());
+        if (!std::filesystem::is_regular_file(staged)) {
+            write_text(staged, "");
+        }
+    }
+}
+
+// 尽力保留失权 job 的结果摘要，不创建 canonical execution.json。
+void write_stale_result_best_effort(
+    const std::filesystem::path& job_directory,
+    const ExecutionResult& result,
+    const std::string& claim_status,
+    const std::string& claim_error) noexcept {
+    try {
+        nlohmann::json stale = result;
+        stale["claim_status"] = claim_status;
+        stale["claim_error"] = claim_error;
+        write_json_atomic_existing_parent(
+            job_directory / L"stale-execution.json",
+            stale);
+    } catch (...) {
+    }
+}
+
 // 返回与程序路径完全匹配的 Artifact 登记项。
 [[nodiscard]] const ArtifactManifest* find_program_artifact(
     const RunManifest& manifest,
@@ -171,16 +160,19 @@ void publish_log(const std::filesystem::path& partial, const std::filesystem::pa
 
 Agent::Agent(
     AgentConfig config,
-    std::filesystem::path helper_executable)
+    std::filesystem::path helper_executable,
+    AgentRuntimeOptions runtime_options)
     : config_(std::move(config)),
       session_id_(make_id("session")),
       boot_id_(make_id("boot")),
       helper_executable_(helper_executable.empty()
           ? current_executable_path()
-          : std::filesystem::absolute(std::move(helper_executable))) {
+          : std::filesystem::absolute(std::move(helper_executable))),
+      runtime_options_(std::move(runtime_options)) {
     if (config_.protocol_version != kRunManifestProtocolVersion) {
         throw Error("Agent execution requires file protocol version 2");
     }
+    validate_claim_lease_policy(runtime_options_.claim_lease_policy);
 }
 
 int Agent::run_once(const std::stop_token stop_token) {
@@ -227,9 +219,7 @@ int Agent::run_once(const std::stop_token stop_token) {
                 std::filesystem::path(L"results") /
                     path_from_utf8(config_.vm_id) /
                     path_from_utf8(step.id));
-            if (std::filesystem::is_regular_file(result_directory / L"execution.json")) {
-                continue;
-            }
+            const std::filesystem::path result_path = result_directory / L"execution.json";
 
             const std::string job_id = make_id("job");
             const std::filesystem::path claim_path = resolve_under_root(
@@ -242,52 +232,7 @@ int Agent::run_once(const std::stop_token stop_token) {
                 std::filesystem::path(L"state") /
                     path_from_utf8(config_.vm_id) /
                     path_from_utf8(step.id + ".claim-recovery.json"));
-            std::uint32_t attempt = 1;  // 首次领取从 1 开始
-            if (std::filesystem::is_regular_file(claim_path)) {
-                StepClaimLease existing;
-                try {
-                    existing = load_step_claim_lease(claim_path);
-                } catch (const std::exception& error) {
-                    write_json_atomic(recovery_path, {
-                        {"schema_version", 1},
-                        {"status", "manual_intervention_required"},
-                        {"reason", "claim cannot be parsed as a version 2 lease"},
-                        {"error", error.what()},
-                        {"observed_at", utc_timestamp()},
-                    });
-                    continue;
-                }
-
-                const ClaimRecoveryDecision decision = evaluate_claim_recovery(
-                    existing,
-                    unix_time_ms());
-                if (decision == ClaimRecoveryDecision::Wait) {
-                    continue;
-                }
-                if (decision == ClaimRecoveryDecision::ManualInterventionRequired) {
-                    write_json_atomic(recovery_path, {
-                        {"schema_version", 1},
-                        {"status", "manual_intervention_required"},
-                        {"reason", "expired claim belongs to an unsafe step"},
-                        {"claim", existing},
-                        {"current_boot_id", boot_id_},
-                        {"observed_at", utc_timestamp()},
-                    });
-                    continue;
-                }
-                if (!archive_expired_claim(claim_path, existing.attempt)) {
-                    continue;
-                }
-                if (existing.attempt == std::numeric_limits<std::uint32_t>::max()) {
-                    throw Error("Step claim attempt limit has been reached");
-                }
-                attempt = existing.attempt + 1;
-            }
-
-            constexpr std::int64_t claim_grace_ms = 30'000;
-            const std::int64_t lease_duration_ms =
-                static_cast<std::int64_t>(step.timeout_seconds) * 1'000 + claim_grace_ms;
-            const StepClaimLease claim = make_step_claim_lease(
+            const StepClaimLease proposed_claim = make_step_claim_lease(
                 manifest.run_id,
                 config_.vm_id,
                 step.id,
@@ -295,16 +240,45 @@ int Agent::run_once(const std::stop_token stop_token) {
                 session_id_,
                 boot_id_,
                 unix_time_ms(),
-                lease_duration_ms,
-                step.retry_safe,
-                attempt);
-            if (!create_claim(claim_path, claim)) {
+                runtime_options_.claim_lease_policy.lease_duration.count(),
+                step.retry_safe);
+            const StepClaimAcquireResult acquisition = acquire_step_claim_transaction(
+                claim_path,
+                result_path,
+                proposed_claim,
+                boot_id_);
+            if (acquisition.status == StepClaimAcquireStatus::Completed ||
+                acquisition.status == StepClaimAcquireStatus::Wait) {
                 continue;
+            }
+            if (acquisition.status == StepClaimAcquireStatus::ManualInterventionRequired) {
+                if (!acquisition.claim.has_value()) {
+                    throw Error("Manual claim recovery result omitted the persisted claim");
+                }
+                write_json_atomic(recovery_path, {
+                    {"schema_version", 1},
+                    {"status", "manual_intervention_required"},
+                    {"reason", "expired claim belongs to an unsafe step"},
+                    {"claim", *acquisition.claim},
+                    {"current_boot_id", boot_id_},
+                    {"observed_at", utc_timestamp()},
+                });
+                continue;
+            }
+            if (acquisition.status != StepClaimAcquireStatus::Acquired ||
+                !acquisition.claim.has_value()) {
+                throw Error("Claim acquisition transaction returned an invalid state");
             }
             std::error_code marker_error;
             std::filesystem::remove(recovery_path, marker_error);
 
-            execute_step(run_directory, manifest, step, job_id, stop_token);
+            execute_step(
+                run_directory,
+                manifest,
+                step,
+                claim_path,
+                *acquisition.claim,
+                stop_token);
             ++executed_steps;
         }
     }
@@ -417,31 +391,55 @@ void Agent::execute_step(
     const std::filesystem::path& run_directory,
     const RunManifest& manifest,
     const TaskStep& step,
-    const std::string& job_id,
-    const std::stop_token stop_token) {
+    const std::filesystem::path& claim_path,
+    const StepClaimLease& claim,
+    const std::stop_token parent_stop_token) {
+    ClaimRenewalSession renewal_session(
+        claim_path,
+        claim,
+        runtime_options_.claim_lease_policy,
+        runtime_options_.claim_renew_operation);
+    std::stop_source execution_stop_source; // 合并 Service 停止和 claim 失权
+    const std::stop_token lease_loss_token = renewal_session.lease_loss_token();
+    std::stop_callback parent_stop_callback(
+        parent_stop_token,
+        [&execution_stop_source] { execution_stop_source.request_stop(); });
+    std::stop_callback lease_loss_callback(
+        lease_loss_token,
+        [&execution_stop_source] { execution_stop_source.request_stop(); });
+    const std::stop_token execution_stop_token = execution_stop_source.get_token();
+
     const std::filesystem::path result_directory = resolve_under_root(
         run_directory,
         std::filesystem::path(L"results") / path_from_utf8(config_.vm_id) / path_from_utf8(step.id));
     std::filesystem::create_directories(result_directory);
 
-    const std::filesystem::path stdout_partial = result_directory / L"stdout.log.partial";
-    const std::filesystem::path stderr_partial = result_directory / L"stderr.log.partial";
+    const std::filesystem::path job_directory = resolve_under_root(
+        result_directory,
+        std::filesystem::path(L".jobs") / path_from_utf8(claim.job_id));
+    std::filesystem::create_directories(job_directory);
+
+    const std::filesystem::path stdout_partial = job_directory / L"stdout.log.partial";
+    const std::filesystem::path stderr_partial = job_directory / L"stderr.log.partial";
+    const std::filesystem::path stdout_staged = job_directory / L"stdout.log";
+    const std::filesystem::path stderr_staged = job_directory / L"stderr.log";
     const std::filesystem::path stdout_final = result_directory / L"stdout.log";
     const std::filesystem::path stderr_final = result_directory / L"stderr.log";
+    std::vector<StepResultEvidenceFile> evidence_files; // 锁内发布的暂存文件映射
 
     ExecutionResult result;
     result.run_id = manifest.run_id;
     result.vm_id = config_.vm_id;
-    result.job_id = job_id;
+    result.job_id = claim.job_id;
     result.step_id = step.id;
     result.run_as = step.run_as;
     result.started_at = utc_timestamp();
     result.stdout_path = path_to_utf8(std::filesystem::relative(stdout_final, run_directory));
     result.stderr_path = path_to_utf8(std::filesystem::relative(stderr_final, run_directory));
-    write_state(run_directory, "running", job_id);
+    write_state(run_directory, "running", claim.job_id);
 
     try {
-        throw_if_stop_requested(stop_token);
+        throw_if_stop_requested(execution_stop_token);
         const auto start_time = std::chrono::steady_clock::now();
         if (step.type == "echo") {
             write_text(stdout_partial, step.message + "\n");
@@ -473,7 +471,7 @@ void Agent::execute_step(
                 run_directory,
                 local_run_directory,
                 manifest,
-                stop_token,
+                execution_stop_token,
                 interactive_session ? &*interactive_session : nullptr);
 
             ProcessRequest request;
@@ -483,29 +481,38 @@ void Agent::execute_step(
             request.stdout_path = stdout_partial;
             request.stderr_path = stderr_partial;
             request.timeout = std::chrono::seconds(step.timeout_seconds);
-            request.stop_token = stop_token;
+            request.stop_token = execution_stop_token;
             const ProcessResult process_result = interactive_session
                 ? interactive_session->run(helper_executable_, request)
                 : runner_.run(request);
+            throw_if_stop_requested(execution_stop_token);
             result.exit_code = process_result.exit_code;
             result.timed_out = process_result.timed_out;
             result.duration_ms = process_result.duration_ms;
 
             for (const auto& collect_file : step.collect_files) {
-                throw_if_stop_requested(stop_token);
+                throw_if_stop_requested(execution_stop_token);
                 const std::filesystem::path source = resolve_under_root(local_run_directory, collect_file);
                 if (!std::filesystem::is_regular_file(source)) {
                     throw Error("Declared result file does not exist: " + path_to_utf8(collect_file));
                 }
-                const std::filesystem::path destination = resolve_under_root(
+                const std::filesystem::path staged_destination = resolve_under_root(
+                    job_directory,
+                    std::filesystem::path(L"files") / collect_file);
+                const std::filesystem::path canonical_destination = resolve_under_root(
                     result_directory,
                     std::filesystem::path(L"files") / collect_file);
-                std::filesystem::create_directories(destination.parent_path());
-                std::filesystem::copy_file(source, destination, std::filesystem::copy_options::overwrite_existing);
+                std::filesystem::create_directories(staged_destination.parent_path());
+                std::filesystem::create_directories(canonical_destination.parent_path());
+                std::filesystem::copy_file(
+                    source,
+                    staged_destination,
+                    std::filesystem::copy_options::overwrite_existing);
                 result.files.push_back({
-                    path_to_utf8(std::filesystem::relative(destination, run_directory)),
-                    sha256_file(destination),
+                    path_to_utf8(std::filesystem::relative(canonical_destination, run_directory)),
+                    sha256_file(staged_destination),
                 });
+                evidence_files.push_back({staged_destination, canonical_destination});
             }
         }
 
@@ -515,18 +522,47 @@ void Agent::execute_step(
         result.error = error.what();
     }
 
-    try {
-        publish_log(stdout_partial, stdout_final);
-        publish_log(stderr_partial, stderr_final);
-    } catch (const std::exception& error) {
-        result.status = "failed";
-        if (!result.error.empty()) {
-            result.error += "; ";
-        }
-        result.error += error.what();
-    }
+    finalize_staged_log(stdout_partial, stdout_staged, result);
+    finalize_staged_log(stderr_partial, stderr_staged, result);
+    evidence_files.insert(
+        evidence_files.begin(),
+        {
+            {stdout_staged, stdout_final},
+            {stderr_staged, stderr_final},
+        });
     result.finished_at = utc_timestamp();
-    write_json_atomic(result_directory / L"execution.json", result);
+
+    if (lease_loss_token.stop_requested()) {
+        renewal_session.finish();
+        write_stale_result_best_effort(
+            job_directory,
+            result,
+            "ownership_lost",
+            renewal_session.loss_reason());
+        return;
+    }
+
+    const StepResultPublishStatus publish_status = publish_step_result_if_owned(
+        claim_path,
+        claim,
+        result_directory / L"execution.json",
+        result,
+        evidence_files);
+    renewal_session.finish();
+    if (publish_status != StepResultPublishStatus::Published) {
+        const std::string claim_status = publish_status == StepResultPublishStatus::LeaseExpired
+            ? "lease_expired"
+            : "ownership_lost";
+        write_stale_result_best_effort(
+            job_directory,
+            result,
+            claim_status,
+            renewal_session.loss_reason());
+        return;
+    }
+
+    std::error_code cleanup_error;
+    std::filesystem::remove_all(job_directory, cleanup_error);
     write_state(run_directory, "idle", "");
 }
 
