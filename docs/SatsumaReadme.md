@@ -38,7 +38,8 @@ ctest --preset windows-debug
 ```
 
 生成文件位于 `build/windows-default/bin/Debug/`。运行时只需部署 `SatsumaHost.exe` 或
-`SatsumaVM.exe`，`SatsumaCore` 是静态库。
+`SatsumaVM.exe`，`SatsumaCore` 是静态库。MSVC 构建使用静态 Runtime（Release `/MT`、Debug `/MTd`），
+Guest 不需要安装与构建机工具集完全匹配的 Visual C++ Redistributable。
 
 ### 真实 VMware 手工验收
 
@@ -282,8 +283,8 @@ Host 在 `updates/<vm-id>/<update-id>` 的隐藏暂存目录中复制候选，�
 成功结果写回前，助手必须删除 `SatsumaVM.bak.exe`、确认 `SatsumaVM.new.exe` 不存在，并删除本机配置
 备份、manifest 和状态文件；Host 读取成功结果后删除整个共享更新目录。哈希、停服、改名、启动或
 presence 任一步失败都会写回明确结果；文件已经切换时先恢复旧 EXE、旧配置和旧 presence。只有自动恢复
-也失败时才保留备份和状态证据，复杂恢复使用 Guest 快照。目前该流程已通过本机文件切换和注入式
-Service/presence 测试，真实 SCM/Guest 更新留到稳定候选发布后验收。
+也失败时才保留备份和状态证据，复杂恢复使用 Guest 快照。该流程已通过本机文件切换和注入式
+Service/presence 测试，并已在真实 LocalSystem Service 中完成 Host 驱动更新、presence 与暂存清理验收。
 
 ### 6. 创建用户基础快照
 
@@ -310,12 +311,13 @@ Service 会继续轮询文件通道。
        --id client --config 'lab.local.json'
    ```
 
-2. 等待 Windows Service 自动启动 `SatsumaVM.exe --service` 并持续发布 presence。
+2. 等待 Windows Service 自动启动 `SatsumaVM.exe --service` 并持续发布 presence。延迟自动启动在当前
+   Windows 11 Guest 冷启动中实测约需 120–140 秒。
 3. 在 Host 终端执行主动检测：
 
    ```powershell
    & 'build/windows-default/bin/Release/SatsumaHost.exe' check `
-       --config 'lab.local.json' --vm client --timeout-seconds 30
+       --config 'lab.local.json' --vm client --timeout-seconds 180
    $LASTEXITCODE
    ```
 
@@ -356,12 +358,13 @@ cmake --build --preset windows-release --target SatsumaDemoApp
 正式发布测试任务前，AI 应主动检查目标 VM 的完整自动化通道：
 
 ```text
-SatsumaHost.exe check --config lab.local.json --vm client --timeout-seconds 30
+SatsumaHost.exe check --config lab.local.json --vm client --timeout-seconds 180
 ```
 
 `check` 会验证共享目录和归档目录的原子写入、`vmrun` 控制通道、VMX 和基础快照，然后发布唯一的
 `echo` 任务并等待 Agent 返回结果。它不会启动、关闭、恢复虚拟机或改动快照。未指定 `--vm` 时会检查
-配置中的全部 VM；`--timeout-seconds` 接受 1–300 秒，默认 30 秒。
+配置中的全部 VM；`--timeout-seconds` 接受 1–300 秒，默认 30 秒。Agent 已上线时默认值通常足够；VM
+冷启动后首次检查建议使用 180–240 秒，以覆盖 Windows 延迟自动启动和 VMware Tools 就绪时间。
 
 报告为机器可读 JSON，调用方必须同时检查退出码和顶层 `status`：
 
