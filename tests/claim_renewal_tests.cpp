@@ -1,5 +1,4 @@
 // VM Agent claim 后台续租、重试和安全截止测试。
-#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <filesystem>
@@ -7,6 +6,8 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+
+#include <windows.h>
 
 #include "claim_renewal.hpp"
 #include "claim_store.hpp"
@@ -104,21 +105,22 @@ void test_continuous_renewal(
         policy,
         "job_continuous");
     satsuma::vm::ClaimRenewalSession session(claim_path, owner, policy);
-    const bool published_two = wait_for_condition(
+    const std::int64_t initial_safe_deadline =
+        owner.lease_expires_unix_ms - policy.safety_margin.count();
+    const bool crossed_initial_deadline = wait_for_condition(
         [&] {
-            return session.current_claim().renewal_sequence >= 2;
+            return session.current_claim().last_renewed_unix_ms > initial_safe_deadline;
         },
-        std::max<std::chrono::milliseconds>(
-            2s,
-            policy.renewal_interval * 6)); // 实机模式等待到安全截止之后
-    if (!published_two) {
+        policy.lease_duration + policy.renewal_interval * 2);
+    if (!crossed_initial_deadline) {
         throw std::runtime_error(
-            "claim renewal session did not publish two renewals; current sequence=" +
+            "claim renewal session did not cross its initial safety deadline; current sequence=" +
             std::to_string(session.current_claim().renewal_sequence) +
             "; loss_reason=" + session.loss_reason());
     }
     expect(
-        satsuma::vm::load_effective_step_claim(claim_path).renewal_sequence >= 2,
+        satsuma::vm::load_effective_step_claim(claim_path).last_renewed_unix_ms >
+            initial_safe_deadline,
         "claim renewal session memory advanced without persisting its sidecar");
     expect(
         !session.lease_loss_token().stop_requested(),
@@ -171,6 +173,72 @@ void test_transient_failure_recovery(const std::filesystem::path& root) {
     expect(
         attempts.load() >= 3 && !session.lease_loss_token().stop_requested(),
         "recovered transient renewal failure triggered lease loss");
+    session.finish();
+}
+
+// 验证持久化 sidecar 的瞬时读取冲突会重试，而不会被误判为状态损坏。
+void test_transient_persisted_read_recovery(const std::filesystem::path& root) {
+    const satsuma::vm::ClaimLeasePolicy policy = test_policy();
+    const std::filesystem::path claim_path = root / L"state" / L"execute.claim.json";
+    const std::filesystem::path result_path = root / L"results" / L"execution.json";
+    const satsuma::StepClaimLease owner = acquire_claim(
+        claim_path,
+        result_path,
+        policy,
+        "job_transient_read");
+    while (satsuma::unix_time_ms() <= owner.last_renewed_unix_ms) {
+        std::this_thread::sleep_for(1ms);
+    }
+    const satsuma::vm::StepClaimRenewResult first =
+        satsuma::vm::renew_step_claim_transaction(
+            claim_path,
+            owner,
+            policy.lease_duration.count());
+    expect(first.claim.has_value(), "transient-read fixture did not publish its first sidecar");
+
+    const std::filesystem::path sidecar_path =
+        satsuma::step_claim_renewal_path(claim_path, *first.claim);
+    HANDLE blocking_reader = CreateFileW(
+        sidecar_path.c_str(),
+        GENERIC_READ,
+        0,
+        nullptr,
+        OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL,
+        nullptr);
+    expect(
+        blocking_reader != INVALID_HANDLE_VALUE,
+        "transient-read fixture could not lock its current sidecar");
+
+    std::atomic<int> attempts{0}; // 确认后台至少经历一次失败后重试
+    satsuma::vm::ClaimRenewalSession session(
+        claim_path,
+        *first.claim,
+        policy,
+        [&attempts](
+            const std::filesystem::path& path,
+            const satsuma::StepClaimLease& expected,
+            const std::int64_t duration_ms) {
+            attempts.fetch_add(1);
+            return satsuma::vm::renew_step_claim_transaction(path, expected, duration_ms);
+        });
+    std::jthread release_reader([blocking_reader, &attempts] {
+        const auto wait_deadline = std::chrono::steady_clock::now() + 1s;
+        while (attempts.load() == 0 && std::chrono::steady_clock::now() < wait_deadline) {
+            std::this_thread::sleep_for(1ms);
+        }
+        std::this_thread::sleep_for(40ms); // 让已进入的读取调用先观察独占冲突
+        CloseHandle(blocking_reader);
+    });
+    expect(
+        wait_for_condition(
+            [&] { return session.current_claim().renewal_sequence >= 2; },
+            2s),
+        "claim renewal session did not recover from a transient sidecar read conflict");
+    release_reader.join();
+    expect(
+        attempts.load() >= 2 && !session.lease_loss_token().stop_requested(),
+        "transient sidecar read conflict was classified as persistent state damage");
     session.finish();
 }
 
@@ -298,6 +366,7 @@ int main(const int argc, char* argv[]) {
         test_policy_validation();
         test_continuous_renewal(root / L"continuous", test_policy());
         test_transient_failure_recovery(root / L"transient");
+        test_transient_persisted_read_recovery(root / L"transient-read");
         test_ownership_loss_signal(root / L"ownership-loss");
         test_invalid_state_signal(root / L"invalid-state");
         test_safety_deadline(root / L"safety-deadline");

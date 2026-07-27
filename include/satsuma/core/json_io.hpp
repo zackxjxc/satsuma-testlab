@@ -5,7 +5,15 @@
 
 #include <nlohmann/json.hpp>
 
+#include "satsuma/core/errors.hpp"
+
 namespace satsuma {
+
+// 表示打开或读取 JSON 文件时发生的环境 I/O 错误。
+class JsonIoError : public Error {
+public:
+    using Error::Error;
+};
 
 // 读取并解析 UTF-8 JSON 文件。
 [[nodiscard]] nlohmann::json load_json(const std::filesystem::path& path);

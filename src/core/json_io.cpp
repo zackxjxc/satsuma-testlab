@@ -3,6 +3,7 @@
 
 #include <chrono>
 #include <fstream>
+#include <iterator>
 #include <string>
 #include <thread>
 
@@ -62,11 +63,19 @@ void replace_json_file(
 nlohmann::json load_json(const std::filesystem::path& path) {
     std::ifstream input(path, std::ios::binary);
     if (!input) {
-        throw Error("Cannot open JSON file: " + path_to_utf8(path));
+        throw JsonIoError("Cannot open JSON file: " + path_to_utf8(path));
+    }
+
+    const std::string payload{
+        std::istreambuf_iterator<char>(input),
+        std::istreambuf_iterator<char>(),
+    }; // 先区分底层读取失败，再解析完整 JSON
+    if (input.bad()) {
+        throw JsonIoError("Cannot read JSON file: " + path_to_utf8(path));
     }
 
     try {
-        return nlohmann::json::parse(input);
+        return nlohmann::json::parse(payload);
     } catch (const nlohmann::json::exception& error) {
         throw Error("Invalid JSON file " + path_to_utf8(path) + ": " + error.what());
     }

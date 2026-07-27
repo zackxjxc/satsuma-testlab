@@ -161,6 +161,8 @@ void validate_proposed_claim(const StepClaimLease& claim) {
     const std::string& description) {
     try {
         return load_step_claim_lease(path);
+    } catch (const JsonIoError&) {
+        throw;
     } catch (const std::exception& error) {
         throw StepClaimStateError(
             "Invalid " + description + ": " + error.what());
@@ -245,6 +247,27 @@ void validate_renewal_extension(
         !find_sequenced_renewal_paths(claim_path, owner).empty();
 }
 
+// 基础 claim 缺失时查找任意旧 owner 的续租或恢复事务残留。
+[[nodiscard]] bool has_orphaned_claim_artifacts(
+    const std::filesystem::path& claim_path,
+    const StepClaimLease& proposed_claim) {
+    const std::wstring renewal_prefix = path_from_utf8(
+        proposed_claim.step_id + ".claim-renewal-").native();
+    const std::wstring renewal_suffix = L".json";
+    std::wstring archive_prefix = claim_path.filename().native();
+    archive_prefix += L".expired-attempt-";
+
+    for (const std::filesystem::directory_entry& entry :
+         std::filesystem::directory_iterator(claim_path.parent_path())) {
+        const std::wstring filename = entry.path().filename().native();
+        if ((filename.starts_with(renewal_prefix) && filename.ends_with(renewal_suffix)) ||
+            filename.starts_with(archive_prefix)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 // 返回基础 claim 与其不可变 sidecar 序列合成的当前有效租约。
 [[nodiscard]] StepClaimLease load_effective_claim_unlocked(
     const std::filesystem::path& claim_path) {
@@ -288,6 +311,84 @@ void validate_renewal_extension(
         effective = renewal;
     }
     return effective;
+}
+
+// 验证热路径读取的不可变记录与会话内最近成功的 claim 完全一致。
+void validate_expected_claim_record(
+    const StepClaimLease& persisted,
+    const StepClaimLease& expected,
+    const std::string& description) {
+    if (nlohmann::json(persisted) != nlohmann::json(expected)) {
+        throw StepClaimStateError(description + " does not match the expected renewal owner");
+    }
+}
+
+// 续租热路径只读取基础记录、可选旧 checkpoint 和当前 owner 的直接记录。
+[[nodiscard]] StepClaimLease load_expected_claim_for_renewal_unlocked(
+    const std::filesystem::path& claim_path,
+    const StepClaimLease& expected_owner) {
+    const StepClaimLease base = load_persisted_claim(claim_path, "step claim");
+    if (base.schema_version != 3 || !same_step_claim_owner(base, expected_owner)) {
+        return base;
+    }
+
+    const std::filesystem::path legacy_path =
+        legacy_step_claim_renewal_path(claim_path, base);
+    if (expected_owner.renewal_sequence == 0) {
+        if (std::filesystem::exists(legacy_path)) {
+            throw StepClaimStateError(
+                "Legacy step claim renewal sidecar advanced beyond the expected base claim");
+        }
+        validate_expected_claim_record(base, expected_owner, "Persisted base claim");
+        return base;
+    }
+
+    StepClaimLease checkpoint = base; // 旧版 checkpoint 可直接衔接后续不可变记录
+    if (std::filesystem::exists(legacy_path)) {
+        if (!std::filesystem::is_regular_file(legacy_path)) {
+            throw StepClaimStateError("Legacy step claim renewal sidecar is not a regular file");
+        }
+        const StepClaimLease legacy = load_persisted_claim(
+            legacy_path,
+            "legacy step claim renewal sidecar");
+        validate_renewal_extension(base, legacy);
+        if (legacy.renewal_sequence > expected_owner.renewal_sequence) {
+            throw StepClaimStateError(
+                "Legacy step claim renewal sidecar advanced beyond the expected owner");
+        }
+        if (legacy.renewal_sequence == expected_owner.renewal_sequence) {
+            if (std::filesystem::exists(step_claim_renewal_path(claim_path, expected_owner))) {
+                throw StepClaimStateError(
+                    "Legacy and immutable step claim renewals use the same sequence");
+            }
+            validate_expected_claim_record(
+                legacy,
+                expected_owner,
+                "Legacy step claim renewal sidecar");
+            return legacy;
+        }
+        checkpoint = legacy;
+    }
+
+    const std::filesystem::path expected_path =
+        step_claim_renewal_path(claim_path, expected_owner);
+    if (std::filesystem::exists(expected_path) &&
+        !std::filesystem::is_regular_file(expected_path)) {
+        throw StepClaimStateError("Expected step claim renewal sidecar is not a regular file");
+    }
+    const StepClaimLease persisted = load_persisted_claim(
+        expected_path,
+        "expected step claim renewal sidecar");
+    if (step_claim_renewal_path(claim_path, persisted) != expected_path) {
+        throw StepClaimStateError(
+            "Expected step claim renewal sidecar does not match its immutable path");
+    }
+    validate_renewal_extension(checkpoint, persisted);
+    validate_expected_claim_record(
+        persisted,
+        expected_owner,
+        "Expected step claim renewal sidecar");
+    return persisted;
 }
 
 // 使用请求身份和指定 attempt 创建一份时间窗口刷新的基础 claim。
@@ -490,10 +591,11 @@ StepClaimAcquireResult acquire_step_claim_transaction(
     }
 
     if (!std::filesystem::exists(claim_path)) {
-        const StepClaimLease acquired = make_acquired_claim(proposed_claim, now_unix_ms, 1);
-        if (has_step_claim_renewals(claim_path, acquired)) {
-            throw Error("Renewal sidecars already exist for a new step claim job");
+        if (has_orphaned_claim_artifacts(claim_path, proposed_claim)) {
+            throw StepClaimStateError(
+                "Step claim is missing while renewal or recovery artifacts still exist");
         }
+        const StepClaimLease acquired = make_acquired_claim(proposed_claim, now_unix_ms, 1);
         const std::filesystem::path staged_path = stage_claim_json(claim_path, acquired);
         publish_staged_claim(staged_path, claim_path);
         return {StepClaimAcquireStatus::Acquired, acquired, std::nullopt};
@@ -544,7 +646,8 @@ StepClaimRenewResult renew_step_claim_transaction(
         return {StepClaimRenewStatus::OwnershipLost, std::nullopt};
     }
 
-    const StepClaimLease current = load_effective_claim_unlocked(claim_path);
+    const StepClaimLease current =
+        load_expected_claim_for_renewal_unlocked(claim_path, expected_owner);
     if (current.schema_version != 3 ||
         !same_step_claim_owner(current, expected_owner)) {
         return {StepClaimRenewStatus::OwnershipLost, std::nullopt};

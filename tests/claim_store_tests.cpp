@@ -41,6 +41,16 @@ void expect_error(const std::function<void()>& operation, const std::string& mes
     throw std::runtime_error(message);
 }
 
+// 验证操作按预期进入持久化状态人工门禁。
+void expect_state_error(const std::function<void()>& operation, const std::string& message) {
+    try {
+        operation();
+    } catch (const satsuma::vm::StepClaimStateError&) {
+        return;
+    }
+    throw std::runtime_error(message);
+}
+
 // 写入一份测试证据文本。
 void write_text(const std::filesystem::path& path, const std::string& content) {
     std::filesystem::create_directories(path.parent_path());
@@ -517,6 +527,163 @@ void test_renewal_sequence_gap(const std::filesystem::path& root) {
     expect(rejected_as_state, "claim renewal sequence gap was not rejected");
 }
 
+// 验证基础 claim 丢失后，任意旧续租或恢复归档都会阻止重新执行。
+void test_orphaned_claim_artifact_gate(const std::filesystem::path& root) {
+    const auto expect_gate = [](
+        const std::filesystem::path& claim_path,
+        const std::filesystem::path& result_path,
+        const std::string& suffix) {
+        const satsuma::StepClaimLease contender = make_proposed_claim(
+            "job_orphan_contender_" + suffix,
+            "boot_orphan_contender_" + suffix,
+            2s,
+            true);
+        expect_state_error(
+            [&] {
+                static_cast<void>(satsuma::vm::acquire_step_claim_transaction(
+                    claim_path,
+                    result_path,
+                    contender,
+                    contender.boot_id));
+            },
+            "orphaned claim artifacts did not enter the manual gate: " + suffix);
+        expect(
+            !std::filesystem::exists(claim_path),
+            "orphaned claim artifacts allowed a replacement base claim: " + suffix);
+    };
+
+    const std::filesystem::path immutable_root = root / L"immutable";
+    const std::filesystem::path immutable_claim =
+        immutable_root / L"state" / L"execute.claim.json";
+    const std::filesystem::path immutable_result =
+        immutable_root / L"results" / L"execution.json";
+    const satsuma::StepClaimLease immutable_proposed = make_proposed_claim(
+        "job_orphan_immutable",
+        "boot_orphan_immutable",
+        5s,
+        true);
+    const satsuma::vm::StepClaimAcquireResult immutable_acquired =
+        satsuma::vm::acquire_step_claim_transaction(
+            immutable_claim,
+            immutable_result,
+            immutable_proposed,
+            immutable_proposed.boot_id);
+    expect(immutable_acquired.claim.has_value(), "immutable orphan fixture was not acquired");
+    wait_for_next_renewal_timestamp(*immutable_acquired.claim);
+    const satsuma::vm::StepClaimRenewResult immutable_renewed =
+        satsuma::vm::renew_step_claim_transaction(
+            immutable_claim,
+            *immutable_acquired.claim,
+            5'000);
+    expect(immutable_renewed.claim.has_value(), "immutable orphan fixture was not renewed");
+    std::filesystem::remove(immutable_claim);
+    expect_gate(immutable_claim, immutable_result, "immutable");
+
+    const std::filesystem::path legacy_root = root / L"legacy";
+    const std::filesystem::path legacy_claim = legacy_root / L"state" / L"execute.claim.json";
+    const std::filesystem::path legacy_result = legacy_root / L"results" / L"execution.json";
+    const satsuma::StepClaimLease legacy_proposed = make_proposed_claim(
+        "job_orphan_legacy",
+        "boot_orphan_legacy",
+        5s,
+        true);
+    const satsuma::vm::StepClaimAcquireResult legacy_acquired =
+        satsuma::vm::acquire_step_claim_transaction(
+            legacy_claim,
+            legacy_result,
+            legacy_proposed,
+            legacy_proposed.boot_id);
+    expect(legacy_acquired.claim.has_value(), "legacy orphan fixture was not acquired");
+    wait_for_next_renewal_timestamp(*legacy_acquired.claim);
+    const satsuma::StepClaimLease legacy_renewed = satsuma::renew_step_claim_lease(
+        *legacy_acquired.claim,
+        satsuma::unix_time_ms(),
+        5'000);
+    const std::filesystem::path legacy_sidecar = legacy_claim.parent_path() /
+        satsuma::path_from_utf8(
+            legacy_renewed.step_id + ".claim-renewal-" + legacy_renewed.job_id + ".json");
+    satsuma::write_json_atomic(legacy_sidecar, legacy_renewed);
+    std::filesystem::remove(legacy_claim);
+    expect_gate(legacy_claim, legacy_result, "legacy");
+
+    const std::filesystem::path archive_root = root / L"archive";
+    const std::filesystem::path archive_claim = archive_root / L"state" / L"execute.claim.json";
+    const std::filesystem::path archive_result = archive_root / L"results" / L"execution.json";
+    const satsuma::StepClaimLease archive_proposed = make_proposed_claim(
+        "job_orphan_archive",
+        "boot_orphan_archive",
+        5s,
+        true);
+    const satsuma::vm::StepClaimAcquireResult archive_acquired =
+        satsuma::vm::acquire_step_claim_transaction(
+            archive_claim,
+            archive_result,
+            archive_proposed,
+            archive_proposed.boot_id);
+    expect(archive_acquired.claim.has_value(), "archive orphan fixture was not acquired");
+    std::filesystem::path archived_claim = archive_claim;
+    archived_claim += L".expired-attempt-1-claim-test";
+    std::filesystem::rename(archive_claim, archived_claim);
+    expect_gate(archive_claim, archive_result, "archive");
+}
+
+// 验证续租热路径不会重新打开已经验证过的历史 sidecar。
+void test_renewal_hot_path_skips_history(const std::filesystem::path& root) {
+    const std::filesystem::path claim_path = root / L"state" / L"execute.claim.json";
+    const std::filesystem::path result_path = root / L"results" / L"execution.json";
+    const satsuma::StepClaimLease proposed = make_proposed_claim(
+        "job_hot_path",
+        "boot_hot_path",
+        5s,
+        true);
+    const satsuma::vm::StepClaimAcquireResult acquired =
+        satsuma::vm::acquire_step_claim_transaction(
+            claim_path,
+            result_path,
+            proposed,
+            proposed.boot_id);
+    expect(acquired.claim.has_value(), "hot-path fixture was not acquired");
+
+    satsuma::StepClaimLease current = *acquired.claim; // 会话内最近成功的不可变记录
+    std::filesystem::path oldest_sidecar;
+    for (int index = 0; index < 3; ++index) {
+        wait_for_next_renewal_timestamp(current);
+        const satsuma::vm::StepClaimRenewResult renewed =
+            satsuma::vm::renew_step_claim_transaction(claim_path, current, 5'000);
+        expect(renewed.claim.has_value(), "hot-path fixture renewal failed");
+        current = *renewed.claim;
+        if (index == 0) {
+            oldest_sidecar = satsuma::step_claim_renewal_path(claim_path, current);
+        }
+    }
+
+    HANDLE blocking_reader = CreateFileW(
+        oldest_sidecar.c_str(),
+        GENERIC_READ,
+        0,
+        nullptr,
+        OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL,
+        nullptr);
+    expect(blocking_reader != INVALID_HANDLE_VALUE, "hot-path fixture could not lock old sidecar");
+    satsuma::vm::StepClaimRenewResult advanced;
+    try {
+        wait_for_next_renewal_timestamp(current);
+        advanced = satsuma::vm::renew_step_claim_transaction(claim_path, current, 5'000);
+    } catch (...) {
+        CloseHandle(blocking_reader);
+        throw;
+    }
+    CloseHandle(blocking_reader);
+    expect(
+        advanced.status == satsuma::vm::StepClaimRenewStatus::Renewed &&
+            advanced.claim.has_value() && advanced.claim->renewal_sequence == 4,
+        "claim renewal hot path reopened an old sidecar");
+    expect(
+        satsuma::vm::load_effective_step_claim(claim_path).renewal_sequence == 4,
+        "full claim audit disagreed with the hot-path renewal result");
+}
+
 // 验证两个并发首次领取事务只能产生一个 owner。
 void test_concurrent_initial_acquire(const std::filesystem::path& root) {
     const std::filesystem::path claim_path = root / L"state" / L"execute.claim.json";
@@ -602,6 +769,8 @@ int main(const int argc, char* argv[]) {
         test_invalid_renewal_state(root / L"invalid-renewal");
         test_legacy_renewal_checkpoint(root / L"legacy-renewal");
         test_renewal_sequence_gap(root / L"renewal-gap");
+        test_orphaned_claim_artifact_gate(root / L"orphan-gate");
+        test_renewal_hot_path_skips_history(root / L"renewal-hot-path");
         test_concurrent_initial_acquire(root / L"concurrent-acquire");
         std::filesystem::remove_all(root);
         std::cout << "SatsumaVmClaimStoreTests passed\n";
