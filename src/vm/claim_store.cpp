@@ -3,9 +3,11 @@
 
 #include <chrono>
 #include <limits>
+#include <set>
 #include <string>
 #include <thread>
 #include <utility>
+#include <vector>
 
 #include <nlohmann/json.hpp>
 #include <windows.h>
@@ -279,6 +281,36 @@ void validate_completed_result(
     }
 }
 
+// 在取得 claim 锁前验证待发布证据路径和目标唯一性。
+void validate_evidence_files(const std::vector<StepResultEvidenceFile>& evidence_files) {
+    std::set<std::filesystem::path> canonical_paths;
+    for (const StepResultEvidenceFile& evidence : evidence_files) {
+        if (evidence.staged_path.empty() || evidence.canonical_path.empty() ||
+            evidence.staged_path == evidence.canonical_path) {
+            throw Error("Step result evidence contains an invalid path mapping");
+        }
+        if (!std::filesystem::is_regular_file(evidence.staged_path)) {
+            throw Error("Staged step result evidence is not a regular file");
+        }
+        if (!std::filesystem::is_directory(evidence.canonical_path.parent_path())) {
+            throw Error("Canonical step result evidence parent does not exist");
+        }
+        if (!canonical_paths.insert(evidence.canonical_path).second) {
+            throw Error("Step result evidence contains a duplicate canonical path");
+        }
+    }
+}
+
+// 将一个完整暂存文件原子发布到 canonical 路径。
+void publish_evidence_file(const StepResultEvidenceFile& evidence) {
+    if (!MoveFileExW(
+            evidence.staged_path.c_str(),
+            evidence.canonical_path.c_str(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        throw Error(win32_error("MoveFileExW(publish step result evidence)", GetLastError()));
+    }
+}
+
 }  // namespace
 
 std::filesystem::path step_claim_lock_path(const std::filesystem::path& claim_path) {
@@ -356,22 +388,25 @@ StepClaimAcquireResult acquire_step_claim_transaction(
     return {StepClaimAcquireStatus::Acquired, acquired, archived_path};
 }
 
-StepClaimLease renew_step_claim_transaction(
+StepClaimRenewResult renew_step_claim_transaction(
     const std::filesystem::path& claim_path,
     const StepClaimLease& expected_owner,
     const std::int64_t lease_duration_ms) {
     const UniqueHandle lock = acquire_claim_lock(claim_path, false);
     if (!std::filesystem::is_regular_file(claim_path)) {
-        throw Error("Step claim ownership was lost before renewal");
+        return {StepClaimRenewStatus::OwnershipLost, std::nullopt};
     }
 
     const StepClaimLease current = load_effective_claim_unlocked(claim_path);
     if (current.schema_version != 3 ||
         !same_step_claim_owner(current, expected_owner)) {
-        throw Error("Step claim ownership was lost before renewal");
+        return {StepClaimRenewStatus::OwnershipLost, std::nullopt};
     }
 
     const std::int64_t renewed_unix_ms = unix_time_ms(); // 禁止用锁外旧时间复活租约
+    if (renewed_unix_ms >= current.lease_expires_unix_ms) {
+        return {StepClaimRenewStatus::LeaseExpired, current};
+    }
     const StepClaimLease renewed = renew_step_claim_lease(
         current,
         renewed_unix_ms,
@@ -382,7 +417,7 @@ StepClaimLease renew_step_claim_transaction(
     write_json_atomic_existing_parent(
         step_claim_renewal_path(claim_path, current),
         renewed);
-    return renewed;
+    return {StepClaimRenewStatus::Renewed, renewed};
 }
 
 StepClaimLease load_effective_step_claim(const std::filesystem::path& claim_path) {
@@ -397,8 +432,10 @@ StepResultPublishStatus publish_step_result_if_owned(
     const std::filesystem::path& claim_path,
     const StepClaimLease& expected_owner,
     const std::filesystem::path& canonical_result_path,
-    const nlohmann::json& result) {
+    const nlohmann::json& result,
+    const std::vector<StepResultEvidenceFile>& evidence_files) {
     validate_result_owner(result, expected_owner);
+    validate_evidence_files(evidence_files);
     const UniqueHandle lock = acquire_claim_lock(claim_path, false);
     if (!std::filesystem::is_regular_file(claim_path)) {
         return StepResultPublishStatus::OwnershipLost;
@@ -418,6 +455,10 @@ StepResultPublishStatus publish_step_result_if_owned(
         if (existing_result.value("job_id", std::string{}) != expected_owner.job_id) {
             throw Error("Canonical step result is already owned by another job");
         }
+        return StepResultPublishStatus::Published;
+    }
+    for (const StepResultEvidenceFile& evidence : evidence_files) {
+        publish_evidence_file(evidence);
     }
     write_json_atomic_existing_parent(canonical_result_path, result);
     return StepResultPublishStatus::Published;

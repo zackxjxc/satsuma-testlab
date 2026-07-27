@@ -35,6 +35,22 @@ endif()
 add_test(NAME SatsumaVmClaimStoreTests COMMAND SatsumaVmClaimStoreTests)
 
 add_executable(
+    SatsumaVmClaimRenewalTests
+    claim_renewal_tests.cpp
+    ../src/vm/claim_renewal.cpp
+    ../src/vm/claim_store.cpp
+)
+target_include_directories(SatsumaVmClaimRenewalTests PRIVATE ../src/vm)
+target_link_libraries(SatsumaVmClaimRenewalTests PRIVATE SatsumaCore)
+if(MSVC)
+    target_compile_options(
+        SatsumaVmClaimRenewalTests
+        PRIVATE /W4 /permissive- /utf-8 /EHsc /external:anglebrackets /external:W0
+    )
+endif()
+add_test(NAME SatsumaVmClaimRenewalTests COMMAND SatsumaVmClaimRenewalTests)
+
+add_executable(
     SatsumaHostUpdateTests
     host_update_tests.cpp
     ../src/host/controller.cpp

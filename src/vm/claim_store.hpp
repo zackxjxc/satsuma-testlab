@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include <nlohmann/json_fwd.hpp>
 
@@ -27,11 +28,30 @@ struct StepClaimAcquireResult {
     std::optional<std::filesystem::path> archived_claim_path; // 被归档的过期 claim
 };
 
+// 步骤 claim 续租事务的最终状态。
+enum class StepClaimRenewStatus {
+    Renewed,
+    OwnershipLost,
+    LeaseExpired,
+};
+
+// 步骤 claim 续租事务返回的状态和最新有效租约。
+struct StepClaimRenewResult {
+    StepClaimRenewStatus status{StepClaimRenewStatus::OwnershipLost}; // 续租事务状态
+    std::optional<StepClaimLease> claim; // 成功续租后的有效 claim
+};
+
 // canonical 结果发布事务的最终状态。
 enum class StepResultPublishStatus {
     Published,
     OwnershipLost,
     LeaseExpired,
+};
+
+// job 暂存证据与 canonical 目标之间的一次发布映射。
+struct StepResultEvidenceFile {
+    std::filesystem::path staged_path;    // 当前 job 独占的完整暂存文件
+    std::filesystem::path canonical_path; // Host 在 execution.json 中读取的稳定路径
 };
 
 // 返回 claim 对应的跨进程稳定锁文件路径。
@@ -46,7 +66,7 @@ enum class StepResultPublishStatus {
     const std::string& current_boot_id);
 
 // 在单个锁事务中验证所有权并原子发布当前 job 的续租 sidecar。
-[[nodiscard]] StepClaimLease renew_step_claim_transaction(
+[[nodiscard]] StepClaimRenewResult renew_step_claim_transaction(
     const std::filesystem::path& claim_path,
     const StepClaimLease& expected_owner,
     std::int64_t lease_duration_ms);
@@ -60,6 +80,7 @@ enum class StepResultPublishStatus {
     const std::filesystem::path& claim_path,
     const StepClaimLease& expected_owner,
     const std::filesystem::path& canonical_result_path,
-    const nlohmann::json& result);
+    const nlohmann::json& result,
+    const std::vector<StepResultEvidenceFile>& evidence_files = {});
 
 }  // namespace satsuma::vm

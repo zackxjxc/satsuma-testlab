@@ -3,6 +3,7 @@
 #include <chrono>
 #include <exception>
 #include <filesystem>
+#include <fstream>
 #include <functional>
 #include <iostream>
 #include <stdexcept>
@@ -37,6 +38,25 @@ void expect_error(const std::function<void()>& operation, const std::string& mes
         return;
     }
     throw std::runtime_error(message);
+}
+
+// 写入一份测试证据文本。
+void write_text(const std::filesystem::path& path, const std::string& content) {
+    std::filesystem::create_directories(path.parent_path());
+    std::ofstream output(path, std::ios::binary);
+    output << content;
+    if (!output) {
+        throw std::runtime_error("could not write claim store test evidence");
+    }
+}
+
+// 读取一份测试证据文本。
+[[nodiscard]] std::string read_text(const std::filesystem::path& path) {
+    std::ifstream input(path, std::ios::binary);
+    return {
+        std::istreambuf_iterator<char>(input),
+        std::istreambuf_iterator<char>(),
+    };
 }
 
 // 创建由事务层刷新领取时间和 attempt 的初始 v3 claim。
@@ -109,11 +129,16 @@ void test_acquire_renew_and_publish(const std::filesystem::path& root) {
     while (satsuma::unix_time_ms() <= acquired.claim->last_renewed_unix_ms) {
         std::this_thread::sleep_for(1ms);
     }
-    const satsuma::StepClaimLease renewed =
+    const satsuma::vm::StepClaimRenewResult renewal =
         satsuma::vm::renew_step_claim_transaction(
             claim_path,
             *acquired.claim,
             2'000);
+    expect(
+        renewal.status == satsuma::vm::StepClaimRenewStatus::Renewed &&
+            renewal.claim.has_value(),
+        "owning job could not renew its active claim");
+    const satsuma::StepClaimLease& renewed = *renewal.claim;
     const satsuma::StepClaimLease effective =
         satsuma::vm::load_effective_step_claim(claim_path);
     expect(
@@ -137,13 +162,23 @@ void test_acquire_renew_and_publish(const std::filesystem::path& root) {
         waiting.status == satsuma::vm::StepClaimAcquireStatus::Wait,
         "active renewed claim was reclaimed");
 
+    const std::filesystem::path staged_log =
+        root / L"jobs" / L"job_initial" / L"stdout.log";
+    const std::filesystem::path canonical_log =
+        result_path.parent_path() / L"stdout.log";
+    write_text(staged_log, "owned evidence\n");
     expect(
         satsuma::vm::publish_step_result_if_owned(
             claim_path,
             *acquired.claim,
             result_path,
-            make_result(*acquired.claim)) == satsuma::vm::StepResultPublishStatus::Published,
+            make_result(*acquired.claim),
+            {{staged_log, canonical_log}}) == satsuma::vm::StepResultPublishStatus::Published,
         "owning job could not publish its canonical result");
+    expect(
+        !std::filesystem::exists(staged_log) &&
+            read_text(canonical_log) == "owned evidence\n",
+        "owning job did not atomically publish its staged evidence");
     const satsuma::vm::StepClaimAcquireResult completed =
         satsuma::vm::acquire_step_claim_transaction(
             claim_path,
@@ -193,21 +228,30 @@ void test_safe_recovery_and_fencing(const std::filesystem::path& root) {
             std::filesystem::is_regular_file(*second.archived_claim_path),
         "expired safe claim was not atomically archived and reacquired");
 
-    expect_error(
-        [&] {
-            static_cast<void>(satsuma::vm::renew_step_claim_transaction(
-                claim_path,
-                *first.claim,
-                2'000));
-        },
+    expect(
+        satsuma::vm::renew_step_claim_transaction(
+            claim_path,
+            *first.claim,
+            2'000).status == satsuma::vm::StepClaimRenewStatus::OwnershipLost,
         "old job renewed after ownership moved to attempt 2");
+    const std::filesystem::path stale_staged_log =
+        root / L"jobs" / L"job_expired" / L"stdout.log";
+    const std::filesystem::path stale_canonical_log =
+        result_path.parent_path() / L"stdout.log";
+    write_text(stale_staged_log, "stale evidence\n");
     expect(
         satsuma::vm::publish_step_result_if_owned(
             claim_path,
             *first.claim,
             result_path,
-            make_result(*first.claim)) == satsuma::vm::StepResultPublishStatus::OwnershipLost,
+            make_result(*first.claim),
+            {{stale_staged_log, stale_canonical_log}}) ==
+                satsuma::vm::StepResultPublishStatus::OwnershipLost,
         "old job published a canonical result after recovery");
+    expect(
+        std::filesystem::is_regular_file(stale_staged_log) &&
+            !std::filesystem::exists(stale_canonical_log),
+        "old job moved staged evidence after losing ownership");
     expect(
         satsuma::vm::publish_step_result_if_owned(
             claim_path,
