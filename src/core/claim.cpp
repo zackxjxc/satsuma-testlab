@@ -132,11 +132,9 @@ std::filesystem::path step_claim_renewal_path(
 
 ClaimRecoveryDecision evaluate_claim_recovery(
     const StepClaimLease& claim,
-    const std::int64_t now_unix_ms,
-    const std::string& current_boot_id) {
+    const std::int64_t now_unix_ms) {
     validate_claim_lease(claim);
-    validate_identifier(current_boot_id, "current boot_id");
-    if (now_unix_ms < claim.lease_expires_unix_ms || current_boot_id == claim.boot_id) {
+    if (now_unix_ms < claim.lease_expires_unix_ms) {
         return ClaimRecoveryDecision::Wait;
     }
     return claim.retry_safe

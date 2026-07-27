@@ -67,11 +67,10 @@ struct StepClaimLease {
     const std::filesystem::path& claim_path,
     const StepClaimLease& claim);
 
-// 根据时间与当前启动身份决定等待、重试或转人工门禁。
+// 根据租约时间和重试安全性决定等待、重试或转人工门禁。
 [[nodiscard]] ClaimRecoveryDecision evaluate_claim_recovery(
     const StepClaimLease& claim,
-    std::int64_t now_unix_ms,
-    const std::string& current_boot_id);
+    std::int64_t now_unix_ms);
 
 // 读取并验证持久化 claim 租约。
 [[nodiscard]] StepClaimLease load_step_claim_lease(const std::filesystem::path& path);

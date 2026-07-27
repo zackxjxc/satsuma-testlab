@@ -260,8 +260,7 @@ int Agent::run_once(const std::stop_token stop_token) {
 
                 const ClaimRecoveryDecision decision = evaluate_claim_recovery(
                     existing,
-                    unix_time_ms(),
-                    boot_id_);
+                    unix_time_ms());
                 if (decision == ClaimRecoveryDecision::Wait) {
                     continue;
                 }

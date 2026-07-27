@@ -515,15 +515,15 @@ void test_claim_recovery_decision(const std::filesystem::path& root) {
         5'000,
         true);
     expect(
-        satsuma::evaluate_claim_recovery(safe, 5'999, "boot_new") ==
+        satsuma::evaluate_claim_recovery(safe, 5'999) ==
             satsuma::ClaimRecoveryDecision::Wait,
         "unexpired claim lease was retried");
     expect(
-        satsuma::evaluate_claim_recovery(safe, 6'000, "boot_old") ==
-            satsuma::ClaimRecoveryDecision::Wait,
-        "same boot identity reclaimed its expired lease");
+        satsuma::evaluate_claim_recovery(safe, 6'000) ==
+            satsuma::ClaimRecoveryDecision::Retry,
+        "same boot identity could not recover its completed expired lease");
     expect(
-        satsuma::evaluate_claim_recovery(safe, 6'000, "boot_new") ==
+        satsuma::evaluate_claim_recovery(safe, 6'000) ==
             satsuma::ClaimRecoveryDecision::Retry,
         "safe expired claim was not released after boot identity changed");
 
@@ -531,7 +531,7 @@ void test_claim_recovery_decision(const std::filesystem::path& root) {
     dangerous.step_id = "execute";
     dangerous.retry_safe = false;
     expect(
-        satsuma::evaluate_claim_recovery(dangerous, 6'000, "boot_new") ==
+        satsuma::evaluate_claim_recovery(dangerous, 6'000) ==
             satsuma::ClaimRecoveryDecision::ManualInterventionRequired,
         "unsafe expired claim did not preserve the manual gate");
 
