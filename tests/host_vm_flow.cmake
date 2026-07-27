@@ -169,6 +169,29 @@ if(lifecycle_error_position EQUAL -1)
     message(FATAL_ERROR "SatsumaHost run returned an unexpected lifecycle error: ${lifecycle_run_error}")
 endif()
 
+# 编排计划必须由调用方固定 run_id，保证 Host 崩溃后可定位同一归档。
+execute_process(
+    COMMAND "${HOST_EXE}" orchestrate
+        --config "${TEST_ROOT}/lab.json"
+        --plan "${TEST_ROOT}/lifecycle-task.json"
+        --timeout-seconds 10
+    RESULT_VARIABLE missing_run_id_result
+    OUTPUT_VARIABLE missing_run_id_output
+    ERROR_VARIABLE missing_run_id_error
+)
+if(missing_run_id_result EQUAL 0)
+    message(FATAL_ERROR
+        "SatsumaHost orchestrate accepted a lifecycle plan without run_id: ${missing_run_id_output}")
+endif()
+string(FIND
+    "${missing_run_id_error}"
+    "requires an explicit plan run_id"
+    missing_run_id_error_position)
+if(missing_run_id_error_position EQUAL -1)
+    message(FATAL_ERROR
+        "SatsumaHost returned an unexpected missing run_id error: ${missing_run_id_error}")
+endif()
+
 set(orchestration_task_json [=[
 {
   "schema_version": 1,
@@ -266,6 +289,33 @@ string(FIND "${completed_resume_output}" "\"status\": \"COMPLETED\"" completed_s
 if(completed_resumed_position EQUAL -1 OR completed_status_position EQUAL -1)
     message(FATAL_ERROR
         "Completed orchestration did not return its persisted terminal state: ${completed_resume_output}")
+endif()
+
+# 已有终态只读取归档，即使 VMware 控制程序暂时不可用也应幂等返回。
+string(REPLACE
+    "${vmrun_path}"
+    "${TEST_ROOT}/missing-vmrun.exe"
+    unavailable_lab_json
+    "${lab_json}")
+file(WRITE "${TEST_ROOT}/lab-vmware-unavailable.json" "${unavailable_lab_json}")
+execute_process(
+    COMMAND "${HOST_EXE}" orchestrate
+        --config "${TEST_ROOT}/lab-vmware-unavailable.json"
+        --plan "${TEST_ROOT}/orchestration-task.json"
+        --timeout-seconds 10
+    RESULT_VARIABLE unavailable_resume_result
+    OUTPUT_VARIABLE unavailable_resume_output
+    ERROR_VARIABLE unavailable_resume_error
+)
+if(NOT unavailable_resume_result EQUAL 0)
+    message(FATAL_ERROR
+        "Completed orchestration still depended on VMware: "
+        "${unavailable_resume_error}\n${unavailable_resume_output}")
+endif()
+string(FIND "${unavailable_resume_output}" "\"status\": \"COMPLETED\"" unavailable_status_position)
+if(unavailable_status_position EQUAL -1)
+    message(FATAL_ERROR
+        "VMware-independent terminal resume returned unexpected output: ${unavailable_resume_output}")
 endif()
 
 # 构造 Host 在 executing 阶段退出后的持久化归档和已经发布的主任务。
@@ -410,6 +460,118 @@ if(executing_resumed_position EQUAL -1 OR executing_status_position EQUAL -1 OR
    NOT EXISTS "${executing_archive}/evidence/main/task.json")
     message(FATAL_ERROR
         "Persisted executing orchestration omitted its completed evidence: ${executing_resume_output}")
+endif()
+
+# 构造主结果已完成但 Host 尚未归档的 collecting_evidence 恢复点。
+string(REPLACE
+    "orchestration_executing_resume"
+    "orchestration_collecting_resume"
+    collecting_resume_plan
+    "${executing_resume_plan}")
+string(REPLACE
+    "finally_executing_resume"
+    "finally_collecting_resume"
+    collecting_resume_plan
+    "${collecting_resume_plan}")
+string(REPLACE
+    "\"action\": \"stop\""
+    "\"action\": \"leave_running\""
+    collecting_resume_plan
+    "${collecting_resume_plan}")
+string(REPLACE
+    "orchestration_executing_resume"
+    "orchestration_collecting_resume"
+    collecting_main_plan
+    "${executing_main_plan}")
+set(collecting_plan_path "${TEST_ROOT}/orchestration-collecting-resume.json")
+set(collecting_main_path "${TEST_ROOT}/orchestration-collecting-main.json")
+file(WRITE "${collecting_plan_path}" "${collecting_resume_plan}")
+file(WRITE "${collecting_main_path}" "${collecting_main_plan}")
+execute_process(
+    COMMAND "${HOST_EXE}" run
+        --config "${TEST_ROOT}/lab.json"
+        --plan "${collecting_main_path}"
+    RESULT_VARIABLE collecting_publish_result
+    OUTPUT_VARIABLE collecting_publish_output
+    ERROR_VARIABLE collecting_publish_error
+)
+if(NOT collecting_publish_result EQUAL 0)
+    message(FATAL_ERROR
+        "Collecting resume fixture could not publish its main task: "
+        "${collecting_publish_error}\n${collecting_publish_output}")
+endif()
+execute_process(
+    COMMAND "${VM_EXE}" --config "${TEST_ROOT}/agent.json" --once
+    RESULT_VARIABLE collecting_agent_result
+    OUTPUT_VARIABLE collecting_agent_output
+    ERROR_VARIABLE collecting_agent_error
+)
+if(NOT collecting_agent_result EQUAL 0)
+    message(FATAL_ERROR
+        "Collecting resume fixture Agent failed: "
+        "${collecting_agent_error}\n${collecting_agent_output}")
+endif()
+
+set(collecting_archive "${archive_path}/runs/orchestration_collecting_resume")
+set(collecting_state "${collecting_archive}/lifecycle.json")
+file(MAKE_DIRECTORY "${collecting_archive}")
+file(COPY_FILE "${collecting_plan_path}" "${collecting_archive}/plan.json")
+file(SHA256 "${collecting_plan_path}" collecting_plan_sha256)
+file(WRITE "${collecting_archive}/orchestration.json" [=[
+{
+  "schema_version": 1,
+  "run_id": "orchestration_collecting_resume",
+  "vm_id": "client",
+  "main_run_id": "orchestration_collecting_resume",
+  "finally_run_id": "finally_collecting_resume",
+  "plan_sha256": "@PLAN_SHA256@"
+}
+]=])
+file(READ "${collecting_archive}/orchestration.json" collecting_identity_json)
+string(REPLACE "@PLAN_SHA256@" "${collecting_plan_sha256}"
+    collecting_identity_json "${collecting_identity_json}")
+file(WRITE "${collecting_archive}/orchestration.json" "${collecting_identity_json}")
+file(WRITE "${collecting_state}" [=[
+{
+  "schema_version": 1,
+  "run_id": "orchestration_collecting_resume",
+  "phase": "collecting_evidence",
+  "sequence": 5,
+  "updated_at": "2026-07-27T00:00:05.000Z",
+  "transitions": [
+    {"sequence": 1, "from": "preparing", "to": "starting_vm",
+     "occurred_at": "2026-07-27T00:00:01.000Z", "message": "start target VM"},
+    {"sequence": 2, "from": "starting_vm", "to": "waiting_agent",
+     "occurred_at": "2026-07-27T00:00:02.000Z", "message": "wait for Agent diagnostic echo"},
+    {"sequence": 3, "from": "waiting_agent", "to": "deploying",
+     "occurred_at": "2026-07-27T00:00:03.000Z", "message": "publish main task"},
+    {"sequence": 4, "from": "deploying", "to": "executing",
+     "occurred_at": "2026-07-27T00:00:04.000Z", "message": "wait for main task results"},
+    {"sequence": 5, "from": "executing", "to": "collecting_evidence",
+     "occurred_at": "2026-07-27T00:00:05.000Z", "message": "archive main task evidence"}
+  ]
+}
+]=])
+execute_process(
+    COMMAND "${HOST_EXE}" orchestrate
+        --config "${TEST_ROOT}/lab.json"
+        --plan "${collecting_plan_path}"
+        --timeout-seconds 10
+    RESULT_VARIABLE collecting_resume_result
+    OUTPUT_VARIABLE collecting_resume_output
+    ERROR_VARIABLE collecting_resume_error
+)
+if(NOT collecting_resume_result EQUAL 0)
+    message(FATAL_ERROR
+        "Persisted collecting_evidence orchestration did not resume: "
+        "${collecting_resume_error}\n${collecting_resume_output}")
+endif()
+string(FIND "${collecting_resume_output}" "\"resumed\": true" collecting_resumed_position)
+string(FIND "${collecting_resume_output}" "\"status\": \"COMPLETED\"" collecting_status_position)
+if(collecting_resumed_position EQUAL -1 OR collecting_status_position EQUAL -1 OR
+   NOT EXISTS "${collecting_archive}/evidence/main/task.json")
+    message(FATAL_ERROR
+        "Persisted collecting_evidence resume omitted evidence: ${collecting_resume_output}")
 endif()
 
 # starting_vm 可能已经产生外部副作用，Host 重启后必须保持人工门禁。

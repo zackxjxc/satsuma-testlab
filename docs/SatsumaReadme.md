@@ -24,8 +24,9 @@ Satsuma 在 Windows 宿主机与 VMware 测试虚拟机之间物化任务、部�
 JSON 任务可以通过 `lifecycle` 声明单 VM 的执行前恢复、成功/失败清理策略和 `finally` 步骤。
 `orchestrate` 原子保存每次阶段迁移，并将主任务和 `finally` 证据复制到 Guest 不可见的归档目录；
 恢复失败以退出码 4 和 `RECOVERY_FAILED` 单独报告。普通 `run` 会拒绝生命周期计划，避免静默忽略策略。
-Host 使用同一 `run_id` 和相同计划重启时，可继续等待已发布主任务或完成证据归档；其他非终态阶段会
-进入人工门禁，避免重复执行不确定的 VM 副作用。当前尚不支持多 VM 生命周期。
+生命周期计划必须显式提供唯一 `run_id`；Host 使用同一 `run_id` 和字节完全相同的计划重启时，可继续
+等待已发布主任务或完成证据归档。其他非终态阶段会进入人工门禁，避免重复执行不确定的 VM 副作用。
+当前尚不支持多 VM 生命周期。
 
 ## 构建
 
@@ -401,13 +402,15 @@ SatsumaHost.exe orchestrate --config lab.local.json --plan task.json --timeout-s
 `lifecycle.vms` 当前必须且只能包含一台 VM。每台策略必须同时定义 `on_success` 和 `on_failure`，动作可为
 `leave_running`、`stop` 或带 `snapshot` 的 `restore`；可选的 `restore_before` 在启动 VM 前恢复快照，
 `lifecycle.finally` 中的步骤在主任务完成或失败后单独发布。自动恢复只接受配置中的用户基础快照或
-AI 前缀快照。状态保存在 `archive_root/runs/<run-id>/lifecycle.json`，证据保存在同目录的 `evidence/`。
+AI 前缀快照。计划顶层必须显式填写唯一 `run_id`，并在恢复时保持计划原始字节不变。状态保存在
+`archive_root/runs/<run-id>/lifecycle.json`，证据保存在同目录的 `evidence/`。
 
 `echo` 默认 `retry_safe=true`，`execute` 默认 `false`；只有调用方确认步骤可幂等重放时，才应为
 `execute` 显式设置 `retry_safe=true`。Agent 使用 120 秒固定 claim 租约，并每 30 秒发布一份带连续序号的
-不可变续租 sidecar；读取方会校验 owner、序号和时间单调性。租约到期后仍需确认 Agent `boot_id` 已经
-变化才允许安全重试。旧格式、损坏或不可安全重试的 claim 会生成 `claim-recovery.json`，`orchestrate`
-随即跳过 `finally` 和恢复动作，以退出码 5、`MANUAL_INTERVENTION_REQUIRED` 停止。
+不可变续租 sidecar；读取方会校验 owner、序号和时间单调性。租约到期后，只有显式声明可安全重放的
+步骤才允许递增 attempt；`boot_id` 用于取证，不是接管前置条件，旧 owner 仍受结果 fencing 限制。旧格式、
+损坏或不可安全重试的 claim 会生成 `claim-recovery.json`，`orchestrate` 随即跳过 `finally` 和恢复动作，
+以退出码 5、`MANUAL_INTERVENTION_REQUIRED` 停止。
 
 在 Host 上物化任务：
 

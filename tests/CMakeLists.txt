@@ -65,6 +65,21 @@ if(MSVC)
 endif()
 add_test(NAME SatsumaHostUpdateTests COMMAND SatsumaHostUpdateTests)
 
+add_executable(
+    SatsumaHostControllerTests
+    host_controller_tests.cpp
+    ../src/host/controller.cpp
+)
+target_include_directories(SatsumaHostControllerTests PRIVATE ../src/host)
+target_link_libraries(SatsumaHostControllerTests PRIVATE SatsumaCore)
+if(MSVC)
+    target_compile_options(
+        SatsumaHostControllerTests
+        PRIVATE /W4 /permissive- /utf-8 /EHsc /external:anglebrackets /external:W0
+    )
+endif()
+add_test(NAME SatsumaHostControllerTests COMMAND SatsumaHostControllerTests)
+
 add_test(
     NAME SatsumaSelfRenameTest
     COMMAND "${CMAKE_COMMAND}"

@@ -268,7 +268,7 @@ void test_safe_recovery_and_fencing(const std::filesystem::path& root) {
 
     const satsuma::StepClaimLease second_proposed = make_proposed_claim(
         "job_recovered",
-        "boot_recovered",
+        "boot_expired",
         2s,
         true);
     const auto recovery_started = std::chrono::steady_clock::now(); // 验证归档确实等待占用释放
@@ -277,7 +277,7 @@ void test_safe_recovery_and_fencing(const std::filesystem::path& root) {
             claim_path,
             result_path,
             second_proposed,
-            "boot_recovered");
+            "boot_expired");
     const auto recovery_elapsed = std::chrono::steady_clock::now() - recovery_started;
     expect(
         second.status == satsuma::vm::StepClaimAcquireStatus::Acquired &&
@@ -441,6 +441,54 @@ void test_invalid_renewal_state(const std::filesystem::path& root) {
     expect(
         rejected_as_state,
         "invalid renewal sidecar was not classified as a persisted state error");
+}
+
+// 验证串属或被篡改安全性的 claim 进入人工门禁且不被替换。
+void test_mismatched_claim_scope_gate(const std::filesystem::path& root) {
+    const auto expect_mismatch = [&root](
+        const std::string& name,
+        const std::function<void(satsuma::StepClaimLease&)>& mutate) {
+        const std::filesystem::path case_root = root / satsuma::path_from_utf8(name);
+        const std::filesystem::path claim_path =
+            case_root / L"state" / L"execute.claim.json";
+        const std::filesystem::path result_path =
+            case_root / L"results" / L"execution.json";
+        const satsuma::StepClaimLease proposed = make_proposed_claim(
+            "job_scope_contender_" + name,
+            "boot_scope_contender_" + name,
+            2s,
+            false);
+        satsuma::StepClaimLease persisted = proposed; // 模拟已有但身份不一致的 claim
+        mutate(persisted);
+        satsuma::write_json_atomic(claim_path, persisted);
+
+        expect_state_error(
+            [&] {
+                static_cast<void>(satsuma::vm::acquire_step_claim_transaction(
+                    claim_path,
+                    result_path,
+                    proposed,
+                    proposed.boot_id));
+            },
+            "mismatched claim scope did not enter the manual gate: " + name);
+        expect(
+            nlohmann::json(satsuma::load_step_claim_lease(claim_path)) ==
+                nlohmann::json(persisted),
+            "mismatched claim scope was replaced: " + name);
+    };
+
+    expect_mismatch("run", [](satsuma::StepClaimLease& claim) {
+        claim.run_id = "run_other";
+    });
+    expect_mismatch("vm", [](satsuma::StepClaimLease& claim) {
+        claim.vm_id = "gateway";
+    });
+    expect_mismatch("step", [](satsuma::StepClaimLease& claim) {
+        claim.step_id = "other_step";
+    });
+    expect_mismatch("retry", [](satsuma::StepClaimLease& claim) {
+        claim.retry_safe = true;
+    });
 }
 
 // 验证旧版单 sidecar 可作为 checkpoint，并继续发布下一份不可变记录。
@@ -767,6 +815,7 @@ int main(const int argc, char* argv[]) {
         test_unsafe_recovery_gate(root / L"unsafe-recovery");
         test_completed_result_validation(root / L"completed-result");
         test_invalid_renewal_state(root / L"invalid-renewal");
+        test_mismatched_claim_scope_gate(root / L"mismatched-scope");
         test_legacy_renewal_checkpoint(root / L"legacy-renewal");
         test_renewal_sequence_gap(root / L"renewal-gap");
         test_orphaned_claim_artifact_gate(root / L"orphan-gate");

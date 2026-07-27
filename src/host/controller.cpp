@@ -251,35 +251,10 @@ nlohmann::json Controller::build_report(const std::string& run_id) const {
         throw Error("Unknown run_id: " + run_id);
     }
 
+    const RunManifest manifest = load_run_manifest(run_directory / L"task.json");
     nlohmann::json executions = nlohmann::json::array();
-    const std::filesystem::path result_root = run_directory / L"results";
-    if (std::filesystem::exists(result_root)) {
-        std::filesystem::recursive_directory_iterator iterator(result_root);
-        const std::filesystem::recursive_directory_iterator end;
-        for (; iterator != end; ++iterator) {
-            const DWORD attributes = GetFileAttributesW(iterator->path().c_str());
-            if (attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
-                iterator.disable_recursion_pending();
-                throw Error("Result directory contains a forbidden reparse point");
-            }
-            if (iterator->is_regular_file() && iterator->path().filename() == L"execution.json") {
-                executions.push_back(load_json(iterator->path()));
-            }
-        }
-    }
-
     std::size_t completed = 0;
     std::size_t failed = 0;
-    for (const auto& execution : executions) {
-        const std::string status = execution.value("status", "unknown");
-        if (status == "exited" && execution.value("exit_code", 1) == 0) {
-            ++completed;
-        } else {
-            ++failed;
-        }
-    }
-
-    const RunManifest manifest = load_run_manifest(run_directory / L"task.json");
     nlohmann::json blocked_steps = nlohmann::json::array();
     for (const TaskStep& step : manifest.steps) {
         const std::filesystem::path result_path = resolve_under_root(
@@ -288,7 +263,25 @@ nlohmann::json Controller::build_report(const std::string& run_id) const {
                 path_from_utf8(step.vm) /
                 path_from_utf8(step.id) /
                 L"execution.json");
-        if (std::filesystem::is_regular_file(result_path)) {
+        if (std::filesystem::exists(result_path)) {
+            if (!std::filesystem::is_regular_file(result_path)) {
+                throw Error("Canonical step result path is not a regular file");
+            }
+            const nlohmann::json execution_json = load_json(result_path);
+            const ExecutionResult execution = execution_json.get<ExecutionResult>();
+            if (execution.run_id != manifest.run_id ||
+                execution.vm_id != step.vm ||
+                execution.step_id != step.id ||
+                execution.run_as != step.run_as) {
+                throw Error("Canonical step result identity does not match its manifest step");
+            }
+            if (execution.status == "exited" &&
+                execution.exit_code.value_or(1) == 0) {
+                ++completed;
+            } else {
+                ++failed;
+            }
+            executions.push_back(execution_json);
             continue;
         }
         const std::filesystem::path recovery_path = resolve_under_root(

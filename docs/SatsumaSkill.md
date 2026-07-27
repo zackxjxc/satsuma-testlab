@@ -88,8 +88,9 @@ SatsumaHost.exe check --config lab.local.json --vm <vm-id> --timeout-seconds 30
 
 任务步骤只支持 `echo` 和前台 `execute`，以 `schemas/task.schema.json` 和现有 C++ 校验为准。单 VM
 生命周期计划可以使用 `lifecycle.vms[].restore_before`、`on_success`、`on_failure` 和
-`lifecycle.finally`；必须通过 `orchestrate` 执行，普通 `run` 会明确拒绝。不得生成尚未实现的
-`background`、多 VM 生命周期或任意 Host 命令，也不得直接生成或修改 claim 内部字段。
+`lifecycle.finally`；必须在计划顶层显式提供唯一 `run_id` 并通过 `orchestrate` 执行，普通 `run` 会明确
+拒绝。不得生成尚未实现的 `background`、多 VM 生命周期或任意 Host 命令，也不得直接生成或修改 claim
+内部字段。
 
 文件控制 mailbox、Host stop/cancel API、单调 sequence 和 ACK 尚未实现。AI 不得手工向共享目录写入
 自定义 mailbox 文件或把文件存在当作控制成功；应等待双端协议、补偿扫描和持久证据一起交付。
@@ -119,6 +120,9 @@ SatsumaHost.exe check --config lab.local.json --vm <vm-id> --timeout-seconds 30
 ```text
 SatsumaHost.exe orchestrate --config lab.local.json --plan <task.json> --timeout-seconds <1-86400>
 ```
+
+计划必须提前固定唯一 `run_id`。Host 恢复时必须复用同一文件的原始字节，不能重新格式化或重建语义相同
+的 JSON；计划 SHA-256 变化会拒绝复用归档。
 
 退出码 0 表示 `COMPLETED`，退出码 1 表示业务或执行 `FAILED`，退出码 4 表示 `RECOVERY_FAILED`，
 退出码 5 表示 `MANUAL_INTERVENTION_REQUIRED`。

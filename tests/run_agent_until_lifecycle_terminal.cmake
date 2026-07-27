@@ -15,8 +15,13 @@ foreach(attempt RANGE 1 300)
     endif()
 
     if(EXISTS "${LIFECYCLE_STATE}")
-        file(READ "${LIFECYCLE_STATE}" lifecycle_json)
-        if(lifecycle_json MATCHES
+        execute_process(
+            COMMAND "${CMAKE_COMMAND}" -E cat "${LIFECYCLE_STATE}"
+            RESULT_VARIABLE lifecycle_read_result
+            OUTPUT_VARIABLE lifecycle_json
+            ERROR_QUIET
+        )
+        if(lifecycle_read_result EQUAL 0 AND lifecycle_json MATCHES
            "\"phase\": \"(completed|failed|recovery_failed|manual_intervention_required)\"")
             return()
         endif()

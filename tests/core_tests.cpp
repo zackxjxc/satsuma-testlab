@@ -527,7 +527,7 @@ void test_run_lifecycle(const std::filesystem::path& root) {
         "terminal recovery failure accepted another transition");
 }
 
-// 验证 claim 租约只允许显式安全步骤在启动身份变化后重试。
+// 验证 claim 租约只允许显式安全步骤在过期后重试。
 void test_claim_recovery_decision(const std::filesystem::path& root) {
     const satsuma::StepClaimLease safe = satsuma::make_step_claim_lease(
         "run_claim",
@@ -546,11 +546,7 @@ void test_claim_recovery_decision(const std::filesystem::path& root) {
     expect(
         satsuma::evaluate_claim_recovery(safe, 6'000) ==
             satsuma::ClaimRecoveryDecision::Retry,
-        "same boot identity could not recover its completed expired lease");
-    expect(
-        satsuma::evaluate_claim_recovery(safe, 6'000) ==
-            satsuma::ClaimRecoveryDecision::Retry,
-        "safe expired claim was not released after boot identity changed");
+        "safe expired claim was not released for a fenced retry");
 
     satsuma::StepClaimLease dangerous = safe;
     dangerous.step_id = "execute";

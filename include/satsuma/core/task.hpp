@@ -45,7 +45,7 @@ struct TaskStep {
     std::string message;                    // echo 步骤内容
     TaskRunAs run_as{TaskRunAs::System};    // 被测进程运行身份
     int timeout_seconds{120};               // 进程树超时秒数
-    bool retry_safe{false};                 // 旧 claim 到期后是否允许新启动身份重试
+    bool retry_safe{false};                 // 旧 claim 到期后是否允许在不确定状态下重放
     std::vector<std::filesystem::path> collect_files; // 待收集的工作目录相对路径
 };
 
@@ -80,7 +80,7 @@ struct TaskLifecyclePolicy {
 struct TaskPlan {
     int schema_version{1};                 // 输入 schema 版本
     std::string name;                      // 任务显示名称
-    std::optional<std::string> run_id;     // 可选的调用方运行 ID
+    std::optional<std::string> run_id;     // 普通任务可选，生命周期编排必须显式提供
     std::vector<ArtifactInput> artifacts;  // 待部署文件
     std::vector<TaskStep> steps;           // 有序步骤列表
     std::optional<TaskLifecyclePolicy> lifecycle; // 可选的 Host 生命周期策略

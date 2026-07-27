@@ -60,6 +60,12 @@
       }
     }
   },
+  "allOf": [
+    {
+      "if": {"required": ["lifecycle"]},
+      "then": {"required": ["run_id"]}
+    }
+  ],
   "$defs": {
     "identifier": {
       "type": "string",

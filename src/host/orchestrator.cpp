@@ -44,6 +44,28 @@ struct OrchestrationArchive {
     bool resumed{false}; // 是否从已有归档恢复
 };
 
+// 返回指定编排在 Host 归档中的稳定根目录。
+[[nodiscard]] std::filesystem::path orchestration_archive_root(
+    const LabConfig& config,
+    const std::string& run_id) {
+    const std::filesystem::path runs_root = resolve_under_root(
+        config.host.archive_root,
+        L"runs");
+    return resolve_under_root(runs_root, path_from_utf8(run_id));
+}
+
+// 创建不依赖 VMware 当前状态的编排输出公共字段。
+[[nodiscard]] nlohmann::json make_orchestration_output(
+    const OrchestrationArchive& archive) {
+    return {
+        {"schema_version", 1},
+        {"run_id", archive.identity.run_id},
+        {"vm_id", archive.identity.vm_id},
+        {"lifecycle_path", path_to_utf8(archive.state_path)},
+        {"resumed", archive.resumed},
+    };
+}
+
 // 返回单 VM 编排所需的唯一生命周期策略。
 [[nodiscard]] const VmLifecyclePolicy& require_single_vm_policy(const TaskPlan& plan) {
     if (!plan.lifecycle.has_value()) {
@@ -123,9 +145,7 @@ void validate_plan_scope(const TaskPlan& plan, const std::string& vm_id) {
     const std::filesystem::path runs_root = resolve_under_root(
         config.host.archive_root,
         L"runs");
-    const std::filesystem::path root = resolve_under_root(
-        runs_root,
-        path_from_utf8(run_id));
+    const std::filesystem::path root = orchestration_archive_root(config, run_id);
     const std::filesystem::path state_path = root / L"lifecycle.json";
     const std::filesystem::path identity_path = root / L"orchestration.json";
     const std::filesystem::path archived_plan_path = root / L"plan.json";
@@ -396,9 +416,28 @@ nlohmann::json Orchestrator::execute(
     TaskPlan plan = load_task_plan(plan_path);
     const VmLifecyclePolicy& policy = require_single_vm_policy(plan);
     validate_plan_scope(plan, policy.vm);
+    if (!plan.run_id.has_value()) {
+        throw Error("Host orchestrate requires an explicit plan run_id for crash recovery");
+    }
+    const std::string& run_id = *plan.run_id;
+    validate_identifier(run_id, "orchestration run_id");
     const VmConfig* vm = find_vm(config_, policy.vm);
     if (vm == nullptr) {
         throw Error("Lifecycle policy references an unknown VM: " + policy.vm);
+    }
+
+    std::optional<OrchestrationArchive> archive;
+    if (std::filesystem::exists(orchestration_archive_root(config_, run_id))) {
+        archive = prepare_or_load_archive(
+            config_,
+            plan_path,
+            run_id,
+            vm->id);
+        if (is_terminal_run_phase(archive->state.phase)) {
+            nlohmann::json output = make_orchestration_output(*archive);
+            apply_terminal_state_output(output, archive->state, policy);
+            return output;
+        }
     }
 
     vmware::VmrunProvider provider(config_.provider.vmrun);
@@ -414,27 +453,18 @@ nlohmann::json Orchestrator::execute(
     }
     const bool initially_running = is_vm_running(provider, vm->vmx);
 
-    const std::string run_id = plan.run_id.value_or(make_id("run"));
-    validate_identifier(run_id, "orchestration run_id");
-    OrchestrationArchive archive = prepare_or_load_archive(
-        config_,
-        plan_path,
-        run_id,
-        vm->id);
-    RunLifecycleState& state = archive.state;
-    const std::filesystem::path& state_path = archive.state_path;
-    nlohmann::json output = {
-        {"schema_version", 1},
-        {"run_id", run_id},
-        {"vm_id", vm->id},
-        {"lifecycle_path", path_to_utf8(state_path)},
-        {"resumed", archive.resumed},
-    };
-    if (archive.resumed && is_terminal_run_phase(state.phase)) {
-        apply_terminal_state_output(output, state, policy);
-        return output;
+    if (!archive.has_value()) {
+        archive = prepare_or_load_archive(
+            config_,
+            plan_path,
+            run_id,
+            vm->id);
     }
-    if (archive.resumed && state.phase != RunPhase::Executing &&
+    OrchestrationArchive& active_archive = *archive;
+    RunLifecycleState& state = active_archive.state;
+    const std::filesystem::path& state_path = active_archive.state_path;
+    nlohmann::json output = make_orchestration_output(active_archive);
+    if (active_archive.resumed && state.phase != RunPhase::Executing &&
         state.phase != RunPhase::CollectingEvidence) {
         const std::string error =
             "Host restart cannot safely resume orchestration phase: " +
@@ -452,18 +482,18 @@ nlohmann::json Orchestrator::execute(
 
     Controller controller(config_);
     bool assumed_running = initially_running;
-    bool agent_ready = archive.resumed;
-    bool main_published = archive.resumed;
+    bool agent_ready = active_archive.resumed;
+    bool main_published = active_archive.resumed;
     bool business_success = false;
     bool manual_gate = false;
     std::string business_error;
 
-    if (archive.resumed) {
-        output["execution_run_id"] = archive.identity.main_run_id;
+    if (active_archive.resumed) {
+        output["execution_run_id"] = active_archive.identity.main_run_id;
         try {
             output["report"] = state.phase == RunPhase::Executing
-                ? wait_for_report(controller, archive.identity.main_run_id, timeout)
-                : controller.build_report(archive.identity.main_run_id);
+                ? wait_for_report(controller, active_archive.identity.main_run_id, timeout)
+                : controller.build_report(active_archive.identity.main_run_id);
             if (!output["report"].at("complete").get<bool>() &&
                 !output["report"].value("manual_intervention_required", false)) {
                 throw Error("Persisted evidence collection phase has an incomplete main report");
@@ -523,7 +553,7 @@ nlohmann::json Orchestrator::execute(
                 utc_timestamp(),
                 "publish main task");
             const RunManifest manifest = controller.create_run(
-                make_main_plan(plan, archive.identity.main_run_id));
+                make_main_plan(plan, active_archive.identity.main_run_id));
             main_published = true;
             output["execution_run_id"] = manifest.run_id;
             persist_run_transition(
@@ -566,12 +596,13 @@ nlohmann::json Orchestrator::execute(
         }
         try {
             if (!output.contains("report")) {
-                output["report"] = controller.build_report(archive.identity.main_run_id);
+                output["report"] = controller.build_report(
+                    active_archive.identity.main_run_id);
             }
             archive_run_evidence(
                 config_,
                 run_id,
-                archive.identity.main_run_id,
+                active_archive.identity.main_run_id,
                 "main");
         } catch (const std::exception& error) {
             business_success = false;
@@ -603,7 +634,7 @@ nlohmann::json Orchestrator::execute(
             try {
                 const TaskPlan finally_plan = make_finally_plan(
                     plan,
-                    archive.identity.finally_run_id);
+                    active_archive.identity.finally_run_id);
                 const RunManifest finally_manifest = controller.create_run(finally_plan);
                 output["finally_run_id"] = finally_manifest.run_id;
                 output["finally_report"] = wait_for_report(controller, finally_manifest.run_id, timeout);

@@ -155,6 +155,19 @@ void validate_proposed_claim(const StepClaimLease& claim) {
     }
 }
 
+// 验证持久化 claim 仍属于当前不可变任务步骤。
+void validate_claim_scope(
+    const StepClaimLease& persisted,
+    const StepClaimLease& proposed) {
+    if (persisted.run_id != proposed.run_id ||
+        persisted.vm_id != proposed.vm_id ||
+        persisted.step_id != proposed.step_id ||
+        persisted.retry_safe != proposed.retry_safe) {
+        throw StepClaimStateError(
+            "Persisted step claim does not match the requested step scope");
+    }
+}
+
 // 将锁内无法解析的持久化 claim 转换为可人工门禁的状态错误。
 [[nodiscard]] StepClaimLease load_persisted_claim(
     const std::filesystem::path& path,
@@ -605,6 +618,7 @@ StepClaimAcquireResult acquire_step_claim_transaction(
     }
 
     const StepClaimLease existing = load_effective_claim_unlocked(claim_path);
+    validate_claim_scope(existing, proposed_claim);
     const ClaimRecoveryDecision decision = evaluate_claim_recovery(
         existing,
         now_unix_ms);
