@@ -126,8 +126,15 @@ std::filesystem::path step_claim_renewal_path(
     const std::filesystem::path& claim_path,
     const StepClaimLease& claim) {
     validate_claim_lease(claim);
+    if (claim.renewal_sequence == 0) {
+        throw Error("Step claim renewal path requires a positive sequence");
+    }
+    std::string sequence = std::to_string(claim.renewal_sequence); // 固定宽度续租序号
+    sequence.insert(0, 10 - sequence.size(), '0');
     return claim_path.parent_path() /
-        path_from_utf8(claim.step_id + ".claim-renewal-" + claim.job_id + ".json");
+        path_from_utf8(
+            claim.step_id + ".claim-renewal-" + claim.job_id + "-" +
+            sequence + ".json");
 }
 
 ClaimRecoveryDecision evaluate_claim_recovery(

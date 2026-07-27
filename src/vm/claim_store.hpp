@@ -72,13 +72,13 @@ struct StepResultEvidenceFile {
     const StepClaimLease& proposed_claim,
     const std::string& current_boot_id);
 
-// 在单个锁事务中验证所有权并原子发布当前 job 的续租 sidecar。
+// 在单个锁事务中验证所有权并原子发布下一份不可变续租 sidecar。
 [[nodiscard]] StepClaimRenewResult renew_step_claim_transaction(
     const std::filesystem::path& claim_path,
     const StepClaimLease& expected_owner,
     std::int64_t lease_duration_ms);
 
-// 在稳定锁保护下读取基础 claim 与匹配 sidecar 合成的有效租约。
+// 在稳定锁保护下读取基础 claim 与匹配 sidecar 序列合成的有效租约。
 [[nodiscard]] StepClaimLease load_effective_step_claim(
     const std::filesystem::path& claim_path);
 

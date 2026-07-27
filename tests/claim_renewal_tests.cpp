@@ -1,4 +1,5 @@
 // VM Agent claim 后台续租、重试和安全截止测试。
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <filesystem>
@@ -92,8 +93,9 @@ void test_policy_validation() {
 }
 
 // 验证后台会话连续续租，并在正常 finish 后不再写 sidecar。
-void test_continuous_renewal(const std::filesystem::path& root) {
-    const satsuma::vm::ClaimLeasePolicy policy = test_policy();
+void test_continuous_renewal(
+    const std::filesystem::path& root,
+    const satsuma::vm::ClaimLeasePolicy& policy) {
     const std::filesystem::path claim_path = root / L"state" / L"execute.claim.json";
     const std::filesystem::path result_path = root / L"results" / L"execution.json";
     const satsuma::StepClaimLease owner = acquire_claim(
@@ -102,14 +104,22 @@ void test_continuous_renewal(const std::filesystem::path& root) {
         policy,
         "job_continuous");
     satsuma::vm::ClaimRenewalSession session(claim_path, owner, policy);
+    const bool published_two = wait_for_condition(
+        [&] {
+            return session.current_claim().renewal_sequence >= 2;
+        },
+        std::max<std::chrono::milliseconds>(
+            2s,
+            policy.renewal_interval * 6)); // 实机模式等待到安全截止之后
+    if (!published_two) {
+        throw std::runtime_error(
+            "claim renewal session did not publish two renewals; current sequence=" +
+            std::to_string(session.current_claim().renewal_sequence) +
+            "; loss_reason=" + session.loss_reason());
+    }
     expect(
-        wait_for_condition(
-            [&] {
-                return satsuma::vm::load_effective_step_claim(claim_path)
-                    .renewal_sequence >= 2;
-            },
-            2s),
-        "claim renewal session did not publish two renewals");
+        satsuma::vm::load_effective_step_claim(claim_path).renewal_sequence >= 2,
+        "claim renewal session memory advanced without persisting its sidecar");
     expect(
         !session.lease_loss_token().stop_requested(),
         "healthy claim renewal session reported lease loss");
@@ -261,14 +271,32 @@ void test_safety_deadline(const std::filesystem::path& root) {
 
 }  // namespace
 
-// 运行 claim 后台续租测试并清理专用临时目录。
-int main() {
+// 运行 claim 后台续租测试，并可在调用方指定目录执行实机连续续租。
+int main(const int argc, char* argv[]) {
+    if (argc > 2) {
+        std::cerr << "Usage: SatsumaVmClaimRenewalTests [test-root]\n";
+        return 2;
+    }
+    const std::filesystem::path base_root = argc == 2 // 本机临时目录或实机共享根目录
+        ? satsuma::path_from_utf8(argv[1])
+        : std::filesystem::temp_directory_path();
     const std::filesystem::path root =
-        std::filesystem::temp_directory_path() /
-        satsuma::path_from_utf8(satsuma::make_id("claim-renewal-test"));
+        base_root / satsuma::path_from_utf8(satsuma::make_id("claim-renewal-test"));
     try {
+        if (argc == 2) {
+            const satsuma::vm::ClaimLeasePolicy shared_policy{
+                10s,
+                2s,
+                200ms,
+                2s,
+            }; // 为 HGFS 延迟释放读取 lease 预留实机窗口
+            test_continuous_renewal(root / L"continuous", shared_policy);
+            std::filesystem::remove_all(root);
+            std::cout << "SatsumaVmClaimRenewalTests passed\n";
+            return 0;
+        }
         test_policy_validation();
-        test_continuous_renewal(root / L"continuous");
+        test_continuous_renewal(root / L"continuous", test_policy());
         test_transient_failure_recovery(root / L"transient");
         test_ownership_loss_signal(root / L"ownership-loss");
         test_invalid_state_signal(root / L"invalid-state");

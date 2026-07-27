@@ -1,14 +1,17 @@
 // SatsumaCore 的无外部框架单元测试。
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <functional>
 #include <iostream>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <nlohmann/json.hpp>
 #include <ylt/struct_pack.hpp>
+#include <windows.h>
 
 #include "satsuma/core/config.hpp"
 #include "satsuma/core/claim.hpp"
@@ -65,6 +68,28 @@ void test_file_primitives(const std::filesystem::path& root) {
     satsuma::write_json_atomic(json_path, {{"message", "hello"}, {"value", 7}});
     const nlohmann::json value = satsuma::load_json(json_path);
     expect(value.at("message") == "hello" && value.at("value") == 7, "atomic JSON round trip failed");
+    HANDLE blocking_reader = CreateFileW( // 模拟共享目录延迟释放的读取 lease
+        json_path.c_str(),
+        GENERIC_READ,
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
+        nullptr,
+        OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL,
+        nullptr);
+    expect(blocking_reader != INVALID_HANDLE_VALUE, "atomic JSON retry test could not open its reader");
+    std::jthread release_reader([blocking_reader] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        CloseHandle(blocking_reader);
+    });
+    const auto replace_started = std::chrono::steady_clock::now(); // 验证写入确实等待占用释放
+    satsuma::write_json_atomic(json_path, {{"message", "updated"}, {"value", 8}});
+    const auto replace_elapsed = std::chrono::steady_clock::now() - replace_started;
+    release_reader.join();
+    expect(replace_elapsed >= std::chrono::milliseconds(100), "atomic JSON write skipped its retry wait");
+    const nlohmann::json updated = satsuma::load_json(json_path); // 读取后立即替换的回归结果
+    expect(
+        updated.at("message") == "updated" && updated.at("value") == 8,
+        "atomic JSON replacement after read failed");
 
     const std::filesystem::path removed_parent = root / L"removed";
     expect_error(
@@ -573,8 +598,13 @@ void test_claim_recovery_decision(const std::filesystem::path& root) {
         "claim lease round trip failed");
     expect(
         satsuma::step_claim_renewal_path(claim_path, renewed).filename() ==
-            L"echo.claim-renewal-job_claim.json",
-        "claim renewal sidecar path did not bind the step and job IDs");
+            L"echo.claim-renewal-job_claim-0000000001.json",
+        "claim renewal sidecar path did not bind the step, job, and sequence");
+    expect_error(
+        [&claim_path, &safe] {
+            static_cast<void>(satsuma::step_claim_renewal_path(claim_path, safe));
+        },
+        "claim renewal sidecar accepted sequence zero");
 
     nlohmann::json legacy = safe;
     legacy["schema_version"] = 2;

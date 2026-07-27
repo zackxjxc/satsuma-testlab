@@ -62,7 +62,7 @@ struct StepClaimLease {
     const StepClaimLease& left,
     const StepClaimLease& right) noexcept;
 
-// 返回当前 job 独占的续租 sidecar 路径。
+// 返回当前 job 指定续租序号的不可变 sidecar 路径。
 [[nodiscard]] std::filesystem::path step_claim_renewal_path(
     const std::filesystem::path& claim_path,
     const StepClaimLease& claim);
