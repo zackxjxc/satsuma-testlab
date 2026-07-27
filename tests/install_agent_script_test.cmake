@@ -19,6 +19,12 @@ if(NOT crlf_position EQUAL -1)
     message(FATAL_ERROR "install-agent.ps1 must retain LF line endings")
 endif()
 
+# PowerShell 续行只能使用反引号，前置反斜杠会成为额外的位置参数。
+string(FIND "${script_hex}" "5c60" invalid_continuation_position)
+if(NOT invalid_continuation_position EQUAL -1)
+    message(FATAL_ERROR "install-agent.ps1 contains a backslash before a continuation backtick")
+endif()
+
 set(parser_command [=[
 $tokens = $null
 $parseErrors = $null

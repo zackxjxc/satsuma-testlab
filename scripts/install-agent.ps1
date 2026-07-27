@@ -70,8 +70,8 @@ function Stop-SatsumaService {
     }
 
     Stop-Service -InputObject $service -ErrorAction Stop
-    Wait-SatsumaServiceStatus $service \`
-        ([ServiceProcess.ServiceControllerStatus]::Stopped) \`
+    Wait-SatsumaServiceStatus $service `
+        ([ServiceProcess.ServiceControllerStatus]::Stopped) `
         20
 }
 
@@ -79,9 +79,9 @@ function Stop-SatsumaService {
 function Remove-LegacySatsumaTask {
     $taskPath = '\Satsuma\'
     $taskName = 'SatsumaVM Agent'
-    $task = Get-ScheduledTask \`
-        -TaskPath $taskPath \`
-        -TaskName $taskName \`
+    $task = Get-ScheduledTask `
+        -TaskPath $taskPath `
+        -TaskName $taskName `
         -ErrorAction SilentlyContinue
     if ($null -eq $task) {
         return
@@ -93,9 +93,9 @@ function Remove-LegacySatsumaTask {
             $deadline = [DateTime]::UtcNow.AddSeconds(15)
             do {
                 Start-Sleep -Milliseconds 100
-                $task = Get-ScheduledTask \`
-                    -TaskPath $taskPath \`
-                    -TaskName $taskName \`
+                $task = Get-ScheduledTask `
+                    -TaskPath $taskPath `
+                    -TaskName $taskName `
                     -ErrorAction SilentlyContinue
             } while (
                 $null -ne $task -and
@@ -107,10 +107,10 @@ function Remove-LegacySatsumaTask {
         }
 
         if ($null -ne $task) {
-            Unregister-ScheduledTask \`
-                -TaskPath $taskPath \`
-                -TaskName $taskName \`
-                -Confirm:$false \`
+            Unregister-ScheduledTask `
+                -TaskPath $taskPath `
+                -TaskName $taskName `
+                -Confirm:$false `
                 -ErrorAction Stop
         }
     } catch {
@@ -134,12 +134,12 @@ if (-not (Test-Administrator)) {
         $elevatedArguments |
             ForEach-Object { ConvertTo-WindowsCommandLineArgument ([string]$_) }
     ) -join ' '
-    $process = Start-Process \`
-        -FilePath $powerShellPath \`
-        -ArgumentList $argumentText \`
-        -WorkingDirectory $PSScriptRoot \`
-        -Verb RunAs \`
-        -Wait \`
+    $process = Start-Process `
+        -FilePath $powerShellPath `
+        -ArgumentList $argumentText `
+        -WorkingDirectory $PSScriptRoot `
+        -Verb RunAs `
+        -Wait `
         -PassThru
     exit $process.ExitCode
 }
@@ -192,8 +192,8 @@ try {
     }
 
     New-Item -ItemType Directory -Force -Path $InstallRoot, $binRoot, $workRoot | Out-Null
-    Remove-Item -Force -LiteralPath \`
-        $newAgent, $backupAgent, $newConfig, $backupConfig \`
+    Remove-Item -Force -LiteralPath `
+        $newAgent, $backupAgent, $newConfig, $backupConfig `
         -ErrorAction SilentlyContinue
 
     # 在停止当前 Agent 前复制、校验并解析完整候选
@@ -231,8 +231,8 @@ try {
 
     Copy-Item -Force -LiteralPath $PSCommandPath -Destination $targetScript
     $installSucceeded = $true
-    Remove-Item -Force -LiteralPath \`
-        $backupAgent, $newAgent, $backupConfig, $newConfig \`
+    Remove-Item -Force -LiteralPath `
+        $backupAgent, $newAgent, $backupConfig, $newConfig `
         -ErrorAction SilentlyContinue
     Write-Host "SatsumaVM Service 已安装并启动：$targetAgent"
 } catch {
