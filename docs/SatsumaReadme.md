@@ -30,8 +30,9 @@ JSON 任务可以通过 `lifecycle` 声明单 VM 的执行前恢复、成功/失
 
 ## 构建
 
-要求 Windows、CMake 3.25+ 和带“使用 C++ 的桌面开发”组件的 Visual Studio。CMake 会优先使用
-包管理器提供的 `nlohmann-json`，未找到时下载固定的 `v3.12.0` tag。
+要求 Windows、CMake 3.25+ 和带“使用 C++ 的桌面开发”组件的 Visual Studio。真实崩溃恢复目标另外
+要求 PowerShell 7。CMake 会优先使用包管理器提供的 `nlohmann-json`，未找到时下载固定的
+`v3.12.0` tag。
 
 ```text
 cmake --preset windows-default
@@ -60,6 +61,29 @@ cmake --build --preset windows-debug --target SatsumaRealVmwareSmoke
 
 该目标会依次查询快照、硬关闭 VM、恢复指定快照并重新启动。任一步失败都会立即停止，且不会由普通
 Debug/Release 构建或测试自动触发。
+
+### 真实 Host/Agent 崩溃恢复验收
+
+崩溃恢复目标同样默认不存在，也不注册为普通 `ctest`。它要求 PowerShell 7、已经运行且通过 `check` 的
+专用 VM，以及明确的强杀确认串。驱动只终止自己启动的 Host PID；Guest 内 Fixture 会在父进程路径二次
+确认是 `SatsumaVM.exe`、一次性标记写穿后终止该父 Agent，由 SCM 按现有失败策略重启 Service。
+
+```text
+cmake --preset windows-default ^
+  -DSATSUMA_ENABLE_REAL_VMWARE_CRASH_RECOVERY=ON ^
+  -DSATSUMA_REAL_LAB_CONFIG=E:/Work/satsuma-testlab/lab.local.json ^
+  -DSATSUMA_REAL_VM_ID=client ^
+  -DSATSUMA_REAL_CRASH_SCENARIO=All ^
+  -DSATSUMA_REAL_CRASH_TIMEOUT_SECONDS=480 ^
+  -DSATSUMA_REAL_CRASH_CONFIRM=I_UNDERSTAND_HOST_AND_AGENT_WILL_BE_FORCE_TERMINATED
+cmake --build --preset windows-release --target SatsumaRealVmwareCrashRecovery
+```
+
+`All` 依次覆盖 Host 在 `executing` 强杀后续跑、Agent 崩溃后的安全 attempt 2，以及不可安全重试步骤的
+人工门禁；也可单独选择 `HostCrash`、`AgentRetrySafe` 或 `AgentUnsafe`。每轮先后执行 `check`，所有等待
+都有截止时间。机器可读摘要和 Host stdout/stderr 保存到
+`archive_root/validation/real-crash-*/summary.json`，失败运行、claim、partial 日志和归档不会自动删除。
+该目标使用 `leave_running`，不会恢复或删除快照；测试前必须保证没有另一台 Agent 使用相同 `vm_id`。
 
 ## 环境准备
 

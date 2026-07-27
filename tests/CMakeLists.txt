@@ -248,6 +248,7 @@ add_test(NAME SatsumaVmUpdateTests COMMAND SatsumaVmUpdateTests)
 set_tests_properties(SatsumaVmUpdateTests PROPERTIES TIMEOUT 15)
 
 find_program(SATSUMA_WINDOWS_POWERSHELL powershell.exe REQUIRED)
+find_program(SATSUMA_POWERSHELL_CORE pwsh)
 add_test(
     NAME SatsumaInstallAgentScriptTest
     COMMAND "${CMAKE_COMMAND}"
@@ -255,6 +256,16 @@ add_test(
         "-DPOWERSHELL=${SATSUMA_WINDOWS_POWERSHELL}"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/install_agent_script_test.cmake"
 )
+
+if(SATSUMA_POWERSHELL_CORE)
+    add_test(
+        NAME SatsumaRealCrashRecoveryScriptTest
+        COMMAND "${CMAKE_COMMAND}"
+            "-DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/real_vmware_crash_recovery.ps1"
+            "-DPOWERSHELL=${SATSUMA_POWERSHELL_CORE}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/real_vmware_crash_recovery_script_test.cmake"
+    )
+endif()
 
 add_test(
     NAME SatsumaDemoAppTest
@@ -352,5 +363,28 @@ if(SATSUMA_ENABLE_REAL_VMWARE_SMOKE)
         DEPENDS SatsumaHost
         USES_TERMINAL
         COMMENT "Run explicitly confirmed real VMware lifecycle smoke"
+    )
+endif()
+
+if(SATSUMA_ENABLE_REAL_VMWARE_CRASH_RECOVERY)
+    if(NOT SATSUMA_POWERSHELL_CORE)
+        message(FATAL_ERROR "PowerShell 7 is required for real VMware crash recovery")
+    endif()
+    add_custom_target(
+        SatsumaRealVmwareCrashRecovery
+        COMMAND "${SATSUMA_POWERSHELL_CORE}"
+            -NoProfile
+            -NonInteractive
+            -File "${CMAKE_CURRENT_SOURCE_DIR}/real_vmware_crash_recovery.ps1"
+            -HostExe "$<TARGET_FILE:SatsumaHost>"
+            -FixtureExe "$<TARGET_FILE:SatsumaTestFixture>"
+            -LabConfig "${SATSUMA_REAL_LAB_CONFIG}"
+            -VmId "${SATSUMA_REAL_VM_ID}"
+            -Scenario "${SATSUMA_REAL_CRASH_SCENARIO}"
+            -Confirm "${SATSUMA_REAL_CRASH_CONFIRM}"
+            -ScenarioTimeoutSeconds "${SATSUMA_REAL_CRASH_TIMEOUT_SECONDS}"
+        DEPENDS SatsumaHost SatsumaTestFixture
+        USES_TERMINAL
+        COMMENT "Run explicitly confirmed real VMware Host/Agent crash recovery"
     )
 endif()

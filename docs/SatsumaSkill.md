@@ -143,6 +143,8 @@ SatsumaHost.exe orchestrate --config lab.local.json --plan <task.json> --timeout
 - 单 VM 生命周期计划可自动恢复配置中的基础快照或 AI 所有权快照；普通任务仍需显式执行 VM 命令。
 - 已存在生命周期归档时，只有同一 `run_id`、VM 和计划 SHA-256 才允许复用；`executing` 和
   `collecting_evidence` 可继续处理，已有终态幂等返回，其他非终态必须转入人工门禁。
+- 真实崩溃恢复只使用默认关闭的 `SatsumaRealVmwareCrashRecovery` 目标，并要求专用 VM、唯一 Agent
+  `vm_id` 和精确确认串。普通构建或 `ctest` 不得触发 Host/Agent 强杀。
 - 任一带外操作失败时停止自动测试，保留错误输出，并要求用户处理 VMware 环境。
 - 被测程序只能在隔离 VM 中执行，不在 Host 添加运行被测 exe 的旁路命令。
 

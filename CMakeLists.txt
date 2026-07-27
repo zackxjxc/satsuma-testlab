@@ -9,10 +9,32 @@ endif()
 
 option(SATSUMA_BUILD_TESTS "Build Satsuma tests" ON)
 option(SATSUMA_ENABLE_REAL_VMWARE_SMOKE "Expose the destructive real VMware smoke target" OFF)
-set(SATSUMA_REAL_LAB_CONFIG "" CACHE FILEPATH "lab.json used by the real VMware smoke target")
-set(SATSUMA_REAL_VM_ID "" CACHE STRING "VM ID used by the real VMware smoke target")
+option(
+    SATSUMA_ENABLE_REAL_VMWARE_CRASH_RECOVERY
+    "Expose the explicitly confirmed real Host/Agent crash recovery target"
+    OFF
+)
+set(SATSUMA_REAL_LAB_CONFIG "" CACHE FILEPATH "lab.json used by real VMware targets")
+set(SATSUMA_REAL_VM_ID "" CACHE STRING "VM ID used by real VMware targets")
 set(SATSUMA_REAL_SNAPSHOT "" CACHE STRING "Snapshot restored by the real VMware smoke target")
 set(SATSUMA_REAL_VMWARE_CONFIRM "" CACHE STRING "Explicit confirmation for destructive VMware smoke")
+set(SATSUMA_REAL_CRASH_SCENARIO "All" CACHE STRING "Real crash recovery scenario")
+set_property(
+    CACHE SATSUMA_REAL_CRASH_SCENARIO
+    PROPERTY STRINGS All HostCrash AgentRetrySafe AgentUnsafe
+)
+set(
+    SATSUMA_REAL_CRASH_TIMEOUT_SECONDS
+    480
+    CACHE STRING
+    "Per-process timeout for real crash recovery"
+)
+set(
+    SATSUMA_REAL_CRASH_CONFIRM
+    ""
+    CACHE STRING
+    "Explicit confirmation for Host and Agent forced termination"
+)
 
 if(MSVC)
     # 使用静态 MSVC Runtime，避免 Guest 依赖与构建机完全一致的 Redistributable。

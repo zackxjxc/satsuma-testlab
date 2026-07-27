@@ -1,5 +1,6 @@
 // Host/VM 集成测试使用的无害被测程序。
 #include <chrono>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -9,6 +10,7 @@
 #include <vector>
 
 #include <windows.h>
+#include <tlhelp32.h>
 
 #include "satsuma/core/json_io.hpp"
 #include "satsuma/core/path.hpp"
@@ -61,6 +63,126 @@ void write_text_file(
     if (!output) {
         throw std::runtime_error("failed to write fixture process marker");
     }
+}
+
+// 返回当前进程的父进程 ID，并验证快照中的进程身份。
+[[nodiscard]] DWORD satsuma_agent_parent_process_id() {
+    const HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snapshot == INVALID_HANDLE_VALUE) {
+        throw std::runtime_error("failed to snapshot fixture parent process");
+    }
+
+    DWORD parent_process_id = 0; // 当前 Fixture 的直接父进程
+    PROCESSENTRY32W entry{};
+    entry.dwSize = sizeof(entry);
+    if (Process32FirstW(snapshot, &entry)) {
+        do {
+            if (entry.th32ProcessID == GetCurrentProcessId()) {
+                parent_process_id = entry.th32ParentProcessID;
+                break;
+            }
+        } while (Process32NextW(snapshot, &entry));
+    }
+    if (parent_process_id == 0) {
+        CloseHandle(snapshot);
+        throw std::runtime_error("fixture could not resolve its parent process");
+    }
+
+    bool parent_name_matches = false; // 防止误终止非 Satsuma 父进程
+    entry.dwSize = sizeof(entry);
+    if (Process32FirstW(snapshot, &entry)) {
+        do {
+            if (entry.th32ProcessID == parent_process_id) {
+                parent_name_matches = _wcsicmp(entry.szExeFile, L"SatsumaVM.exe") == 0;
+                break;
+            }
+        } while (Process32NextW(snapshot, &entry));
+    }
+    CloseHandle(snapshot);
+    if (!parent_name_matches) {
+        throw std::runtime_error("fixture parent is not SatsumaVM.exe");
+    }
+    return parent_process_id;
+}
+
+// 使用独占标记保证同一工作目录只强杀一次父 Agent。
+[[noreturn]] void terminate_satsuma_parent_once(
+    const std::filesystem::path& marker_path) {
+    const DWORD parent_process_id = satsuma_agent_parent_process_id();
+    const HANDLE parent = OpenProcess(
+        PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE | SYNCHRONIZE,
+        FALSE,
+        parent_process_id);
+    if (parent == nullptr) {
+        throw std::runtime_error("fixture could not open its SatsumaVM parent");
+    }
+
+    std::wstring parent_path(32'768, L'\0'); // 再次核对 PID 当前对应的可执行文件
+    DWORD parent_path_size = static_cast<DWORD>(parent_path.size());
+    if (!QueryFullProcessImageNameW(
+            parent,
+            0,
+            parent_path.data(),
+            &parent_path_size)) {
+        CloseHandle(parent);
+        throw std::runtime_error("fixture could not query its SatsumaVM parent path");
+    }
+    parent_path.resize(parent_path_size);
+    if (_wcsicmp(
+            std::filesystem::path(parent_path).filename().c_str(),
+            L"SatsumaVM.exe") != 0) {
+        CloseHandle(parent);
+        throw std::runtime_error("fixture parent PID changed before termination");
+    }
+
+    if (!marker_path.parent_path().empty()) {
+        std::filesystem::create_directories(marker_path.parent_path());
+    }
+    const HANDLE marker = CreateFileW(
+        marker_path.c_str(),
+        GENERIC_WRITE,
+        FILE_SHARE_READ,
+        nullptr,
+        CREATE_NEW,
+        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH,
+        nullptr);
+    if (marker == INVALID_HANDLE_VALUE) {
+        const DWORD error = GetLastError();
+        CloseHandle(parent);
+        if (error == ERROR_FILE_EXISTS || error == ERROR_ALREADY_EXISTS) {
+            throw std::runtime_error("fixture crash marker appeared during arming");
+        }
+        throw std::runtime_error("fixture could not create its crash marker");
+    }
+    const std::string marker_text =
+        "parent_process_id=" + std::to_string(parent_process_id) + "\n";
+    DWORD written = 0;
+    const BOOL marker_written = WriteFile(
+        marker,
+        marker_text.data(),
+        static_cast<DWORD>(marker_text.size()),
+        &written,
+        nullptr);
+    const BOOL marker_flushed = marker_written ? FlushFileBuffers(marker) : FALSE;
+    CloseHandle(marker);
+    if (!marker_written || !marker_flushed || written != marker_text.size()) {
+        CloseHandle(parent);
+        throw std::runtime_error("fixture could not persist its crash marker");
+    }
+
+    if (!TerminateProcess(parent, ERROR_PROCESS_ABORTED)) {
+        CloseHandle(parent);
+        throw std::runtime_error("fixture could not terminate its SatsumaVM parent");
+    }
+    const DWORD wait_result = WaitForSingleObject(parent, 10'000);
+    CloseHandle(parent);
+    if (wait_result != WAIT_OBJECT_0) {
+        throw std::runtime_error("fixture SatsumaVM parent did not exit after termination");
+    }
+
+    // Agent 已退出，当前进程也必须立即结束，不能留下脱离 Job 的测试进程。
+    TerminateProcess(GetCurrentProcess(), ERROR_PROCESS_ABORTED);
+    std::abort();
 }
 
 // 在可选独占锁下连续替换同一 JSON 文件，复现实机共享目录原子写问题。
@@ -163,6 +285,7 @@ int main(const int argc, char* argv[]) {
         std::filesystem::path atomic_json_path; // 连续原子写探针目标
         std::filesystem::path atomic_json_lock_path; // 连续原子写探针锁文件
         std::filesystem::path print_json_path; // 只读输出的 JSON 路径
+        std::filesystem::path crash_parent_once_path; // 首次运行时强杀父 Agent 的本地标记
         bool child_mode = false;  // 是否作为进程树测试的子进程运行
         int child_delay_ms = 0;
         int sleep_ms = 0;
@@ -199,6 +322,8 @@ int main(const int argc, char* argv[]) {
                 atomic_json_lock_path = argv[++index];
             } else if (argument == "--print-json" && index + 1 < argc) {
                 print_json_path = argv[++index];
+            } else if (argument == "--crash-parent-once" && index + 1 < argc) {
+                crash_parent_once_path = satsuma::path_from_utf8(argv[++index]);
             } else if (argument == "--child-mode") {
                 child_mode = true;
             } else {
@@ -250,8 +375,22 @@ int main(const int argc, char* argv[]) {
                 throw std::runtime_error("failed to write fixture ready marker");
             }
         }
-        if (sleep_ms > 0) {
+        bool crash_parent_pending = false; // attempt 2 看到标记后直接正常完成
+        if (!crash_parent_once_path.empty()) {
+            satsuma::validate_relative_path(crash_parent_once_path);
+            if (std::filesystem::exists(crash_parent_once_path)) {
+                if (!std::filesystem::is_regular_file(crash_parent_once_path)) {
+                    throw std::runtime_error("fixture crash marker is not a regular file");
+                }
+            } else {
+                crash_parent_pending = true;
+            }
+        }
+        if (sleep_ms > 0 && (crash_parent_once_path.empty() || crash_parent_pending)) {
             std::this_thread::sleep_for(std::chrono::milliseconds(sleep_ms));
+        }
+        if (crash_parent_pending) {
+            terminate_satsuma_parent_once(crash_parent_once_path);
         }
         if (!rename_self_path.empty()) {
             if (!replace_backup_path.empty()) {
