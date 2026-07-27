@@ -48,8 +48,8 @@ static void write_json_atomic_impl(
     }
 
     // 每次写入使用独立临时文件，避免并发任务互相覆盖。
-    std::filesystem::path temporary = path;
-    temporary += path_from_utf8(".tmp-" + make_id("write"));
+    const std::filesystem::path temporary =
+        parent / path_from_utf8(".tmp-" + make_id("write"));
     const std::string payload = value.dump(2) + "\n";
 
     HANDLE file = CreateFileW(
@@ -61,7 +61,9 @@ static void write_json_atomic_impl(
         FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH,
         nullptr);
     if (file == INVALID_HANDLE_VALUE) {
-        throw Error(win32_error("CreateFileW", GetLastError()));
+        throw Error(win32_error(
+            "CreateFileW for " + path_to_utf8(temporary),
+            GetLastError()));
     }
 
     DWORD bytes_written = 0;
