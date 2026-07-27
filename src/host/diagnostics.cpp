@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <map>
 #include <memory>
 #include <set>
 #include <string>
@@ -87,6 +88,16 @@ void probe_writable_directory(const std::filesystem::path& root) {
     return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
 }
 
+// 返回环境报告中指定检查是否已通过。
+[[nodiscard]] bool check_passed(const nlohmann::json& report, const std::string_view name) {
+    for (const auto& check : report.at("checks")) {
+        if (check.at("name").get<std::string>() == name) {
+            return check.at("status") == "passed";
+        }
+    }
+    return false;
+}
+
 }  // namespace
 
 Diagnostics::Diagnostics(LabConfig config) : config_(std::move(config)) {}
@@ -96,13 +107,27 @@ nlohmann::json Diagnostics::inspect_environment(const std::optional<std::string>
 
     nlohmann::json checks = nlohmann::json::array();
     const auto inspect_directory = [&checks](const std::string& name, const std::filesystem::path& path) {
+        nlohmann::json details = {{"path", path_to_utf8(path)}};
         try {
+            if (!std::filesystem::is_directory(path)) {
+                throw Error("Directory does not exist: " + path_to_utf8(path));
+            }
+            const std::filesystem::space_info space = std::filesystem::space(path);
+            details["capacity_bytes"] = space.capacity;
+            details["free_bytes"] = space.free;
+            details["available_bytes"] = space.available;
+            if (space.available == 0) {
+                throw Error("Directory volume reports no available space: " + path_to_utf8(path));
+            }
             probe_writable_directory(path);
-            add_check(checks, name, "passed", "Directory exists and accepts atomic writes", {
-                {"path", path_to_utf8(path)},
-            });
+            add_check(
+                checks,
+                name,
+                "passed",
+                "Directory exists, reports capacity, and accepts atomic writes",
+                std::move(details));
         } catch (const std::exception& error) {
-            add_check(checks, name, "failed", error.what(), {{"path", path_to_utf8(path)}});
+            add_check(checks, name, "failed", error.what(), std::move(details));
         }
     };
     inspect_directory("shared_folder", config_.shared_folder.host_root);
@@ -152,6 +177,9 @@ nlohmann::json Diagnostics::inspect_environment(const std::optional<std::string>
             add_check(checks, "snapshots", "skipped", "VMware control or VMX check failed", {
                 {"vm_id", vm->id},
             });
+            add_check(checks, "vmware_tools", "skipped", "VMware control or VMX check failed", {
+                {"vm_id", vm->id},
+            });
             continue;
         }
         try {
@@ -171,6 +199,19 @@ nlohmann::json Diagnostics::inspect_environment(const std::optional<std::string>
                 });
         } catch (const std::exception& error) {
             add_check(checks, "snapshots", "failed", error.what(), {{"vm_id", vm->id}});
+        }
+
+        try {
+            const std::string tools_state = provider->check_tools_state(vm->vmx);
+            const bool running = tools_state == "running";
+            add_check(
+                checks,
+                "vmware_tools",
+                running ? "passed" : "failed",
+                running ? "VMware Tools is running" : "VMware Tools is not running",
+                {{"vm_id", vm->id}, {"state", tools_state}});
+        } catch (const std::exception& error) {
+            add_check(checks, "vmware_tools", "failed", error.what(), {{"vm_id", vm->id}});
         }
     }
 
@@ -203,6 +244,30 @@ nlohmann::json Diagnostics::run_probe(
     nlohmann::json report = inspect_environment(vm_id);
     const std::string environment_status = report.at("status").get<std::string>();
 
+    if (!check_passed(report, "shared_folder")) {
+        nlohmann::json agents = nlohmann::json::array();
+        for (const VmConfig* vm : targets) {
+            agents.push_back({
+                {"vm_id", vm->id},
+                {"status", "skipped"},
+                {"message", "Agent diagnostic was skipped because the shared folder is unavailable"},
+            });
+        }
+        report["mode"] = "full";
+        report["environment_status"] = environment_status;
+        report["status"] = "failed";
+        report["run_id"] = nullptr;
+        report["finished_at"] = utc_timestamp();
+        report["probe_summary"] = {
+            {"expected_agents", targets.size()},
+            {"passed", 0},
+            {"failed", 0},
+            {"skipped", targets.size()},
+        };
+        report["agents"] = std::move(agents);
+        return report;
+    }
+
     TaskPlan plan;
     plan.name = "satsuma-automation-diagnostic";
     plan.run_id = make_id("check");
@@ -224,6 +289,7 @@ nlohmann::json Diagnostics::run_probe(
         std::filesystem::path(L"runs") / path_from_utf8(manifest.run_id));
     nlohmann::json agents = nlohmann::json::array();
     std::set<std::string> reported;
+    std::map<std::string, std::string> validation_errors; // 瞬断期间保留最近一次读取错误
     const auto deadline = std::chrono::steady_clock::now() + timeout;
 
     while (reported.size() < targets.size() && std::chrono::steady_clock::now() < deadline) {
@@ -237,7 +303,16 @@ nlohmann::json Diagnostics::run_probe(
                     path_from_utf8(vm->id) /
                     path_from_utf8(vm->id) /
                     L"execution.json");
-            if (!std::filesystem::is_regular_file(result_path)) {
+            std::error_code availability_error;
+            const bool result_available = std::filesystem::is_regular_file(
+                result_path,
+                availability_error);
+            if (availability_error) {
+                validation_errors[vm->id] =
+                    "Cannot inspect Agent diagnostic result: " + availability_error.message();
+                continue;
+            }
+            if (!result_available) {
                 continue;
             }
 
@@ -270,9 +345,10 @@ nlohmann::json Diagnostics::run_probe(
                     agent["error"] = result.error;
                 }
             } catch (const std::exception& error) {
-                agent["message"] = "Cannot validate Agent diagnostic result";
-                agent["error"] = error.what();
+                validation_errors[vm->id] = error.what();
+                continue;
             }
+            validation_errors.erase(vm->id);
             agents.push_back(std::move(agent));
             reported.insert(vm->id);
         }
@@ -283,20 +359,32 @@ nlohmann::json Diagnostics::run_probe(
 
     for (const VmConfig* vm : targets) {
         if (!reported.contains(vm->id)) {
-            agents.push_back({
-                {"vm_id", vm->id},
-                {"status", "timeout"},
-                {"message", "Agent did not return the diagnostic task before the deadline"},
-            });
+            const auto validation_error = validation_errors.find(vm->id);
+            if (validation_error != validation_errors.end()) {
+                agents.push_back({
+                    {"vm_id", vm->id},
+                    {"status", "failed"},
+                    {"message", "Cannot validate Agent diagnostic result before the deadline"},
+                    {"error", validation_error->second},
+                });
+            } else {
+                agents.push_back({
+                    {"vm_id", vm->id},
+                    {"status", "timeout"},
+                    {"message", "Agent did not return the diagnostic task before the deadline"},
+                });
+            }
         }
     }
 
     std::size_t agent_passed = 0;
+    std::size_t agent_skipped = 0;
     for (const auto& agent : agents) {
         agent_passed += agent.at("status") == "passed" ? 1 : 0;
+        agent_skipped += agent.at("status") == "skipped" ? 1 : 0;
     }
-    const std::size_t agent_failed = agents.size() - agent_passed;
-    const std::string status = agent_failed > 0
+    const std::size_t agent_failed = agents.size() - agent_passed - agent_skipped;
+    const std::string status = agent_failed > 0 || agent_skipped > 0
         ? "failed"
         : (environment_status == "ready" ? "ready" : "degraded");
     report["mode"] = "full";
@@ -308,6 +396,7 @@ nlohmann::json Diagnostics::run_probe(
         {"expected_agents", targets.size()},
         {"passed", agent_passed},
         {"failed", agent_failed},
+        {"skipped", agent_skipped},
     };
     report["agents"] = std::move(agents);
     return report;

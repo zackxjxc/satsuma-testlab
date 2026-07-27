@@ -92,10 +92,9 @@ RunManifest Controller::create_run(const TaskPlan& plan) const {
     const std::filesystem::path staging_directory = resolve_under_root(
         config_.shared_folder.host_root,
         std::filesystem::path(L"runs") / path_from_utf8(staging_name));
-    std::filesystem::create_directories(staging_directory / L"state");
-    std::filesystem::create_directories(staging_directory / L"results");
-
     try {
+        std::filesystem::create_directories(staging_directory / L"state");
+        std::filesystem::create_directories(staging_directory / L"results");
         for (const auto& input : plan.artifacts) {
             validate_artifact_destination(input.destination);
             if (!std::filesystem::is_regular_file(input.source)) {

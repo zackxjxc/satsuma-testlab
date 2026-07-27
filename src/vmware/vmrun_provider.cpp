@@ -256,6 +256,29 @@ std::vector<std::string> VmrunProvider::list_snapshots(const std::filesystem::pa
     return snapshots;
 }
 
+std::string VmrunProvider::check_tools_state(const std::filesystem::path& vmx) const {
+    validate_vmx_file(vmx);
+    const std::string output = invoke({"checkToolsState", path_to_utf8(vmx)});
+    std::istringstream lines(output);
+    std::string state;
+    if (!std::getline(lines, state)) {
+        throw Error("vmrun checkToolsState returned an empty response");
+    }
+    trim_carriage_return(state);
+    if (state.empty()) {
+        throw Error("vmrun checkToolsState returned an empty state");
+    }
+
+    std::string extra;
+    while (std::getline(lines, extra)) {
+        trim_carriage_return(extra);
+        if (!extra.empty()) {
+            throw Error("vmrun checkToolsState returned multiple states");
+        }
+    }
+    return state;
+}
+
 void VmrunProvider::start(const std::filesystem::path& vmx) const {
     validate_vmx_file(vmx);
     static_cast<void>(invoke({"start", path_to_utf8(vmx), "nogui"}));

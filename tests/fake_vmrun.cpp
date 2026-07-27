@@ -49,6 +49,21 @@ int wmain(const int argc, wchar_t* argv[]) {
             << "satsuma-ai-recovery-fail\n";
         return 0;
     }
+    if (argc == 3 && std::wstring(argv[1]) == L"checkToolsState") {
+        const std::filesystem::path filename = std::filesystem::path(argv[2]).filename();
+        if (filename == L"Client VM.vmx" || filename == L"Tools Running VM.vmx") {
+            std::cout << "running\n";
+            return 0;
+        }
+        if (filename == L"Tools Installed VM.vmx") {
+            std::cout << "installed\n";
+            return 0;
+        }
+        if (filename == L"Tools Unknown VM.vmx") {
+            std::cout << "unknown\n";
+            return 0;
+        }
+    }
     if (argc == 4 &&
         std::wstring(argv[1]) == L"start" &&
         std::filesystem::path(argv[2]).filename() == L"Client VM.vmx" &&

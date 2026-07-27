@@ -1055,6 +1055,14 @@ string(FIND "${check_output}" "\"status\": \"passed\"" check_agent_position)
 if(check_agent_position EQUAL -1)
     message(FATAL_ERROR "SatsumaHost active check did not confirm the Agent: ${check_output}")
 endif()
+string(FIND "${check_output}" "\"name\": \"vmware_tools\"" check_tools_position)
+string(FIND "${check_output}" "\"state\": \"running\"" check_tools_state_position)
+string(FIND "${check_output}" "\"available_bytes\":" check_capacity_position)
+if(check_tools_position EQUAL -1 OR
+   check_tools_state_position EQUAL -1 OR
+   check_capacity_position EQUAL -1)
+    message(FATAL_ERROR "SatsumaHost active check omitted Tools or capacity details: ${check_output}")
+endif()
 file(GLOB diagnostic_claims "${share_path}/runs/check-*/state/client/client.claim.json")
 list(LENGTH diagnostic_claims diagnostic_claim_count)
 if(diagnostic_claim_count LESS 1)
@@ -1065,6 +1073,66 @@ file(READ "${diagnostic_claim_path}" diagnostic_claim_json)
 string(FIND "${diagnostic_claim_json}" "\"retry_safe\": true" diagnostic_retry_position)
 if(diagnostic_retry_position EQUAL -1)
     message(FATAL_ERROR "Diagnostic echo claim was not marked retry-safe: ${diagnostic_claim_json}")
+endif()
+
+# Shared Folder 无法发布任务时仍返回完整机器可读失败报告。
+file(WRITE "${TEST_ROOT}/blocked-share" "not a directory\n")
+file(TO_CMAKE_PATH "${TEST_ROOT}/blocked-share" blocked_share_path)
+string(REPLACE "${share_path}" "${blocked_share_path}" blocked_share_lab_json "${lab_json}")
+file(WRITE "${TEST_ROOT}/lab-blocked-share.json" "${blocked_share_lab_json}")
+execute_process(
+    COMMAND "${HOST_EXE}" check
+        --config "${TEST_ROOT}/lab-blocked-share.json"
+        --vm client
+        --timeout-seconds 2
+    RESULT_VARIABLE blocked_share_result
+    OUTPUT_VARIABLE blocked_share_output
+    ERROR_VARIABLE blocked_share_error
+)
+if(NOT blocked_share_result EQUAL 1)
+    message(FATAL_ERROR
+        "Blocked Shared Folder check returned ${blocked_share_result}: "
+        "${blocked_share_error}\n${blocked_share_output}")
+endif()
+string(FIND "${blocked_share_output}" "\"mode\": \"full\"" blocked_share_mode_position)
+string(FIND "${blocked_share_output}" "\"run_id\": null" blocked_share_run_position)
+string(FIND
+    "${blocked_share_output}"
+    "Agent diagnostic was skipped because the shared folder is unavailable"
+    blocked_share_skip_position)
+if(blocked_share_mode_position EQUAL -1 OR
+   blocked_share_run_position EQUAL -1 OR
+   blocked_share_skip_position EQUAL -1)
+    message(FATAL_ERROR "Blocked Shared Folder check lost its JSON report: ${blocked_share_output}")
+endif()
+
+# 归档不可写不阻断文件通道探针，但完整报告保持 degraded。
+file(WRITE "${TEST_ROOT}/blocked-archive" "not a directory\n")
+file(TO_CMAKE_PATH "${TEST_ROOT}/blocked-archive" blocked_archive_path)
+string(REPLACE "${archive_path}" "${blocked_archive_path}" blocked_archive_lab_json "${lab_json}")
+file(WRITE "${TEST_ROOT}/lab-blocked-archive.json" "${blocked_archive_lab_json}")
+execute_process(
+    COMMAND "${CMAKE_COMMAND}"
+        "-DVM_EXE=${VM_EXE}"
+        "-DAGENT_CONFIG=${TEST_ROOT}/agent.json"
+        -P "${CMAKE_CURRENT_LIST_DIR}/run_agent_once_after_delay.cmake"
+    COMMAND "${HOST_EXE}" check
+        --config "${TEST_ROOT}/lab-blocked-archive.json"
+        --vm client
+        --timeout-seconds 10
+    RESULTS_VARIABLE blocked_archive_results
+    OUTPUT_VARIABLE blocked_archive_output
+    ERROR_VARIABLE blocked_archive_error
+)
+if(NOT blocked_archive_results STREQUAL "0;3")
+    message(FATAL_ERROR
+        "Blocked archive check returned ${blocked_archive_results}: "
+        "${blocked_archive_error}\n${blocked_archive_output}")
+endif()
+string(FIND "${blocked_archive_output}" "\"status\": \"degraded\"" blocked_archive_status_position)
+string(FIND "${blocked_archive_output}" "\"status\": \"passed\"" blocked_archive_agent_position)
+if(blocked_archive_status_position EQUAL -1 OR blocked_archive_agent_position EQUAL -1)
+    message(FATAL_ERROR "Blocked archive check did not preserve the Agent result: ${blocked_archive_output}")
 endif()
 
 execute_process(

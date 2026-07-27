@@ -34,6 +34,9 @@ public:
         create_snapshot_path_ = create_vmx(L"Create VM.vmx");
         list_snapshots_path_ = create_vmx(L"List Snapshots VM.vmx");
         delete_snapshot_path_ = create_vmx(L"Delete VM.vmx");
+        tools_running_path_ = create_vmx(L"Tools Running VM.vmx");
+        tools_installed_path_ = create_vmx(L"Tools Installed VM.vmx");
+        tools_unknown_path_ = create_vmx(L"Tools Unknown VM.vmx");
     }
 
     TemporaryVmx(const TemporaryVmx&) = delete;
@@ -80,6 +83,21 @@ public:
         return delete_snapshot_path_;
     }
 
+    // 返回 Tools 正常运行测试使用的 VMX 路径。
+    [[nodiscard]] const std::filesystem::path& tools_running_path() const noexcept {
+        return tools_running_path_;
+    }
+
+    // 返回 Tools 已安装但未运行测试使用的 VMX 路径。
+    [[nodiscard]] const std::filesystem::path& tools_installed_path() const noexcept {
+        return tools_installed_path_;
+    }
+
+    // 返回 Tools 未知状态测试使用的 VMX 路径。
+    [[nodiscard]] const std::filesystem::path& tools_unknown_path() const noexcept {
+        return tools_unknown_path_;
+    }
+
 private:
     // 创建单个最小 VMX 占位文件。
     [[nodiscard]] std::filesystem::path create_vmx(const std::filesystem::path& filename) const {
@@ -100,6 +118,9 @@ private:
     std::filesystem::path create_snapshot_path_;  // 快照创建测试路径
     std::filesystem::path list_snapshots_path_;  // 快照列表测试路径
     std::filesystem::path delete_snapshot_path_;  // 快照删除测试路径
+    std::filesystem::path tools_running_path_;  // Tools 运行状态测试路径
+    std::filesystem::path tools_installed_path_;  // Tools 已安装状态测试路径
+    std::filesystem::path tools_unknown_path_;  // Tools 未知状态测试路径
 };
 
 }  // namespace
@@ -122,6 +143,12 @@ int wmain(const int argc, wchar_t* argv[]) {
         expect(snapshots.size() == 3, "vmrun listSnapshots did not return three snapshots");
         expect(snapshots.at(0) == "clean", "base snapshot name changed");
         expect(snapshots.at(2) == "satsuma-ai-client-ready", "AI snapshot name changed");
+        expect(provider.check_tools_state(vmx.tools_running_path()) == "running",
+            "vmrun checkToolsState did not preserve the running state");
+        expect(provider.check_tools_state(vmx.tools_installed_path()) == "installed",
+            "vmrun checkToolsState did not preserve the installed state");
+        expect(provider.check_tools_state(vmx.tools_unknown_path()) == "unknown",
+            "vmrun checkToolsState did not preserve the unknown state");
         provider.start(vmx.start_path());
         provider.stop(vmx.soft_stop_path(), satsuma::vmware::VmStopMode::Soft);
         provider.stop(vmx.hard_stop_path(), satsuma::vmware::VmStopMode::Hard);

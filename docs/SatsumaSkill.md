@@ -81,8 +81,10 @@ SatsumaHost.exe check --config lab.local.json --vm <vm-id> --timeout-seconds 30
 | 1 | 无有效 JSON | 配置或参数解析失败，读取 stderr 后修正 |
 | 2 | 无有效 JSON | CLI 只输出用法，修正命令结构后重试 |
 
-`check` 会写入无害 `echo` 任务，但不会启动 VM、启动 Agent、改动网络或恢复快照。不得因为 VMX、
-`vmrun` 或共享目录存在就自行宣称环境可用；只有本轮报告为 `ready` 才能通过门禁。
+`check` 会报告共享/归档容量和 VMware Tools 状态，并写入无害 `echo` 任务，但不会启动 VM、启动 Agent、
+改动网络或恢复快照。Shared Folder 检查失败时不会发布任务，`run_id` 为 `null`，目标 Agent 状态为
+`skipped`。不得因为 VMX、`vmrun` 或共享目录存在就自行宣称环境可用；只有本轮报告为 `ready` 才能通过
+门禁。
 
 ## 5. 生成任务文件
 

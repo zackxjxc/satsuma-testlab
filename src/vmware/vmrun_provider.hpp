@@ -30,6 +30,10 @@ public:
     [[nodiscard]] std::vector<std::string> list_snapshots(
         const std::filesystem::path& vmx) const;
 
+    // 查询指定 VMX 的 VMware Tools 原始状态。
+    [[nodiscard]] std::string check_tools_state(
+        const std::filesystem::path& vmx) const;
+
     // 以无界面模式启动指定 VMX。
     void start(const std::filesystem::path& vmx) const;
 

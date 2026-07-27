@@ -391,16 +391,21 @@ cmake --build --preset windows-release --target SatsumaDemoApp
 SatsumaHost.exe check --config lab.local.json --vm client --timeout-seconds 180
 ```
 
-`check` 会验证共享目录和归档目录的原子写入、`vmrun` 控制通道、VMX 和基础快照，然后发布唯一的
-`echo` 任务并等待 Agent 返回结果。它不会启动、关闭、恢复虚拟机或改动快照。未指定 `--vm` 时会检查
-配置中的全部 VM；`--timeout-seconds` 接受 1–300 秒，默认 30 秒。Agent 已上线时默认值通常足够；VM
-冷启动后首次检查建议使用 180–240 秒，以覆盖 Windows 延迟自动启动和 VMware Tools 就绪时间。
+`check` 会验证共享目录和归档目录的容量与原子写入、`vmrun` 控制通道、VMX、基础快照和 VMware Tools
+状态，然后发布唯一的 `echo` 任务并等待 Agent 返回结果。它不会启动、关闭、恢复虚拟机或改动快照。
+未指定 `--vm` 时会检查配置中的全部 VM；`--timeout-seconds` 接受 1–300 秒，默认 30 秒。Agent 已上线时
+默认值通常足够；VM 冷启动后首次检查建议使用 180–240 秒，以覆盖 Windows 延迟自动启动和 VMware
+Tools 就绪时间。
 
 报告为机器可读 JSON，调用方必须同时检查退出码和顶层 `status`：
 
 - 退出码 0、`ready`：环境检查和全部 Agent 探针均通过，可以继续。
 - 退出码 3、`degraded`：Agent 探针通过，但 VMware 或环境检查存在异常，应停止并处理报告中的失败项。
 - 退出码 1、`failed`：Agent 超时、执行失败或结果不匹配，自动化通道当前不可用。
+
+Shared Folder 检查失败时无法安全发布 echo。此时 `check` 仍返回完整 JSON，`run_id` 为 `null`，目标
+`agents[]` 标记为 `skipped`，不会退化成只有 stderr 的异常。结果读取期间的瞬时文件错误会重试到本次
+截止时间；持续失败会在对应 Agent 项中保留最后一次读取错误。
 
 `check` 不会替用户启动 VM 或 Agent。常见失败项可按下表定位：
 
@@ -412,6 +417,8 @@ SatsumaHost.exe check --config lab.local.json --vm client --timeout-seconds 180
 | `checks/vmware_control` | VMware 控制命令失败或超时 | 启动 VMware 服务，手工确认 `vmrun list` 可用 |
 | `checks/vmx` | VMX 路径错误或文件已移动 | 在 VMware 中找到实际 `.vmx` 并更新配置 |
 | `checks/snapshots` | 基础快照不存在 | 手工创建快照或修正 `snapshots.base` |
+| `checks/vmware_tools` | VM 未运行、Tools 未启动或 Guest 响应异常 | 启动 VM 并确认 `vmrun checkToolsState` 返回 `running` |
+| `agents[].status=skipped` | Shared Folder 检查失败，未发布探针 | 先修复共享目录，再重新执行完整 `check` |
 | `agents[].status=timeout` | VM 未启动、Agent 未运行或 Guest 看不到共享目录 | 启动 VM/Agent，重新验证 Shared Folder |
 | `agents[].status=failed` | Agent 结果、退出码或 stdout 不符合探针 | 查看该 `run_id` 下的 `execution.json` 和日志 |
 
