@@ -12,7 +12,7 @@ Satsuma 在 Windows 宿主机与 VMware 测试虚拟机之间物化任务、部�
 - Windows Job Object 进程树管理、超时终止、stdout/stderr 持续落盘和结果文件收集。
 - `SatsumaHost.exe report`：汇总当前运行的机器可读结果。
 - `SatsumaHost.exe orchestrate`：按单 VM 生命周期策略恢复、启动、检测、执行、归档并清理。
-- claim v2 有限租约：只自动回收显式 `retry_safe` 的过期步骤，其他步骤保留人工门禁。
+- claim schema v3 主动续租：只自动回收显式 `retry_safe` 的过期步骤，其他步骤保留人工门禁。
 - `SatsumaHost.exe check`：检查 Host/VMware 环境，发送无害任务并确认 Agent 执行通道。
 - `SatsumaVM` Windows Service：LocalSystem 延迟自动启动、受控停止和失败恢复。
 - 独立 Agent 自更新：候选校验、本机切换、简单回滚、presence 确认和成功后完整暂存清理。
@@ -149,6 +149,10 @@ Set-Content -LiteralPath '\\vmware-host\Shared Folders\vm-share\client-probe.txt
 
 最后回到 Host 确认 `client-probe.txt` 可读。Gateway VM 使用不同文件名，避免互相覆盖。共享目录
 只能放可丢弃的任务、Artifact 和结果，不能共享仓库、用户目录、密钥或浏览器数据。
+
+VMware Shared Folder 可能在 Guest 进程退出后短暂保留文件句柄或 lease，使 Host 的覆盖、改名或删除
+暂时返回占用或拒绝访问。每次任务必须使用新的 `run_id` 目录，协议状态使用不可变文件发布；清理只做
+有限重试，失败时保留隔离目录供后续回收，不能无限重试或阻塞后续运行。
 
 ### 4. 填写 Host 的 `lab.local.json`
 
@@ -399,9 +403,10 @@ SatsumaHost.exe orchestrate --config lab.local.json --plan task.json --timeout-s
 AI 前缀快照。状态保存在 `archive_root/runs/<run-id>/lifecycle.json`，证据保存在同目录的 `evidence/`。
 
 `echo` 默认 `retry_safe=true`，`execute` 默认 `false`；只有调用方确认步骤可幂等重放时，才应为
-`execute` 显式设置 `retry_safe=true`。claim 租约为步骤超时加 30 秒，到期后仍需确认 Agent `boot_id`
-已经变化才允许安全重试。旧格式、损坏或不可安全重试的 claim 会生成 `claim-recovery.json`，
-`orchestrate` 随即跳过 `finally` 和恢复动作，以退出码 5、`MANUAL_INTERVENTION_REQUIRED` 停止。
+`execute` 显式设置 `retry_safe=true`。Agent 使用 120 秒固定 claim 租约，并每 30 秒发布一份带连续序号的
+不可变续租 sidecar；读取方会校验 owner、序号和时间单调性。租约到期后仍需确认 Agent `boot_id` 已经
+变化才允许安全重试。旧格式、损坏或不可安全重试的 claim 会生成 `claim-recovery.json`，`orchestrate`
+随即跳过 `finally` 和恢复动作，以退出码 5、`MANUAL_INTERVENTION_REQUIRED` 停止。
 
 在 Host 上物化任务：
 
@@ -440,7 +445,8 @@ SatsumaHost.exe snapshot delete-ai --vm client --snapshot <snapshot-name> --conf
 `host.archive_root/snapshots/<vm-id>/`。
 
 每次运行使用 `shared_folder.host_root/runs/<run_id>/`，不要复用旧的 `run_id`。`execution.json`、
-最终日志和收集文件发布前均经过完整写入或原子改名；执行期间可读取 `.partial` 日志。
+最终日志和收集文件发布前均经过完整写入或原子改名；执行期间可读取 `.partial` 日志。不要在 Guest
+刚执行过文件后立即依赖 Host 覆盖或删除同一路径，新的任务和 Artifact 应使用新的运行目录或唯一文件名。
 
 ## 权限与故障边界
 
