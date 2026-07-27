@@ -14,6 +14,11 @@ set(SATSUMA_REAL_VM_ID "" CACHE STRING "VM ID used by the real VMware smoke targ
 set(SATSUMA_REAL_SNAPSHOT "" CACHE STRING "Snapshot restored by the real VMware smoke target")
 set(SATSUMA_REAL_VMWARE_CONFIRM "" CACHE STRING "Explicit confirmation for destructive VMware smoke")
 
+if(MSVC)
+    # 使用静态 MSVC Runtime，避免 Guest 依赖与构建机完全一致的 Redistributable。
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+endif()
+
 include(FetchContent)
 
 # 优先复用包管理器提供的依赖；未提供时下载固定版本。
