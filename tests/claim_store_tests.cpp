@@ -350,6 +350,37 @@ void test_completed_result_validation(const std::filesystem::path& root) {
         "claim transaction accepted a result owned by another job");
 }
 
+// 验证损坏或串属的 renewal sidecar 使用专门的状态错误拒绝。
+void test_invalid_renewal_state(const std::filesystem::path& root) {
+    const std::filesystem::path claim_path = root / L"state" / L"execute.claim.json";
+    const std::filesystem::path result_path = root / L"results" / L"execution.json";
+    const satsuma::StepClaimLease proposed = make_proposed_claim(
+        "job_invalid_sidecar",
+        "boot_invalid_sidecar",
+        2s,
+        true);
+    const satsuma::vm::StepClaimAcquireResult acquired =
+        satsuma::vm::acquire_step_claim_transaction(
+            claim_path,
+            result_path,
+            proposed,
+            proposed.boot_id);
+    expect(acquired.claim.has_value(), "invalid-sidecar fixture did not acquire its claim");
+    satsuma::write_json_atomic(
+        satsuma::step_claim_renewal_path(claim_path, *acquired.claim),
+        {{"schema_version", 3}, {"job_id", "job_other"}});
+
+    bool rejected_as_state = false;
+    try {
+        static_cast<void>(satsuma::vm::load_effective_step_claim(claim_path));
+    } catch (const satsuma::vm::StepClaimStateError&) {
+        rejected_as_state = true;
+    }
+    expect(
+        rejected_as_state,
+        "invalid renewal sidecar was not classified as a persisted state error");
+}
+
 // 验证两个并发首次领取事务只能产生一个 owner。
 void test_concurrent_initial_acquire(const std::filesystem::path& root) {
     const std::filesystem::path claim_path = root / L"state" / L"execute.claim.json";
@@ -420,6 +451,7 @@ int main() {
         test_safe_recovery_and_fencing(root / L"safe-recovery");
         test_unsafe_recovery_gate(root / L"unsafe-recovery");
         test_completed_result_validation(root / L"completed-result");
+        test_invalid_renewal_state(root / L"invalid-renewal");
         test_concurrent_initial_acquire(root / L"concurrent-acquire");
         std::filesystem::remove_all(root);
         std::cout << "SatsumaVmClaimStoreTests passed\n";

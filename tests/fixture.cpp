@@ -10,6 +10,7 @@
 
 #include <windows.h>
 
+#include "satsuma/core/json_io.hpp"
 #include "satsuma/core/path.hpp"
 #include "satsuma/core/windows_command_line.hpp"
 
@@ -59,6 +60,50 @@ void write_text_file(
     output << content;
     if (!output) {
         throw std::runtime_error("failed to write fixture process marker");
+    }
+}
+
+// 在可选独占锁下连续替换同一 JSON 文件，复现实机共享目录原子写问题。
+void run_atomic_json_probe(
+    const std::filesystem::path& target_path,
+    const std::filesystem::path& lock_path) {
+    HANDLE lock = nullptr; // 探针执行期间保持的可选独占锁
+    if (!lock_path.empty()) {
+        if (!lock_path.parent_path().empty()) {
+            std::filesystem::create_directories(lock_path.parent_path());
+        }
+        lock = CreateFileW(
+            lock_path.c_str(),
+            GENERIC_READ | GENERIC_WRITE,
+            0,
+            nullptr,
+            OPEN_ALWAYS,
+            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH,
+            nullptr);
+        if (lock == INVALID_HANDLE_VALUE) {
+            throw std::runtime_error(
+                "failed to open fixture probe lock: " +
+                std::to_string(GetLastError()));
+        }
+    }
+
+    try {
+        satsuma::write_json_atomic(target_path, {{"sequence", 1}});
+        if (satsuma::load_json(target_path).value("sequence", 0) != 1) {
+            throw std::runtime_error("fixture atomic JSON probe read back an invalid value");
+        }
+        satsuma::write_json_atomic(target_path, {{"sequence", 2}});
+        if (satsuma::load_json(target_path).value("sequence", 0) != 2) {
+            throw std::runtime_error("fixture atomic JSON probe did not publish its final value");
+        }
+    } catch (...) {
+        if (lock != nullptr) {
+            CloseHandle(lock);
+        }
+        throw;
+    }
+    if (lock != nullptr) {
+        CloseHandle(lock);
     }
 }
 
@@ -115,6 +160,9 @@ int main(const int argc, char* argv[]) {
         std::filesystem::path pid_path;  // 当前测试进程 PID 输出
         std::filesystem::path child_pid_path;  // 子进程 PID 输出
         std::filesystem::path child_marker_path;  // 子进程延迟标记
+        std::filesystem::path atomic_json_path; // 连续原子写探针目标
+        std::filesystem::path atomic_json_lock_path; // 连续原子写探针锁文件
+        std::filesystem::path print_json_path; // 只读输出的 JSON 路径
         bool child_mode = false;  // 是否作为进程树测试的子进程运行
         int child_delay_ms = 0;
         int sleep_ms = 0;
@@ -145,6 +193,12 @@ int main(const int argc, char* argv[]) {
                 child_marker_path = argv[++index];
             } else if (argument == "--child-delay-ms" && index + 1 < argc) {
                 child_delay_ms = std::stoi(argv[++index]);
+            } else if (argument == "--atomic-json-probe" && index + 1 < argc) {
+                atomic_json_path = argv[++index];
+            } else if (argument == "--atomic-json-lock" && index + 1 < argc) {
+                atomic_json_lock_path = argv[++index];
+            } else if (argument == "--print-json" && index + 1 < argc) {
+                print_json_path = argv[++index];
             } else if (argument == "--child-mode") {
                 child_mode = true;
             } else {
@@ -163,6 +217,16 @@ int main(const int argc, char* argv[]) {
 
         if (!pid_path.empty()) {
             write_text_file(pid_path, std::to_string(GetCurrentProcessId()) + "\n");
+        }
+        if (!atomic_json_lock_path.empty() && atomic_json_path.empty()) {
+            throw std::runtime_error("fixture atomic JSON lock requires a probe target");
+        }
+        if (!atomic_json_path.empty()) {
+            run_atomic_json_probe(atomic_json_path, atomic_json_lock_path);
+        }
+        if (!print_json_path.empty()) {
+            std::cout << satsuma::load_json(print_json_path).dump(2) << '\n';
+            return 0;
         }
         if (!child_pid_path.empty() || !child_marker_path.empty() || child_delay_ms > 0) {
             if (child_pid_path.empty() || child_marker_path.empty() || child_delay_ms <= 0) {

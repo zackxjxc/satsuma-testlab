@@ -242,11 +242,24 @@ int Agent::run_once(const std::stop_token stop_token) {
                 unix_time_ms(),
                 runtime_options_.claim_lease_policy.lease_duration.count(),
                 step.retry_safe);
-            const StepClaimAcquireResult acquisition = acquire_step_claim_transaction(
-                claim_path,
-                result_path,
-                proposed_claim,
-                boot_id_);
+            StepClaimAcquireResult acquisition;
+            try {
+                acquisition = acquire_step_claim_transaction(
+                    claim_path,
+                    result_path,
+                    proposed_claim,
+                    boot_id_);
+            } catch (const StepClaimStateError& error) {
+                write_json_atomic(recovery_path, {
+                    {"schema_version", 1},
+                    {"status", "manual_intervention_required"},
+                    {"reason", "claim state failed validation"},
+                    {"error", error.what()},
+                    {"current_boot_id", boot_id_},
+                    {"observed_at", utc_timestamp()},
+                });
+                continue;
+            }
             if (acquisition.status == StepClaimAcquireStatus::Completed ||
                 acquisition.status == StepClaimAcquireStatus::Wait) {
                 continue;

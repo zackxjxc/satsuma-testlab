@@ -348,6 +348,38 @@ void test_concurrent_agents_execute_once(const std::filesystem::path& root) {
         "concurrent Agent result does not belong to the elected claim owner");
 }
 
+// 验证损坏 claim 立即发布人工门禁，而不是执行任务或无限重连。
+void test_invalid_claim_enters_manual_gate(const std::filesystem::path& root) {
+    const std::filesystem::path shared_root = root / L"share";
+    const std::filesystem::path local_work_root = root / L"work";
+    const std::string run_id = "run_invalid_claim";
+    write_echo_run(shared_root, run_id);
+    const std::filesystem::path run_directory = step_root(shared_root, run_id);
+    const std::filesystem::path claim_path =
+        run_directory / L"state" / L"client" / L"echo.claim.json";
+    satsuma::write_json_atomic(
+        claim_path,
+        {{"schema_version", 3}, {"job_id", "job_incomplete"}});
+
+    satsuma::vm::AgentRuntimeOptions options;
+    options.claim_lease_policy = test_policy();
+    satsuma::vm::Agent agent(
+        make_config(shared_root, local_work_root),
+        {},
+        options);
+    expect(agent.run_once() == 0, "Agent executed a step with an invalid persisted claim");
+
+    const std::filesystem::path recovery_path =
+        run_directory / L"state" / L"client" / L"echo.claim-recovery.json";
+    const nlohmann::json recovery = satsuma::load_json(recovery_path);
+    expect(
+        recovery.value("status", std::string{}) == "manual_intervention_required" &&
+            recovery.value("reason", std::string{}) == "claim state failed validation" &&
+            !std::filesystem::exists(
+                run_directory / L"results" / L"client" / L"echo" / L"execution.json"),
+        "invalid claim did not preserve the manual recovery gate");
+}
+
 }  // namespace
 
 // 运行 Agent claim 集成测试并清理专用临时目录。
@@ -364,6 +396,7 @@ int main(const int argc, char* argv[]) {
         test_long_execution_renews_claim(root / L"long-renewal", fixture);
         test_renewal_failure_and_recovery(root / L"failure-recovery", fixture);
         test_concurrent_agents_execute_once(root / L"concurrent-agents");
+        test_invalid_claim_enters_manual_gate(root / L"invalid-claim");
         std::filesystem::remove_all(root);
         std::cout << "SatsumaVmAgentClaimTests passed\n";
         return 0;

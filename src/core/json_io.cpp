@@ -1,8 +1,10 @@
 // JSON 文件读取和原子写入实现。
 #include "satsuma/core/json_io.hpp"
 
+#include <chrono>
 #include <fstream>
 #include <string>
+#include <thread>
 
 #include <windows.h>
 
@@ -16,6 +18,43 @@ namespace {
 // 将 Win32 错误码转换为稳定的错误文本。
 [[nodiscard]] std::string win32_error(const std::string& operation, const DWORD code) {
     return operation + " failed with Win32 error " + std::to_string(code);
+}
+
+constexpr std::chrono::seconds kAtomicReplaceTimeout{2}; // 短于 claim 安全余量和锁等待上限
+constexpr std::chrono::milliseconds kAtomicReplaceRetryDelay{10}; // 替换重试间隔
+
+// 判断目标文件的短暂占用是否允许复用同一临时文件重试。
+[[nodiscard]] bool is_transient_replace_error(const DWORD error) noexcept {
+    return error == ERROR_ACCESS_DENIED ||
+        error == ERROR_SHARING_VIOLATION ||
+        error == ERROR_LOCK_VIOLATION;
+}
+
+// 在有限时间内重试原子替换，兼容共享文件系统延迟释放读取 lease。
+void replace_json_file(
+    const std::filesystem::path& temporary,
+    const std::filesystem::path& destination) {
+    const auto deadline = std::chrono::steady_clock::now() + kAtomicReplaceTimeout;
+    DWORD move_error = ERROR_SUCCESS; // 最后一次 MoveFileExW 错误
+    for (;;) {
+        if (MoveFileExW(
+                temporary.c_str(),
+                destination.c_str(),
+                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+            return;
+        }
+        move_error = GetLastError();
+        if (!is_transient_replace_error(move_error) ||
+            std::chrono::steady_clock::now() >= deadline) {
+            break;
+        }
+        std::this_thread::sleep_for(kAtomicReplaceRetryDelay);
+    }
+
+    DeleteFileW(temporary.c_str());
+    throw Error(win32_error(
+        "MoveFileExW for " + path_to_utf8(destination),
+        move_error));
 }
 
 }  // namespace
@@ -87,14 +126,7 @@ static void write_json_atomic_impl(
         throw Error(win32_error("FlushFileBuffers", flush_error));
     }
 
-    if (!MoveFileExW(
-            temporary.c_str(),
-            path.c_str(),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
-        const DWORD move_error = GetLastError();
-        DeleteFileW(temporary.c_str());
-        throw Error(win32_error("MoveFileExW", move_error));
-    }
+    replace_json_file(temporary, path);
 }
 
 void write_json_atomic(const std::filesystem::path& path, const nlohmann::json& value) {

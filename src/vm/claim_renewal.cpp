@@ -127,6 +127,11 @@ void run_renewal_loop(
             store_renewed_claim(state, std::move(*result.claim));
             last_error.clear();
             delay = state->policy.renewal_interval;
+        } catch (const StepClaimStateError& error) {
+            request_lease_loss(
+                state,
+                "Step claim state failed during renewal: " + std::string(error.what()));
+            return;
         } catch (const std::exception& error) {
             last_error = error.what();
             delay = state->policy.retry_interval;

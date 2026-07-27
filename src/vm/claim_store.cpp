@@ -126,10 +126,22 @@ void validate_proposed_claim(const StepClaimLease& claim) {
     }
 }
 
+// 将锁内无法解析的持久化 claim 转换为可人工门禁的状态错误。
+[[nodiscard]] StepClaimLease load_persisted_claim(
+    const std::filesystem::path& path,
+    const std::string& description) {
+    try {
+        return load_step_claim_lease(path);
+    } catch (const std::exception& error) {
+        throw StepClaimStateError(
+            "Invalid " + description + ": " + error.what());
+    }
+}
+
 // 返回基础 claim 与其 job 唯一 sidecar 合成的当前有效租约。
 [[nodiscard]] StepClaimLease load_effective_claim_unlocked(
     const std::filesystem::path& claim_path) {
-    const StepClaimLease base = load_step_claim_lease(claim_path);
+    const StepClaimLease base = load_persisted_claim(claim_path, "step claim");
     if (base.schema_version != 3) {
         return base;
     }
@@ -139,15 +151,18 @@ void validate_proposed_claim(const StepClaimLease& claim) {
         return base;
     }
     if (!std::filesystem::is_regular_file(renewal_path)) {
-        throw Error("Step claim renewal sidecar is not a regular file");
+        throw StepClaimStateError("Step claim renewal sidecar is not a regular file");
     }
 
-    const StepClaimLease renewal = load_step_claim_lease(renewal_path);
+    const StepClaimLease renewal = load_persisted_claim(
+        renewal_path,
+        "step claim renewal sidecar");
     if (!same_step_claim_owner(base, renewal) ||
         renewal.renewal_sequence <= base.renewal_sequence ||
         renewal.last_renewed_unix_ms < base.last_renewed_unix_ms ||
         renewal.lease_expires_unix_ms <= base.lease_expires_unix_ms) {
-        throw Error("Step claim renewal sidecar does not extend its owning claim");
+        throw StepClaimStateError(
+            "Step claim renewal sidecar does not extend its owning claim");
     }
     return renewal;
 }
@@ -262,22 +277,31 @@ void validate_completed_result(
     const std::filesystem::path& result_path,
     const std::filesystem::path& claim_path,
     const StepClaimLease& proposed_claim) {
-    const nlohmann::json result = load_json(result_path);
-    const std::string result_job_id = result.value("job_id", std::string{});
-    validate_identifier(result_job_id, "canonical result job_id");
-    if (result.value("run_id", std::string{}) != proposed_claim.run_id ||
-        result.value("vm_id", std::string{}) != proposed_claim.vm_id ||
-        result.value("step_id", std::string{}) != proposed_claim.step_id) {
-        throw Error("Canonical step result does not match the requested step");
-    }
-    if (std::filesystem::exists(claim_path)) {
-        if (!std::filesystem::is_regular_file(claim_path)) {
-            throw Error("Step claim path is not a regular file");
+    try {
+        const nlohmann::json result = load_json(result_path);
+        const std::string result_job_id = result.value("job_id", std::string{});
+        validate_identifier(result_job_id, "canonical result job_id");
+        if (result.value("run_id", std::string{}) != proposed_claim.run_id ||
+            result.value("vm_id", std::string{}) != proposed_claim.vm_id ||
+            result.value("step_id", std::string{}) != proposed_claim.step_id) {
+            throw StepClaimStateError(
+                "Canonical step result does not match the requested step");
         }
-        const StepClaimLease owner = load_effective_claim_unlocked(claim_path);
-        if (owner.job_id != result_job_id) {
-            throw Error("Canonical step result does not match the persisted claim owner");
+        if (std::filesystem::exists(claim_path)) {
+            if (!std::filesystem::is_regular_file(claim_path)) {
+                throw StepClaimStateError("Step claim path is not a regular file");
+            }
+            const StepClaimLease owner = load_effective_claim_unlocked(claim_path);
+            if (owner.job_id != result_job_id) {
+                throw StepClaimStateError(
+                    "Canonical step result does not match the persisted claim owner");
+            }
         }
+    } catch (const StepClaimStateError&) {
+        throw;
+    } catch (const std::exception& error) {
+        throw StepClaimStateError(
+            "Invalid canonical step result: " + std::string(error.what()));
     }
 }
 
@@ -333,7 +357,8 @@ StepClaimAcquireResult acquire_step_claim_transaction(
     const std::int64_t now_unix_ms = unix_time_ms(); // 锁内时间用于恢复和新租约
     if (std::filesystem::exists(canonical_result_path)) {
         if (!std::filesystem::is_regular_file(canonical_result_path)) {
-            throw Error("Canonical step result path is not a regular file");
+            throw StepClaimStateError(
+                "Canonical step result path is not a regular file");
         }
         validate_completed_result(canonical_result_path, claim_path, proposed_claim);
         return {StepClaimAcquireStatus::Completed, std::nullopt, std::nullopt};
@@ -350,7 +375,7 @@ StepClaimAcquireResult acquire_step_claim_transaction(
         return {StepClaimAcquireStatus::Acquired, acquired, std::nullopt};
     }
     if (!std::filesystem::is_regular_file(claim_path)) {
-        throw Error("Step claim path is not a regular file");
+        throw StepClaimStateError("Step claim path is not a regular file");
     }
 
     const StepClaimLease existing = load_effective_claim_unlocked(claim_path);

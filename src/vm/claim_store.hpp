@@ -10,8 +10,15 @@
 #include <nlohmann/json_fwd.hpp>
 
 #include "satsuma/core/claim.hpp"
+#include "satsuma/core/errors.hpp"
 
 namespace satsuma::vm {
+
+// 表示锁内读取到的持久化 claim、sidecar 或结果身份不可信。
+class StepClaimStateError : public Error {
+public:
+    using Error::Error;
+};
 
 // 步骤 claim 领取事务的最终状态。
 enum class StepClaimAcquireStatus {

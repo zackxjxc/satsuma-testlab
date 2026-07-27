@@ -195,6 +195,35 @@ void test_ownership_loss_signal(const std::filesystem::path& root) {
     session.finish();
 }
 
+// 验证持久化状态损坏不会作为瞬时 I/O 错误延迟到安全截止。
+void test_invalid_state_signal(const std::filesystem::path& root) {
+    const satsuma::vm::ClaimLeasePolicy policy = test_policy();
+    const std::filesystem::path claim_path = root / L"state" / L"execute.claim.json";
+    const std::filesystem::path result_path = root / L"results" / L"execution.json";
+    const satsuma::StepClaimLease owner = acquire_claim(
+        claim_path,
+        result_path,
+        policy,
+        "job_invalid_state");
+    satsuma::vm::ClaimRenewalSession session(
+        claim_path,
+        owner,
+        policy,
+        [](const std::filesystem::path&, const satsuma::StepClaimLease&, std::int64_t)
+            -> satsuma::vm::StepClaimRenewResult {
+            throw satsuma::vm::StepClaimStateError("injected invalid sidecar");
+        });
+    expect(
+        wait_for_condition(
+            [&] { return session.lease_loss_token().stop_requested(); },
+            policy.renewal_interval * 2),
+        "invalid persisted claim state did not stop renewal immediately");
+    expect(
+        session.loss_reason().find("injected invalid sidecar") != std::string::npos,
+        "invalid claim state signal omitted the validation error");
+    session.finish();
+}
+
 // 验证持续 I/O 失败会在持久化租约到期前进入安全取消。
 void test_safety_deadline(const std::filesystem::path& root) {
     satsuma::vm::ClaimLeasePolicy policy = test_policy();
@@ -242,6 +271,7 @@ int main() {
         test_continuous_renewal(root / L"continuous");
         test_transient_failure_recovery(root / L"transient");
         test_ownership_loss_signal(root / L"ownership-loss");
+        test_invalid_state_signal(root / L"invalid-state");
         test_safety_deadline(root / L"safety-deadline");
         std::filesystem::remove_all(root);
         std::cout << "SatsumaVmClaimRenewalTests passed\n";
