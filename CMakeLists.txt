@@ -14,6 +14,11 @@ option(
     "Expose the explicitly confirmed real Host/Agent crash recovery target"
     OFF
 )
+option(
+    SATSUMA_ENABLE_REAL_VMWARE_FAULT_RECOVERY
+    "Expose the explicitly confirmed real VMware fault recovery target"
+    OFF
+)
 set(SATSUMA_REAL_LAB_CONFIG "" CACHE FILEPATH "lab.json used by real VMware targets")
 set(SATSUMA_REAL_VM_ID "" CACHE STRING "VM ID used by real VMware targets")
 set(SATSUMA_REAL_SNAPSHOT "" CACHE STRING "Snapshot restored by the real VMware smoke target")
@@ -34,6 +39,24 @@ set(
     ""
     CACHE STRING
     "Explicit confirmation for Host and Agent forced termination"
+)
+set(
+    SATSUMA_REAL_FAULT_TIMEOUT_SECONDS
+    300
+    CACHE STRING
+    "Per-process timeout for real VMware fault recovery"
+)
+set(
+    SATSUMA_REAL_SHARED_OUTAGE_SECONDS
+    35
+    CACHE STRING
+    "Runtime Shared Folder outage duration"
+)
+set(
+    SATSUMA_REAL_FAULT_CONFIRM
+    ""
+    CACHE STRING
+    "Explicit confirmation for real VMware runtime fault injection"
 )
 
 if(MSVC)

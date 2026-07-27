@@ -85,6 +85,28 @@ cmake --build --preset windows-release --target SatsumaRealVmwareCrashRecovery
 `archive_root/validation/real-crash-*/summary.json`，失败运行、claim、partial 日志和归档不会自动删除。
 该目标使用 `leave_running`，不会恢复或删除快照；测试前必须保证没有另一台 Agent 使用相同 `vm_id`。
 
+### 真实 Shared Folder 瞬断恢复验收
+
+故障恢复目标默认不存在，也不注册为普通 `ctest`。它要求正在运行并通过 `check` 的专用 VM、PowerShell
+7 和独立确认串。驱动发布一个 90 秒 retry-safe Fixture，观察 schema v3 claim 和首次续租后，通过
+`vmrun disableSharedFolders <vmx> runtime` 关闭 35 秒，再在 `finally` 中执行对应 enable。它不修改 VM
+电源、快照、网络设备或防火墙。
+
+```text
+cmake --preset windows-default ^
+  -DSATSUMA_ENABLE_REAL_VMWARE_FAULT_RECOVERY=ON ^
+  -DSATSUMA_REAL_LAB_CONFIG=E:/work/satsuma-testlab/lab.local.json ^
+  -DSATSUMA_REAL_VM_ID=client ^
+  -DSATSUMA_REAL_SHARED_OUTAGE_SECONDS=35 ^
+  -DSATSUMA_REAL_FAULT_CONFIRM=I_UNDERSTAND_SHARED_FOLDER_WILL_BE_TEMPORARILY_DISABLED
+cmake --build --preset windows-release --target SatsumaRealVmwareFaultRecovery
+```
+
+通过条件包括：outage 内 presence 与续租文件停止变化；恢复后同一 job、boot 和 `attempt 1` 继续续租；
+只发布一份成功规范结果且没有归档旧 claim；最终 `check` 返回 `ready`。摘要和 Host stdout/stderr 保存到
+`archive_root/validation/real-fault-*/summary.json`。失败证据不会自动删除；enable 失败时驱动立即停止并
+报告，不能循环重试或继续其他故障注入。
+
 ## 环境准备
 
 1. 安装 VMware Workstation 和 VMware Tools。

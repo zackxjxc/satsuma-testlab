@@ -147,6 +147,9 @@ SatsumaHost.exe orchestrate --config lab.local.json --plan <task.json> --timeout
   `collecting_evidence` 可继续处理，已有终态幂等返回，其他非终态必须转入人工门禁。
 - 真实崩溃恢复只使用默认关闭的 `SatsumaRealVmwareCrashRecovery` 目标，并要求专用 VM、唯一 Agent
   `vm_id` 和精确确认串。普通构建或 `ctest` 不得触发 Host/Agent 强杀。
+- 真实 Shared Folder 瞬断只使用默认关闭的 `SatsumaRealVmwareFaultRecovery` 目标；必须先通过主动检测，
+  使用精确确认串，并确认没有另一台 Agent 复用同一 `vm_id`。普通构建或 `ctest` 不得改变 runtime
+  Shared Folder 状态。
 - 任一带外操作失败时停止自动测试，保留错误输出，并要求用户处理 VMware 环境。
 - 被测程序只能在隔离 VM 中执行，不在 Host 添加运行被测 exe 的旁路命令。
 
