@@ -20,6 +20,21 @@ endif()
 add_test(NAME SatsumaCoreTests COMMAND SatsumaCoreTests)
 
 add_executable(
+    SatsumaVmClaimStoreTests
+    claim_store_tests.cpp
+    ../src/vm/claim_store.cpp
+)
+target_include_directories(SatsumaVmClaimStoreTests PRIVATE ../src/vm)
+target_link_libraries(SatsumaVmClaimStoreTests PRIVATE SatsumaCore)
+if(MSVC)
+    target_compile_options(
+        SatsumaVmClaimStoreTests
+        PRIVATE /W4 /permissive- /utf-8 /EHsc /external:anglebrackets /external:W0
+    )
+endif()
+add_test(NAME SatsumaVmClaimStoreTests COMMAND SatsumaVmClaimStoreTests)
+
+add_executable(
     SatsumaHostUpdateTests
     host_update_tests.cpp
     ../src/host/controller.cpp

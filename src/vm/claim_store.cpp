@@ -1,0 +1,426 @@
+// VM Agent claim 文件事务、续租 sidecar 和结果 fencing 实现。
+#include "claim_store.hpp"
+
+#include <chrono>
+#include <limits>
+#include <string>
+#include <thread>
+#include <utility>
+
+#include <nlohmann/json.hpp>
+#include <windows.h>
+
+#include "satsuma/core/errors.hpp"
+#include "satsuma/core/id.hpp"
+#include "satsuma/core/json_io.hpp"
+#include "satsuma/core/path.hpp"
+
+namespace satsuma::vm {
+namespace {
+
+constexpr std::chrono::seconds kClaimLockTimeout{5}; // 短事务锁最长等待时间
+constexpr std::chrono::milliseconds kClaimLockRetryDelay{10}; // 锁冲突重试间隔
+
+// 自动关闭 claim 事务使用的 Win32 HANDLE。
+class UniqueHandle {
+public:
+    // 接管一个可空 Win32 HANDLE。
+    explicit UniqueHandle(HANDLE value = nullptr) noexcept : value_(value) {}
+
+    UniqueHandle(const UniqueHandle&) = delete;
+    UniqueHandle& operator=(const UniqueHandle&) = delete;
+
+    // 支持转移 HANDLE 所有权。
+    UniqueHandle(UniqueHandle&& other) noexcept : value_(other.release()) {}
+
+    // 关闭旧 HANDLE 后接管新值。
+    UniqueHandle& operator=(UniqueHandle&& other) noexcept {
+        if (this != &other) {
+            reset(other.release());
+        }
+        return *this;
+    }
+
+    // 离开作用域时关闭有效 HANDLE。
+    ~UniqueHandle() {
+        reset();
+    }
+
+    // 返回底层 HANDLE 是否有效。
+    [[nodiscard]] explicit operator bool() const noexcept {
+        return value_ != nullptr && value_ != INVALID_HANDLE_VALUE;
+    }
+
+    // 放弃所有权但不关闭 HANDLE。
+    [[nodiscard]] HANDLE release() noexcept {
+        const HANDLE value = value_;
+        value_ = nullptr;
+        return value;
+    }
+
+    // 关闭旧 HANDLE 并保存新值。
+    void reset(HANDLE value = nullptr) noexcept {
+        if (value_ != nullptr && value_ != INVALID_HANDLE_VALUE) {
+            CloseHandle(value_);
+        }
+        value_ = value;
+    }
+
+private:
+    HANDLE value_; // 被管理的锁文件 HANDLE
+};
+
+// 将 Win32 错误码转换为稳定错误文本。
+[[nodiscard]] std::string win32_error(const std::string& operation, const DWORD code) {
+    return operation + " failed with Win32 error " + std::to_string(code);
+}
+
+// 获取按步骤持久化的短时独占锁。
+[[nodiscard]] UniqueHandle acquire_claim_lock(
+    const std::filesystem::path& claim_path,
+    const bool create_parent) {
+    const std::filesystem::path parent = claim_path.parent_path();
+    if (!parent.empty()) {
+        if (create_parent) {
+            std::filesystem::create_directories(parent);
+        } else if (!std::filesystem::is_directory(parent)) {
+            throw Error("Step claim parent directory does not exist: " + path_to_utf8(parent));
+        }
+    }
+
+    const std::filesystem::path lock_path = step_claim_lock_path(claim_path);
+    const auto deadline = std::chrono::steady_clock::now() + kClaimLockTimeout;
+    for (;;) {
+        UniqueHandle lock(CreateFileW(
+            lock_path.c_str(),
+            GENERIC_READ | GENERIC_WRITE,
+            0,
+            nullptr,
+            OPEN_ALWAYS,
+            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH,
+            nullptr));
+        if (lock) {
+            return lock;
+        }
+
+        const DWORD error = GetLastError();
+        if (error != ERROR_SHARING_VIOLATION ||
+            std::chrono::steady_clock::now() >= deadline) {
+            throw Error(win32_error("CreateFileW(step claim lock)", error));
+        }
+        std::this_thread::sleep_for(kClaimLockRetryDelay);
+    }
+}
+
+// 检查一份新 claim 是否为尚未续租的 schema v3 基础记录。
+void validate_proposed_claim(const StepClaimLease& claim) {
+    const StepClaimLease validated = nlohmann::json(claim).get<StepClaimLease>();
+    if (validated.schema_version != 3 ||
+        validated.attempt != 1 ||
+        validated.renewal_sequence != 0 ||
+        validated.last_renewed_at != validated.claimed_at ||
+        validated.last_renewed_unix_ms != validated.claimed_unix_ms) {
+        throw Error("Proposed step claim must be an initial schema version 3 lease");
+    }
+}
+
+// 返回基础 claim 与其 job 唯一 sidecar 合成的当前有效租约。
+[[nodiscard]] StepClaimLease load_effective_claim_unlocked(
+    const std::filesystem::path& claim_path) {
+    const StepClaimLease base = load_step_claim_lease(claim_path);
+    if (base.schema_version != 3) {
+        return base;
+    }
+
+    const std::filesystem::path renewal_path = step_claim_renewal_path(claim_path, base);
+    if (!std::filesystem::exists(renewal_path)) {
+        return base;
+    }
+    if (!std::filesystem::is_regular_file(renewal_path)) {
+        throw Error("Step claim renewal sidecar is not a regular file");
+    }
+
+    const StepClaimLease renewal = load_step_claim_lease(renewal_path);
+    if (!same_step_claim_owner(base, renewal) ||
+        renewal.renewal_sequence <= base.renewal_sequence ||
+        renewal.last_renewed_unix_ms < base.last_renewed_unix_ms ||
+        renewal.lease_expires_unix_ms <= base.lease_expires_unix_ms) {
+        throw Error("Step claim renewal sidecar does not extend its owning claim");
+    }
+    return renewal;
+}
+
+// 使用请求身份和指定 attempt 创建一份时间窗口刷新的基础 claim。
+[[nodiscard]] StepClaimLease make_acquired_claim(
+    const StepClaimLease& proposed_claim,
+    const std::int64_t claimed_unix_ms,
+    const std::uint32_t attempt) {
+    const std::int64_t lease_duration_ms =
+        proposed_claim.lease_expires_unix_ms - proposed_claim.claimed_unix_ms;
+    return make_step_claim_lease(
+        proposed_claim.run_id,
+        proposed_claim.vm_id,
+        proposed_claim.step_id,
+        proposed_claim.job_id,
+        proposed_claim.session_id,
+        proposed_claim.boot_id,
+        claimed_unix_ms,
+        lease_duration_ms,
+        proposed_claim.retry_safe,
+        attempt);
+}
+
+// 返回不会与其他事务临时文件冲突的待发布路径。
+[[nodiscard]] std::filesystem::path make_staged_claim_path(
+    const std::filesystem::path& claim_path) {
+    std::filesystem::path staged_path = claim_path;
+    staged_path += path_from_utf8(".pending-" + make_id("claim"));
+    return staged_path;
+}
+
+// 将完整 JSON 先写到唯一文件，供锁内原子重命名发布。
+[[nodiscard]] std::filesystem::path stage_claim_json(
+    const std::filesystem::path& claim_path,
+    const StepClaimLease& claim) {
+    const std::filesystem::path staged_path = make_staged_claim_path(claim_path);
+    write_json_atomic_existing_parent(staged_path, claim);
+    return staged_path;
+}
+
+// 尽力删除未发布的事务临时文件。
+void remove_file_best_effort(const std::filesystem::path& path) noexcept {
+    std::error_code error;
+    std::filesystem::remove(path, error);
+}
+
+// 将待发布文件原子移动到当前不存在的 claim 路径。
+void publish_staged_claim(
+    const std::filesystem::path& staged_path,
+    const std::filesystem::path& claim_path) {
+    if (!MoveFileExW(staged_path.c_str(), claim_path.c_str(), MOVEFILE_WRITE_THROUGH)) {
+        const DWORD error = GetLastError();
+        remove_file_best_effort(staged_path);
+        throw Error(win32_error("MoveFileExW(publish step claim)", error));
+    }
+}
+
+// 返回保留原 attempt 和唯一取证 ID 的过期 claim 路径。
+[[nodiscard]] std::filesystem::path make_archived_claim_path(
+    const std::filesystem::path& claim_path,
+    const std::uint32_t attempt) {
+    std::filesystem::path archived_path = claim_path;
+    archived_path += path_from_utf8(
+        ".expired-attempt-" + std::to_string(attempt) + "-" + make_id("claim"));
+    return archived_path;
+}
+
+// 在锁内归档旧 claim，并在发布失败时恢复旧所有权记录。
+void replace_expired_claim(
+    const std::filesystem::path& claim_path,
+    const std::filesystem::path& archived_path,
+    const std::filesystem::path& staged_path) {
+    if (!MoveFileExW(claim_path.c_str(), archived_path.c_str(), MOVEFILE_WRITE_THROUGH)) {
+        const DWORD error = GetLastError();
+        remove_file_best_effort(staged_path);
+        throw Error(win32_error("MoveFileExW(archive expired step claim)", error));
+    }
+    if (MoveFileExW(staged_path.c_str(), claim_path.c_str(), MOVEFILE_WRITE_THROUGH)) {
+        return;
+    }
+
+    const DWORD publish_error = GetLastError();
+    const BOOL restored = MoveFileExW(
+        archived_path.c_str(),
+        claim_path.c_str(),
+        MOVEFILE_WRITE_THROUGH);
+    const DWORD restore_error = restored ? ERROR_SUCCESS : GetLastError();
+    remove_file_best_effort(staged_path);
+    if (!restored) {
+        throw Error(
+            win32_error("MoveFileExW(publish recovered step claim)", publish_error) +
+            "; " + win32_error("MoveFileExW(restore expired step claim)", restore_error));
+    }
+    throw Error(win32_error("MoveFileExW(publish recovered step claim)", publish_error));
+}
+
+// 检查 canonical 结果中的稳定身份是否与 claim 完全一致。
+void validate_result_owner(
+    const nlohmann::json& result,
+    const StepClaimLease& expected_owner) {
+    if (result.value("run_id", std::string{}) != expected_owner.run_id ||
+        result.value("vm_id", std::string{}) != expected_owner.vm_id ||
+        result.value("step_id", std::string{}) != expected_owner.step_id ||
+        result.value("job_id", std::string{}) != expected_owner.job_id) {
+        throw Error("Canonical step result does not match its claim owner");
+    }
+}
+
+// 验证已存在的 canonical 结果确实属于当前步骤及持久化 owner。
+void validate_completed_result(
+    const std::filesystem::path& result_path,
+    const std::filesystem::path& claim_path,
+    const StepClaimLease& proposed_claim) {
+    const nlohmann::json result = load_json(result_path);
+    const std::string result_job_id = result.value("job_id", std::string{});
+    validate_identifier(result_job_id, "canonical result job_id");
+    if (result.value("run_id", std::string{}) != proposed_claim.run_id ||
+        result.value("vm_id", std::string{}) != proposed_claim.vm_id ||
+        result.value("step_id", std::string{}) != proposed_claim.step_id) {
+        throw Error("Canonical step result does not match the requested step");
+    }
+    if (std::filesystem::exists(claim_path)) {
+        if (!std::filesystem::is_regular_file(claim_path)) {
+            throw Error("Step claim path is not a regular file");
+        }
+        const StepClaimLease owner = load_effective_claim_unlocked(claim_path);
+        if (owner.job_id != result_job_id) {
+            throw Error("Canonical step result does not match the persisted claim owner");
+        }
+    }
+}
+
+}  // namespace
+
+std::filesystem::path step_claim_lock_path(const std::filesystem::path& claim_path) {
+    std::filesystem::path lock_path = claim_path;
+    lock_path.replace_extension(L".lock");
+    return lock_path;
+}
+
+StepClaimAcquireResult acquire_step_claim_transaction(
+    const std::filesystem::path& claim_path,
+    const std::filesystem::path& canonical_result_path,
+    const StepClaimLease& proposed_claim,
+    const std::string& current_boot_id) {
+    validate_proposed_claim(proposed_claim);
+    if (proposed_claim.boot_id != current_boot_id) {
+        throw Error("Proposed step claim boot identity does not match the current Agent");
+    }
+
+    const UniqueHandle lock = acquire_claim_lock(claim_path, true);
+    const std::int64_t now_unix_ms = unix_time_ms(); // 锁内时间用于恢复和新租约
+    if (std::filesystem::exists(canonical_result_path)) {
+        if (!std::filesystem::is_regular_file(canonical_result_path)) {
+            throw Error("Canonical step result path is not a regular file");
+        }
+        validate_completed_result(canonical_result_path, claim_path, proposed_claim);
+        return {StepClaimAcquireStatus::Completed, std::nullopt, std::nullopt};
+    }
+
+    if (!std::filesystem::exists(claim_path)) {
+        const StepClaimLease acquired = make_acquired_claim(proposed_claim, now_unix_ms, 1);
+        const std::filesystem::path renewal_path = step_claim_renewal_path(claim_path, acquired);
+        if (std::filesystem::exists(renewal_path)) {
+            throw Error("A renewal sidecar already exists for a new step claim job");
+        }
+        const std::filesystem::path staged_path = stage_claim_json(claim_path, acquired);
+        publish_staged_claim(staged_path, claim_path);
+        return {StepClaimAcquireStatus::Acquired, acquired, std::nullopt};
+    }
+    if (!std::filesystem::is_regular_file(claim_path)) {
+        throw Error("Step claim path is not a regular file");
+    }
+
+    const StepClaimLease existing = load_effective_claim_unlocked(claim_path);
+    const ClaimRecoveryDecision decision = evaluate_claim_recovery(
+        existing,
+        now_unix_ms);
+    if (decision == ClaimRecoveryDecision::Wait) {
+        return {StepClaimAcquireStatus::Wait, existing, std::nullopt};
+    }
+    if (decision == ClaimRecoveryDecision::ManualInterventionRequired) {
+        return {
+            StepClaimAcquireStatus::ManualInterventionRequired,
+            existing,
+            std::nullopt,
+        };
+    }
+    if (existing.attempt == std::numeric_limits<std::uint32_t>::max()) {
+        throw Error("Step claim attempt limit has been reached");
+    }
+
+    const StepClaimLease acquired = make_acquired_claim(
+        proposed_claim,
+        now_unix_ms,
+        existing.attempt + 1);
+    const std::filesystem::path acquired_renewal_path =
+        step_claim_renewal_path(claim_path, acquired);
+    if (std::filesystem::exists(acquired_renewal_path)) {
+        throw Error("A renewal sidecar already exists for the recovered step claim job");
+    }
+
+    const std::filesystem::path staged_path = stage_claim_json(claim_path, acquired);
+    const std::filesystem::path archived_path =
+        make_archived_claim_path(claim_path, existing.attempt);
+    replace_expired_claim(claim_path, archived_path, staged_path);
+    return {StepClaimAcquireStatus::Acquired, acquired, archived_path};
+}
+
+StepClaimLease renew_step_claim_transaction(
+    const std::filesystem::path& claim_path,
+    const StepClaimLease& expected_owner,
+    const std::int64_t lease_duration_ms) {
+    const UniqueHandle lock = acquire_claim_lock(claim_path, false);
+    if (!std::filesystem::is_regular_file(claim_path)) {
+        throw Error("Step claim ownership was lost before renewal");
+    }
+
+    const StepClaimLease current = load_effective_claim_unlocked(claim_path);
+    if (current.schema_version != 3 ||
+        !same_step_claim_owner(current, expected_owner)) {
+        throw Error("Step claim ownership was lost before renewal");
+    }
+
+    const std::int64_t renewed_unix_ms = unix_time_ms(); // 禁止用锁外旧时间复活租约
+    const StepClaimLease renewed = renew_step_claim_lease(
+        current,
+        renewed_unix_ms,
+        lease_duration_ms);
+    if (renewed.lease_expires_unix_ms <= current.lease_expires_unix_ms) {
+        throw Error("Step claim renewal must extend the current lease deadline");
+    }
+    write_json_atomic_existing_parent(
+        step_claim_renewal_path(claim_path, current),
+        renewed);
+    return renewed;
+}
+
+StepClaimLease load_effective_step_claim(const std::filesystem::path& claim_path) {
+    const UniqueHandle lock = acquire_claim_lock(claim_path, false);
+    if (!std::filesystem::is_regular_file(claim_path)) {
+        throw Error("Step claim does not exist");
+    }
+    return load_effective_claim_unlocked(claim_path);
+}
+
+StepResultPublishStatus publish_step_result_if_owned(
+    const std::filesystem::path& claim_path,
+    const StepClaimLease& expected_owner,
+    const std::filesystem::path& canonical_result_path,
+    const nlohmann::json& result) {
+    validate_result_owner(result, expected_owner);
+    const UniqueHandle lock = acquire_claim_lock(claim_path, false);
+    if (!std::filesystem::is_regular_file(claim_path)) {
+        return StepResultPublishStatus::OwnershipLost;
+    }
+
+    const StepClaimLease current = load_effective_claim_unlocked(claim_path);
+    if (!same_step_claim_owner(current, expected_owner)) {
+        return StepResultPublishStatus::OwnershipLost;
+    }
+    const std::int64_t now_unix_ms = unix_time_ms(); // 锁内截止时间决定发布权
+    if (now_unix_ms >= current.lease_expires_unix_ms) {
+        return StepResultPublishStatus::LeaseExpired;
+    }
+
+    if (std::filesystem::is_regular_file(canonical_result_path)) {
+        const nlohmann::json existing_result = load_json(canonical_result_path);
+        if (existing_result.value("job_id", std::string{}) != expected_owner.job_id) {
+            throw Error("Canonical step result is already owned by another job");
+        }
+    }
+    write_json_atomic_existing_parent(canonical_result_path, result);
+    return StepResultPublishStatus::Published;
+}
+
+}  // namespace satsuma::vm
