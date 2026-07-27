@@ -535,10 +535,58 @@ void test_claim_recovery_decision(const std::filesystem::path& root) {
             satsuma::ClaimRecoveryDecision::ManualInterventionRequired,
         "unsafe expired claim did not preserve the manual gate");
 
+    const satsuma::StepClaimLease renewed =
+        satsuma::renew_step_claim_lease(safe, 2'000, 5'000);
+    expect(
+        satsuma::same_step_claim_owner(safe, renewed) &&
+            renewed.last_renewed_unix_ms == 2'000 &&
+            renewed.lease_expires_unix_ms == 7'000 &&
+            renewed.renewal_sequence == 1,
+        "claim renewal changed ownership or did not extend the lease");
+    expect_error(
+        [&safe] {
+            static_cast<void>(satsuma::renew_step_claim_lease(safe, 6'000, 5'000));
+        },
+        "expired claim lease was renewed");
+    expect_error(
+        [&safe] {
+            static_cast<void>(satsuma::renew_step_claim_lease(safe, 1'000, 6'000));
+        },
+        "claim renewal accepted a repeated timestamp");
+    expect_error(
+        [&safe] {
+            static_cast<void>(satsuma::renew_step_claim_lease(safe, 2'000, 3'000));
+        },
+        "claim renewal shortened the lease expiry");
+    satsuma::StepClaimLease other_owner = renewed;
+    other_owner.job_id = "job_other";
+    expect(
+        !satsuma::same_step_claim_owner(renewed, other_owner),
+        "claim ownership comparison ignored the job ID");
+
     const std::filesystem::path claim_path = root / L"claim" / L"step.claim.json";
     satsuma::write_json_atomic(claim_path, safe);
     const satsuma::StepClaimLease loaded = satsuma::load_step_claim_lease(claim_path);
-    expect(loaded.attempt == 1 && loaded.lease_expires_unix_ms == 6'000, "claim lease round trip failed");
+    expect(
+        loaded.attempt == 1 && loaded.lease_expires_unix_ms == 6'000 &&
+            loaded.last_renewed_unix_ms == 1'000 && loaded.renewal_sequence == 0,
+        "claim lease round trip failed");
+    expect(
+        satsuma::step_claim_renewal_path(claim_path, renewed).filename() ==
+            L"echo.claim-renewal-job_claim.json",
+        "claim renewal sidecar path did not bind the step and job IDs");
+
+    nlohmann::json legacy = safe;
+    legacy["schema_version"] = 2;
+    legacy.erase("last_renewed_at");
+    legacy.erase("last_renewed_unix_ms");
+    legacy.erase("renewal_sequence");
+    const satsuma::StepClaimLease compatible = legacy.get<satsuma::StepClaimLease>();
+    expect(
+        compatible.last_renewed_at == compatible.claimed_at &&
+            compatible.last_renewed_unix_ms == compatible.claimed_unix_ms &&
+            compatible.renewal_sequence == 0,
+        "legacy claim lease did not receive renewal defaults");
 }
 
 // 验证 RPC 请求的版本、实验室和状态边界。

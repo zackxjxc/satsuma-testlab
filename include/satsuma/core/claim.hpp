@@ -18,7 +18,7 @@ enum class ClaimRecoveryDecision {
 
 // Agent 为一次步骤领取持久化的有限租约。
 struct StepClaimLease {
-    int schema_version{2};               // claim schema 版本
+    int schema_version{3};               // claim schema 版本
     std::string run_id;                  // 对应运行 ID
     std::string vm_id;                   // 目标虚拟机 ID
     std::string step_id;                 // 对应步骤 ID
@@ -27,7 +27,10 @@ struct StepClaimLease {
     std::string boot_id;                 // 领取 Agent 启动 ID
     std::string claimed_at;              // 便于取证的 UTC 时间
     std::int64_t claimed_unix_ms{0};     // 领取时间戳
+    std::string last_renewed_at;         // 最近一次续租 UTC 时间
+    std::int64_t last_renewed_unix_ms{0}; // 最近一次续租时间戳
     std::int64_t lease_expires_unix_ms{0}; // 租约截止时间戳
+    std::uint32_t renewal_sequence{0};   // 从 0 开始的续租序号
     bool retry_safe{false};              // 到期且身份变化后是否允许重试
     std::uint32_t attempt{1};            // 从 1 开始的执行尝试次数
 };
@@ -47,6 +50,22 @@ struct StepClaimLease {
     std::int64_t lease_duration_ms,
     bool retry_safe,
     std::uint32_t attempt = 1);
+
+// 在原所有权不变的前提下延长一份尚未到期的步骤租约。
+[[nodiscard]] StepClaimLease renew_step_claim_lease(
+    const StepClaimLease& claim,
+    std::int64_t renewed_unix_ms,
+    std::int64_t lease_duration_ms);
+
+// 返回两份租约是否属于同一次步骤领取。
+[[nodiscard]] bool same_step_claim_owner(
+    const StepClaimLease& left,
+    const StepClaimLease& right) noexcept;
+
+// 返回当前 job 独占的续租 sidecar 路径。
+[[nodiscard]] std::filesystem::path step_claim_renewal_path(
+    const std::filesystem::path& claim_path,
+    const StepClaimLease& claim);
 
 // 根据时间与当前启动身份决定等待、重试或转人工门禁。
 [[nodiscard]] ClaimRecoveryDecision evaluate_claim_recovery(
