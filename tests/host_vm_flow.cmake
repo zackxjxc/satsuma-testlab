@@ -269,6 +269,34 @@ if(NOT EXISTS "${archive_path}/runs/orchestration_run/evidence/main/task.json" O
     message(FATAL_ERROR "SatsumaHost orchestrate did not archive main and finally evidence")
 endif()
 
+# 编排总等待可超过 300 秒，但 Agent 诊断仍使用自身受支持的有限上限。
+string(REPLACE
+    "orchestration_run"
+    "orchestration_long_timeout"
+    long_timeout_task_json
+    "${orchestration_task_json}")
+file(WRITE "${TEST_ROOT}/orchestration-long-timeout.json" "${long_timeout_task_json}")
+set(long_timeout_state "${archive_path}/runs/orchestration_long_timeout/lifecycle.json")
+execute_process(
+    COMMAND "${CMAKE_COMMAND}"
+        "-DVM_EXE=${VM_EXE}"
+        "-DAGENT_CONFIG=${TEST_ROOT}/agent.json"
+        "-DLIFECYCLE_STATE=${long_timeout_state}"
+        -P "${CMAKE_CURRENT_LIST_DIR}/run_agent_until_lifecycle_terminal.cmake"
+    COMMAND "${HOST_EXE}" orchestrate
+        --config "${TEST_ROOT}/lab.json"
+        --plan "${TEST_ROOT}/orchestration-long-timeout.json"
+        --timeout-seconds 301
+    RESULTS_VARIABLE long_timeout_results
+    OUTPUT_VARIABLE long_timeout_output
+    ERROR_VARIABLE long_timeout_error
+)
+if(NOT long_timeout_results STREQUAL "0;0")
+    message(FATAL_ERROR
+        "Orchestration rejected a valid timeout above the diagnostic limit "
+        "(${long_timeout_results}): ${long_timeout_error}\n${long_timeout_output}")
+endif()
+
 # 已完成的同一编排再次调用时只返回持久化终态，不重复执行任务或清理策略。
 execute_process(
     COMMAND "${HOST_EXE}" orchestrate

@@ -159,6 +159,12 @@ function Start-CapturedHost {
     foreach ($argument in $ProcessArguments) {
         [void]$startInfo.ArgumentList.Add($argument)
     }
+    $startPath = [System.IO.Path]::GetFullPath($startInfo.FileName)
+    if (-not $startPath.Equals(
+            $script:resolvedHostExe,
+            [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Process start path does not match SatsumaHost for $Label"
+    }
 
     $process = [System.Diagnostics.Process]::new()
     $process.StartInfo = $startInfo
@@ -166,11 +172,6 @@ function Start-CapturedHost {
         throw "Failed to start SatsumaHost for $Label"
     }
     try {
-        if (-not [System.IO.Path]::GetFullPath($process.MainModule.FileName).Equals(
-                $script:resolvedHostExe,
-                [System.StringComparison]::OrdinalIgnoreCase)) {
-            throw "Started process path does not match SatsumaHost for $Label"
-        }
         $stdoutTask = $process.StandardOutput.ReadToEndAsync()
         $stderrTask = $process.StandardError.ReadToEndAsync()
         return [pscustomobject]@{
@@ -202,10 +203,10 @@ function Complete-CapturedHost {
         [int]$TimeoutSeconds
     )
 
-    if (-not $Handle.Process.WaitForExit($TimeoutSeconds * 1000)) {
+    $timedOut = -not $Handle.Process.WaitForExit($TimeoutSeconds * 1000)
+    if ($timedOut) {
         $Handle.Process.Kill($true)
         [void]$Handle.Process.WaitForExit(10000)
-        throw "SatsumaHost timed out for $($Handle.Label)"
     }
     $stdout = $Handle.StdoutTask.GetAwaiter().GetResult()
     $stderr = $Handle.StderrTask.GetAwaiter().GetResult()
@@ -220,6 +221,9 @@ function Complete-CapturedHost {
         StderrPath = $Handle.StderrPath
     }
     $Handle.Process.Dispose()
+    if ($timedOut) {
+        throw "SatsumaHost timed out for $($Handle.Label); stdout: $($result.StdoutPath); stderr: $($result.StderrPath)"
+    }
     return $result
 }
 
@@ -274,7 +278,9 @@ function Invoke-HostCommand {
         -EvidenceDirectory $script:validationRoot
     $result = Complete-CapturedHost -Handle $handle -TimeoutSeconds $TimeoutSeconds
     if ($ExpectedExitCodes -notcontains $result.ExitCode) {
-        throw "Unexpected SatsumaHost exit code $($result.ExitCode) for $Label`: $($result.Stderr)"
+        $message = "Unexpected SatsumaHost exit code $($result.ExitCode) for $Label" +
+            "; stdout: $($result.StdoutPath); stderr: $($result.StderrPath)"
+        throw $message
     }
     return $result
 }
@@ -329,15 +335,26 @@ function Wait-ForLifecyclePhase {
         [int]$TimeoutSeconds
     )
 
-    return Wait-ForCondition -TimeoutSeconds $TimeoutSeconds -Description "lifecycle phase $Phase" -Probe {
+    $observed = Wait-ForCondition `
+        -TimeoutSeconds $TimeoutSeconds `
+        -Description "lifecycle phase $Phase" `
+        -Probe {
         if (Test-Path -LiteralPath $LifecyclePath -PathType Leaf) {
             $state = Read-JsonFile -Path $LifecyclePath
             if ($state.phase -ceq $Phase) {
-                return $state
+                return [pscustomobject]@{Matched = $true; State = $state}
+            }
+            if (@('completed', 'failed', 'recovery_failed', 'manual_intervention_required') -contains
+                $state.phase) {
+                return [pscustomobject]@{Matched = $false; State = $state}
             }
         }
         return $false
     }
+    if (-not $observed.Matched) {
+        throw "Lifecycle reached $($observed.State.phase) before expected phase $Phase"
+    }
+    return $observed.State
 }
 
 # 等待 claim 和至少一份不可变续租 sidecar。
@@ -355,6 +372,9 @@ function Wait-ForClaimRenewal {
             return Read-JsonFile -Path $ClaimPath
         }
         return $false
+    }
+    if ([int]$claim.schema_version -ne 3) {
+        throw "Real crash recovery requires claim schema 3; update the Guest Agent before testing"
     }
     $parent = Split-Path -Parent $ClaimPath
     $filter = "crash_step.claim-renewal-$($claim.job_id)-*.json"

@@ -539,7 +539,12 @@ nlohmann::json Orchestrator::execute(
                 utc_timestamp(),
                 "wait for Agent diagnostic echo");
             Diagnostics diagnostics(config_);
-            const nlohmann::json diagnostic = diagnostics.run_probe(vm->id, timeout);
+            const std::chrono::seconds diagnostic_timeout = std::min(
+                timeout,
+                std::chrono::seconds(300)); // 编排总等待可超过独立诊断上限
+            const nlohmann::json diagnostic = diagnostics.run_probe(
+                vm->id,
+                diagnostic_timeout);
             output["diagnostic"] = diagnostic;
             if (diagnostic.at("status") != "ready") {
                 throw Error("Agent diagnostic did not return ready");
