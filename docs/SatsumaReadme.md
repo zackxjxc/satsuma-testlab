@@ -3,7 +3,19 @@
 Satsuma 在 Windows 宿主机与 VMware 测试虚拟机之间物化任务、部署 Artifact、执行程序并保存证据。
 它只报告通信、执行和恢复状态，不判断被测程序的业务结果是否正确。
 
-## 当前已实现增量
+## 适用范围
+
+Satsuma 面向可信、单用户 Host 上的可丢弃 Windows VMware VM。任务是有明确超时、通常数分钟内完成的
+前台 `echo` 或 `execute`；业务 Artifact 只会复制到 Guest 本地目录执行。
+
+Host 不安装或修改系统服务、驱动、防火墙、网络、注册表和其他系统配置。Host 会写仓库构建目录、配置的
+共享/归档目录及单次 vmrun 临时输出，并通过已安装的 `vmrun.exe` 控制配置中已授权的 VM。
+
+磁盘满、Tools 运行中失效、断网、Guest 卡死、注销重登、恶意输入、长稳压力、后台服务、步骤依赖和
+生产级安全不在当前支持范围。发生范围外环境故障时保留原始错误和证据，由使用者 AI 选择恢复一次，
+仍失败则停止并等待人工处理。
+
+## 当前功能
 
 版本 `0.1.0` 已提供：
 
@@ -155,25 +167,9 @@ Get-Item 'build/windows-default/bin/Release/SatsumaVM.exe'
 最简环境可以直接使用 VMware 默认 NAT 和 DHCP。虚拟机名称、Windows 计算机名、网卡名称和固定
 Guest IP 都不是文件任务通道的运行条件；Host 不依赖 Guest IP 反向连接。
 
-只有被测程序会修改路由、DNS、防火墙或虚拟适配器时，才建议使用两张隔离网卡：
-
-| 网卡 | 推荐模式 | 用途 |
-|---|---|---|
-| 管理网卡 | Host-only 自定义 VMnet | 可选 RPC 诊断、环境诊断 |
-| 实验网卡 | 另一条 Host-only/LAN Segment | 被测程序通信，可由测试破坏 |
-
-不要把危险测试使用的实验网卡桥接到办公网、家庭主网或生产网络。`host.listen` 仍需填写 Guest 可达的
-Host VMware 虚拟网卡地址和端口，供显式 RPC 诊断使用；Guest 保持 DHCP 即可。
-
-在 Host 上用只读命令确认地址确实绑定在本机网卡上：
-
-```powershell
-Get-NetIPAddress -AddressFamily IPv4 | Select-Object InterfaceAlias, IPAddress
-```
-
-`--watch` 文件循环和生产 Windows Service 不启动、调用或等待 RPC，不需要开放 TCP 37100。只有显式运行
-`SatsumaHost serve` 与 `SatsumaVM --rpc-once` 做诊断时才需要对应端口；防火墙修改需要管理员权限，
-应由用户确认作用域后手工完成，且不得把端口开放到公共网络。
+当前范围不下发会修改路由、DNS、防火墙、虚拟适配器或 Host 网络的程序，也不要求新增 Host-only、
+LAN Segment、固定 IP 或防火墙规则。生产 Windows Service 只使用 Shared Folder，不连接 RPC；
+`host.listen` 和 Agent 的 `host` 仍需保持格式及配置一致，但不作为文件任务成功的前提。
 
 ### 3. 配置 VMware Shared Folder
 
@@ -498,6 +494,8 @@ SatsumaHost.exe report --config lab.local.json --run <run-id> --wait-seconds 300
 ```
 
 有限等待在完成时返回 0，等待超时返回 3，人工门禁返回 5；不带 `--wait-seconds` 时仍为即时只读汇总。
+退出码 0 只表示预期结果已经完整返回，不表示业务步骤全部成功；调用方必须继续检查 `failed_steps` 和
+`executions[]`。`orchestrate --timeout-seconds` 是每个等待阶段的上限，不是整条多 VM 命令的总耗时。
 
 Host 使用本机配置执行 VM 和快照操作：
 
@@ -521,13 +519,18 @@ SatsumaHost.exe snapshot delete-ai --vm client --snapshot <snapshot-name> --conf
 
 ## 权限与故障边界
 
-Host 通常不需要管理员权限。生产 Agent 由 LocalSystem Windows Service 运行，只有这种承载方式才提供
-`run_as=system` 与 `run_as=interactive_user` 的生产身份保证。前台诊断可使用管理员权限约束和清理普通
-测试进程，但不能把前台调用方身份解释为 SYSTEM。
+Host 通常不需要管理员权限，也不会修改 Host 服务、驱动、防火墙、网络或注册表。它会写入仓库构建
+目录、配置的 Shared Folder 与归档目录，并为单次 vmrun 输出短暂使用系统临时目录。业务 Artifact 不会
+在 Host 执行。
+
+生产 Agent 由 LocalSystem Windows Service 运行，只有这种承载方式才提供 `run_as=system` 与
+`run_as=interactive_user` 的身份保证。当前使用假设是不在交互任务执行期间注销或切换用户；普通任务
+优先使用 `system`。前台诊断不能把调用方身份解释为生产 SYSTEM 身份。
+
 任务中的 `program` 必须对应已登记的 Artifact，任务路径必须相对运行根目录。遇到 Artifact hash 不一致、
 路径越界或声明的结果文件缺失时，Agent 会生成失败结果，不会继续猜测。
 
-VM 卡死时可使用 Host 的硬关闭、恢复快照和重新启动命令完成带外恢复。单 VM 或多 VM 生命周期计划也可
-由 `orchestrate` 自动串联这些步骤；返回 `RECOVERY_FAILED` 时必须停止后续测试并保留归档，不能把它
-降级解释为普通业务失败。已存在的生命周期归档不会被覆盖；`executing`、`collecting_evidence` 和终态
-可以按不可变身份安全恢复，其他未完成阶段进入人工门禁。
+配置或任务格式错误应修正输入；程序非零退出和超时保持任务结果。其他 Host、VMware、Shared Folder、
+Agent 或 Guest 异常由调用方统一视为未知平台错误，但保留底层错误和证据。AI 可以在授权范围内硬重启
+或恢复配置中的快照，等待 `check` 重新返回 `ready` 后使用新 `run_id` 重试一次。仍失败、恢复失败或
+返回 `RECOVERY_FAILED` 时必须停止并等待用户处理，不无限重试，也不自动修复 Host 系统。

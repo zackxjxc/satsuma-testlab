@@ -3,6 +3,10 @@
 本文件供调用 Satsuma 的 AI 阅读。Satsuma 只负责隔离 VM 中的部署、执行、证据收集和显式 VMware
 操作；被测程序是否符合业务预期，始终由调用方 AI 判断。
 
+Satsuma 面向可信、单用户 Windows Host 上的可丢弃 VMware VM，以及通常数分钟内结束的前台小任务。
+业务 Artifact 只能在 Guest 执行。AI 不得要求 Satsuma 修改 Host 服务、驱动、防火墙、网络、注册表或
+其他系统配置。
+
 ## 1. 每次接入的读取顺序
 
 1. 找到包含 `lab.json`、`schemas/` 和 `SatsumaHost.exe` 构建产物的 Satsuma 仓库。
@@ -21,7 +25,6 @@
 
 - `SatsumaHost.exe`、`SatsumaVM.exe` 和 `vmrun.exe` 是否存在及其绝对路径。
 - `lab.local.json`（如果存在）当前值、Host 共享目录、归档目录和每个 VMX 是否存在。
-- Host 当前 IPv4 地址，哪些 VMware NAT 或 Host-only 地址可供 Guest 访问。
 - 配置中每台 VM 的 ID、可选管理 IP、基础快照和 Agent 版本。
 - 哪些事项只能进入 Guest 或 VMware GUI 后由用户确认。
 
@@ -35,9 +38,9 @@
 6. 用户完成后由 AI 执行的验收命令和通过标准。
 
 如果用户要求把清单保存为文件，使用 Markdown，并明确区分“已确认”“待用户操作”“尚未验证”。
-不得虚构 VM 内状态、共享目录可写性、快照存在性或管理员操作成功。未经明确授权，不修改防火墙、
-Host/VM 网络、VMware Shared Folder 或快照。Agent Windows Service 由安装脚本和
-`SatsumaVM --install-service` 维护，不要求用户进入服务管理器手工配置。
+不得虚构 VM 内状态、共享目录可写性、快照存在性或管理员操作成功。当前项目永不修改 Host 防火墙、
+网络、服务、驱动、注册表或系统配置，也不扩大 VMware Shared Folder 范围。Agent Windows Service
+只由 Guest 安装脚本和 `SatsumaVM --install-service` 维护，不要求用户进入服务管理器手工配置。
 
 Guest 已能访问 Shared Folder 时，只要求用户执行一次 `scripts/install-agent.ps1` 并确认 Windows UAC。
 脚本只接受本地固定磁盘中的专用 `Satsuma` 安装根，完成 ACL 收紧、暂存哈希校验、Service 所有权预检、
@@ -92,11 +95,11 @@ SatsumaHost.exe check --config lab.local.json --vm <vm-id> --timeout-seconds 30
 任务步骤只支持 `echo` 和前台 `execute`，以 `schemas/task.schema.json` 和现有 C++ 校验为准。一台或多台
 VM 的生命周期计划可以使用 `lifecycle.vms[].restore_before`、`on_success`、`on_failure` 和
 `lifecycle.finally`；必须在计划顶层显式提供唯一 `run_id` 并通过 `orchestrate` 执行，普通 `run` 会明确
-拒绝。不得生成尚未实现的 `background`、步骤依赖、业务就绪屏障或任意 Host 命令，也不得直接生成或
-修改 claim 内部字段。
+拒绝。后台任务、步骤依赖、业务就绪屏障和任意 Host 命令均不在支持范围，AI 不得生成，也不得直接
+生成或修改 claim 内部字段。
 
-文件控制 mailbox、Host stop/cancel API、单调 sequence 和 ACK 尚未实现。AI 不得手工向共享目录写入
-自定义 mailbox 文件或把文件存在当作控制成功；应等待双端协议、补偿扫描和持久证据一起交付。
+文件控制 mailbox、Host stop/cancel API、单调 sequence 和 ACK 不在支持范围。AI 不得手工向共享目录
+写入自定义控制文件，也不得把文件存在解释为控制成功。
 
 生成任务时遵守：
 
@@ -105,7 +108,7 @@ VM 的生命周期计划可以使用 `lifecycle.vms[].restore_before`、`on_succ
 - `execute.program` 必须与同一 VM 已登记 Artifact 的 `shared_destination` 完全对应。
 - `arguments` 的每个元素保持独立，不拼接 shell 命令。
 - `collect_files` 只使用 VM 本地运行根目录下的相对路径。
-- 每个步骤设置有限的 `timeout_seconds`；危险程序必须有可验证的外部状态或机器可读结果。
+- 每个步骤设置有限的 `timeout_seconds`，通常不超过 300 秒；超出可信前台小任务范围的程序不得下发。
 - `echo` 默认可安全重试；`execute` 默认不可重试，只有确认幂等时才设置 `retry_safe: true`。
 - 被测程序优先输出明确退出码、UTF-8 日志和 JSON 总结，不把关键结果只留在 GUI。
 - `lifecycle.vms` 至少包含一台 VM、不得重复，并覆盖全部 Artifact、主步骤和 `finally` 步骤引用的 VM。
@@ -140,7 +143,8 @@ SatsumaHost.exe orchestrate --config lab.local.json --plan <task.json> --timeout
 `execution.json` 或最终日志；需要重试时生成新运行。
 
 普通运行可使用 `report --wait-seconds <1-86400>` 有限等待。退出码 0 表示报告完整，3 表示等待超时，
-5 表示过期危险 claim 需要人工处理；未指定时保持即时汇总行为。
+5 表示过期危险 claim 需要人工处理；未指定时保持即时汇总行为。退出码 0 不表示业务步骤成功，AI 仍须
+检查 `failed_steps` 和 `executions[]`。
 
 ## 7. VMware 与恢复边界
 
@@ -158,12 +162,16 @@ SatsumaHost.exe orchestrate --config lab.local.json --plan <task.json> --timeout
   schema v1 归档继续兼容，新的多 VM 归档使用 schema v2。`executing` 和 `collecting_evidence` 可继续
   处理，已有终态幂等返回，其他非终态必须转入人工门禁。
 - 真实崩溃恢复只使用默认关闭的 `SatsumaRealVmwareCrashRecovery` 目标，并要求专用 VM、唯一 Agent
-  `vm_id` 和精确确认串。普通构建或 `ctest` 不得触发 Host/Agent 强杀。
+  `vm_id` 和精确确认串。它仅供维护者手工回归，不属于日常使用或项目完成条件；普通构建和 `ctest`
+  不得触发 Host/Agent 强杀。
 - 真实 Shared Folder 瞬断只使用默认关闭的 `SatsumaRealVmwareFaultRecovery` 目标；必须先通过主动检测，
-  使用精确确认串，并确认没有另一台 Agent 复用同一 `vm_id`。普通构建或 `ctest` 不得改变 runtime
-  Shared Folder 状态。
-- 任一带外操作失败时停止自动测试，保留错误输出，并要求用户处理 VMware 环境。
-- 被测程序只能在隔离 VM 中执行，不在 Host 添加运行被测 exe 的旁路命令。
+  使用精确确认串，并确认没有另一台 Agent 复用同一 `vm_id`。它同样仅供维护者手工回归，普通构建和
+  `ctest` 不得改变 runtime Shared Folder 状态。
+- 配置或任务格式错误由 AI 修正输入；程序非零退出和超时保留为任务结果。
+- 其他 Host、VMware、Shared Folder、Agent 或 Guest 异常统一视为未知平台错误，但保留底层错误和证据。
+- AI 可对授权 VM 硬重启或恢复配置中的快照，等待 `check` 为 `ready` 后以新 `run_id` 重试一次。
+- 重试或 VM 恢复仍失败时停止并等待用户，不无限重试，也不自动修复 Host 系统。
+- 被测程序只能在隔离 VM 中执行；Host 只运行 Satsuma 自身程序、构建和自动化测试。
 
 ## 8. 对用户的最终反馈
 
