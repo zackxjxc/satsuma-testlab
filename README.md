@@ -16,28 +16,32 @@ Artifact 原子发布到 VMware Shared Folder；每台 Guest 中的 Windows Serv
 - 文件取消、运行列表与安全保留策略；失败运行不会阻塞其他运行。
 - Agent Windows Service 安装、自更新和 VM 身份迁移。
 - Artifact、日志和结果文件容量上限，防止测试耗尽共享盘。
-- Windows Debug/Release CI、JSON Schema、CMake 安装和 ZIP 发布包。
+- Windows Debug/Release CI、JSON Schema、便携发行目录和 UTF-8 ZIP 发布包。
 
 ## 快速开始
 
-要求 Windows 10/11、VMware Workstation、Guest 内 VMware Tools 和可用的 Shared Folder。源码构建还需要
-Visual Studio 2022 C++ 工具链、CMake 3.25+ 和 Git。
+使用发行物只需要 Windows 10/11、VMware Workstation、Guest 内 VMware Tools 和可用的 Shared Folder。
+已经取得版本目录或 ZIP 时可直接进入下面的配置步骤，不需要 CMake，也不会在 Host 安装程序。
+
+从源码生成发行物还需要 Visual Studio 2022 C++ 工具链、CMake 3.25+ 和 Git：
 
 ```powershell
 cmake --preset windows-default
 cmake --build --preset windows-release --parallel
 ctest --preset windows-release
+cmake --build --preset windows-release --target SatsumaPackage
 ```
 
-将 [`lab.json`](lab.json) 复制为被 Git 忽略的 `lab.local.json`，按本机路径修改；将
-[`agent-client.json`](examples/agent-client.json)（复制后命名为 `agent.json`）、`SatsumaVM.exe` 和
-[`install-agent.ps1`](scripts/install-agent.ps1) 放入共享目录的 `satsuma-bootstrap`，然后在 Guest 管理员
-PowerShell 中运行安装脚本。
+发布目标会在根目录 `output` 同时生成可直接使用的版本目录和同名 ZIP，不会向系统安装文件。进入版本目录后，
+将 [`lab.template.json`](config/lab.template.json) 复制为 `config/lab.local.json`，并为每台 VM 将
+[`agent.template.json`](config/agent.template.json) 复制为 `config/<vm-id>.agent.json`。配置完成后，把该 VM
+的 Agent 配置改名为 `agent.json`，与 `bin/SatsumaVM.exe`、`scripts/install-agent.ps1` 一起放入共享目录的
+`satsuma-bootstrap`，再在 Guest 管理员 PowerShell 中运行安装脚本。
 
 ```powershell
-SatsumaHost check --config lab.local.json --timeout-seconds 180
-SatsumaHost run --config lab.local.json --plan examples/hello-vm-task.json
-SatsumaHost report --config lab.local.json --run <run-id> --wait-seconds 300
+bin\SatsumaHost.exe check --config config\lab.local.json --timeout-seconds 180
+bin\SatsumaHost.exe run --config config\lab.local.json --plan examples\hello-vm-task.json
+bin\SatsumaHost.exe report --config config\lab.local.json --run <run-id> --wait-seconds 300
 ```
 
 `run` 会输出 `run_id`。报告的 `status` 为 `succeeded` 才表示业务成功；`pending`、`failed` 和
@@ -46,6 +50,7 @@ SatsumaHost report --config lab.local.json --run <run-id> --wait-seconds 300
 ## 文档
 
 - [用户指南](docs/用户指南.md)：安装、配置、日常命令、更新和排障。
+- [首次配置](docs/首次配置.md)：环境信息、配置职责、模板填写和首次验收。
 - [架构](docs/架构.md)：组件边界、数据流、可靠性模型和安全假设。
 - [文件协议](docs/协议.md)：共享目录布局、版本、Schema 和容量限制。
 - [开发指南](docs/开发指南.md)：构建、测试、打包和真实 VMware 验收。

@@ -7,7 +7,7 @@ Schema 以当前发布包为准。
 
 仅在以下条件全部满足时使用 Satsuma：
 
-- 用户明确授权控制 `lab.json` 中列出的实验 VM。
+- 用户明确授权控制 `config/lab.local.json` 中列出的实验 VM。
 - Artifact 与任务来自可信来源，Shared Folder 不跨租户共享。
 - 涉及快照恢复、强制停止或真实故障注入时，用户已理解会丢失 Guest 未保存状态。
 - Host、Guest 和任务处于同一可信管理边界；不把 Satsuma 当成恶意代码沙箱。
@@ -15,9 +15,24 @@ Schema 以当前发布包为准。
 自动化助手不得扩大 VM 范围，不得猜测 VMX、快照、共享目录或 Agent 身份，也不得绕过 Host CLI 直接伪造
 claim、结果或生命周期状态。
 
+## 未配置环境
+
+`config/lab.local.json` 不存在时，先完整读取 [首次配置](首次配置.md)、`config/lab.template.json`、
+`config/agent.template.json` 和对应 Schema。项目发行物定义所需字段和目录结构；自动化助手只负责读取本机
+可确认信息、列出缺失项并生成配置，用户负责选择和确认 VM、基础快照、Shared Folder 以及管理员操作。
+
+自动化助手必须先做只读发现，不得猜测 VMX、快照名、Guest 共享路径或 VM 身份。确认后生成：
+
+- 一份 `config/lab.local.json`；
+- 每台 VM 一份 `config/<vm-id>.agent.json`；
+- 仍需用户进入 VMware GUI、Guest 或 UAC 完成的操作清单。
+
+生成配置后先执行 Schema 校验和 `SatsumaHost check`。环境未达到 `ready` 前，不发布业务任务，不自行扩大
+VM 范围，也不循环执行恢复或重启。
+
 ## 标准流程
 
-1. 读取任务目标、`lab.local.json` 和任务计划，但不输出配置中可能存在的敏感本机路径之外的信息。
+1. 读取任务目标、`config/lab.local.json` 和任务计划，但不输出无关的敏感本机路径。
 2. 使用 `SatsumaHost check` 对目标 VM 做有限超时检查。
 3. 普通任务使用 `run`；包含 `lifecycle` 的任务使用 `orchestrate`。
 4. 从 Host JSON 输出读取 `run_id`，不要从目录名猜测。
@@ -25,9 +40,9 @@ claim、结果或生命周期状态。
 6. 保留失败证据；只有在确认运行完整后才使用 `runs prune`。
 
 ```powershell
-SatsumaHost check --config lab.local.json --vm client --timeout-seconds 180
-SatsumaHost run --config lab.local.json --plan task.json
-SatsumaHost report --config lab.local.json --run <run-id> --wait-seconds 300
+bin\SatsumaHost.exe check --config config\lab.local.json --vm client --timeout-seconds 180
+bin\SatsumaHost.exe run --config config\lab.local.json --plan task.json
+bin\SatsumaHost.exe report --config config\lab.local.json --run <run-id> --wait-seconds 300
 ```
 
 ## 任务生成规则
@@ -70,7 +85,7 @@ SatsumaHost report --config lab.local.json --run <run-id> --wait-seconds 300
 用户要求停止任务时使用：
 
 ```powershell
-SatsumaHost runs cancel --config lab.local.json --run <run-id> --reason "user requested stop"
+bin\SatsumaHost.exe runs cancel --config config\lab.local.json --run <run-id> --reason "user requested stop"
 ```
 
 取消后继续读取报告，直到收齐失败结果或出现人工门禁。不要同时删除运行目录。若 Shared Folder 暂时不可用，
