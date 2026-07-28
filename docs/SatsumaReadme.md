@@ -11,7 +11,7 @@ Satsuma 在 Windows 宿主机与 VMware 测试虚拟机之间物化任务、部�
 - `SatsumaVM.exe --watch`：仅通过共享文件轮询任务、独占领取步骤，并将 Artifact 复制到 VM 本地目录。
 - Windows Job Object 进程树管理、超时终止、stdout/stderr 持续落盘和结果文件收集。
 - `SatsumaHost.exe report`：汇总当前运行的机器可读结果。
-- `SatsumaHost.exe orchestrate`：按单 VM 生命周期策略恢复、启动、检测、执行、归档并清理。
+- `SatsumaHost.exe orchestrate`：按一台或多台 VM 的生命周期策略恢复、启动、检测、执行、归档并清理。
 - claim schema v3 主动续租：只自动回收显式 `retry_safe` 的过期步骤，其他步骤保留人工门禁。
 - `SatsumaHost.exe check`：检查 Host/VMware 环境，发送无害任务并确认 Agent 执行通道。
 - `SatsumaVM` Windows Service：LocalSystem 延迟自动启动、受控停止和失败恢复。
@@ -21,12 +21,16 @@ Satsuma 在 Windows 宿主机与 VMware 测试虚拟机之间物化任务、部�
 - Host VM 生命周期命令，以及带前缀、配额、所有权保护和元数据的 AI 快照命令。
 - 路径越界、绝对任务路径和重解析点校验。
 
-JSON 任务可以通过 `lifecycle` 声明单 VM 的执行前恢复、成功/失败清理策略和 `finally` 步骤。
-`orchestrate` 原子保存每次阶段迁移，并将主任务和 `finally` 证据复制到 Guest 不可见的归档目录；
-恢复失败以退出码 4 和 `RECOVERY_FAILED` 单独报告。普通 `run` 会拒绝生命周期计划，避免静默忽略策略。
-生命周期计划必须显式提供唯一 `run_id`；Host 使用同一 `run_id` 和字节完全相同的计划重启时，可继续
-等待已发布主任务或完成证据归档。其他非终态阶段会进入人工门禁，避免重复执行不确定的 VM 副作用。
-当前尚不支持多 VM 生命周期。
+JSON 任务可以通过 `lifecycle.vms` 声明一台或多台 VM 的执行前恢复、成功/失败清理策略和 `finally`
+步骤。`orchestrate` 按声明顺序恢复和启动 VM，再按同一顺序逐台完成 Agent Ready 检测；全部 Agent
+Ready 后才发布主任务，清理阶段按声明的逆序执行。单台清理失败不会阻断其余 VM 的清理，最终统一以
+退出码 4 和 `RECOVERY_FAILED` 报告。主任务和 `finally` 可以包含多台 VM 的步骤，但当前仍没有步骤
+依赖、跨 VM 业务屏障、后台服务或健康检查语义。
+
+`orchestrate` 原子保存每次阶段迁移，并将主任务和 `finally` 证据复制到 Guest 不可见的归档目录。
+普通 `run` 会拒绝生命周期计划，避免静默忽略策略。生命周期计划必须显式提供唯一 `run_id`；Host 使用
+同一 `run_id`、相同有序 VM 集合和字节完全相同的计划重启时，可继续等待已发布主任务或完成证据归档。
+其他非终态阶段会进入人工门禁，避免重复执行不确定的 VM 副作用。
 
 ## 构建
 
@@ -446,17 +450,24 @@ Shared Folder 检查失败时无法安全发布 echo。此时 `check` 仍返回�
 
 ## 运行文件通道示例
 
-带生命周期策略的单 VM 计划使用独立编排入口：
+带生命周期策略的一台或多台 VM 计划使用独立编排入口：
 
 ```text
 SatsumaHost.exe orchestrate --config lab.local.json --plan task.json --timeout-seconds 300
 ```
 
-`lifecycle.vms` 当前必须且只能包含一台 VM。每台策略必须同时定义 `on_success` 和 `on_failure`，动作可为
-`leave_running`、`stop` 或带 `snapshot` 的 `restore`；可选的 `restore_before` 在启动 VM 前恢复快照，
-`lifecycle.finally` 中的步骤在主任务完成或失败后单独发布。自动恢复只接受配置中的用户基础快照或
-AI 前缀快照。计划顶层必须显式填写唯一 `run_id`，并在恢复时保持计划原始字节不变。状态保存在
-`archive_root/runs/<run-id>/lifecycle.json`，证据保存在同目录的 `evidence/`。
+`lifecycle.vms` 必须至少包含一台 VM，且每个 VM 只能声明一次。所有 Artifact、主步骤和 `finally` 步骤
+引用的 VM 都必须包含在该列表中；列表顺序独立于 `lab.json` 中的 VM 顺序，并决定恢复、启动和 Agent
+Ready 检测顺序。Host 完成全部 Ready 门禁后才原子发布主任务，清理阶段按该列表逆序执行。每台策略
+必须同时定义 `on_success` 和 `on_failure`，动作可为 `leave_running`、`stop` 或带 `snapshot` 的
+`restore`；可选的 `restore_before` 在启动 VM 前恢复快照，`lifecycle.finally` 中的步骤在主任务完成或
+失败后单独发布。单台清理失败时 Host 会继续逆序处理其余 VM，并把聚合错误报告为 `RECOVERY_FAILED`。
+
+自动恢复只接受配置中的用户基础快照或 AI 前缀快照。计划顶层必须显式填写唯一 `run_id`，并在恢复时
+保持计划原始字节和有序生命周期 VM 集合不变。单 VM 旧归档继续兼容 schema v1；多 VM 归档使用包含
+有序 `vm_ids` 的 schema v2。状态保存在 `archive_root/runs/<run-id>/lifecycle.json`，证据保存在同目录的
+`evidence/`。主任务和 `finally` 虽可同时包含多台 VM 的步骤，但当前步骤之间没有依赖、后台服务、
+wait-ready 或业务健康检查；不要把生命周期 Ready 门禁解释为 Gateway 服务已准备好供 Client 使用。
 
 `echo` 默认 `retry_safe=true`，`execute` 默认 `false`；只有调用方确认步骤可幂等重放时，才应为
 `execute` 显式设置 `retry_safe=true`。Agent 使用 120 秒固定 claim 租约，并每 30 秒发布一份带连续序号的
@@ -499,7 +510,9 @@ SatsumaHost.exe snapshot delete-ai --vm client --snapshot <snapshot-name> --conf
 ```
 
 基础快照是只读所有权，`delete-ai` 只接受配置中 AI 前缀开头且确实存在的快照。创建和删除记录保存在
-`host.archive_root/snapshots/<vm-id>/`。
+`host.archive_root/snapshots/<vm-id>/`。如果 `vmrun` 创建或删除命令返回错误，Host 会重新列举快照：目标
+已经出现或消失时按实际状态成功返回，并设置 `reconciled=true`；元数据保留原始 `operation_error` 和
+`reconciled_at` 供取证。命令和重新列举都无法确认目标状态时仍按失败处理，不会猜测成功。
 
 每次运行使用 `shared_folder.host_root/runs/<run_id>/`，不要复用旧的 `run_id`。`execution.json`、
 最终日志和收集文件发布前均经过完整写入或原子改名；执行期间可读取 `.partial` 日志。不要在 Guest
@@ -513,6 +526,7 @@ Host 通常不需要管理员权限。生产 Agent 由 LocalSystem Windows Servi
 任务中的 `program` 必须对应已登记的 Artifact，任务路径必须相对运行根目录。遇到 Artifact hash 不一致、
 路径越界或声明的结果文件缺失时，Agent 会生成失败结果，不会继续猜测。
 
-VM 卡死时可使用 Host 的硬关闭、恢复快照和重新启动命令完成带外恢复。单 VM 生命周期计划也可由
-`orchestrate` 自动串联这些步骤；返回 `RECOVERY_FAILED` 时必须停止后续测试并保留归档，不能把它
-降级解释为普通业务失败。已存在的生命周期归档不会被覆盖，当前需人工判断后再决定如何处理未完成运行。
+VM 卡死时可使用 Host 的硬关闭、恢复快照和重新启动命令完成带外恢复。单 VM 或多 VM 生命周期计划也可
+由 `orchestrate` 自动串联这些步骤；返回 `RECOVERY_FAILED` 时必须停止后续测试并保留归档，不能把它
+降级解释为普通业务失败。已存在的生命周期归档不会被覆盖；`executing`、`collecting_evidence` 和终态
+可以按不可变身份安全恢复，其他未完成阶段进入人工门禁。

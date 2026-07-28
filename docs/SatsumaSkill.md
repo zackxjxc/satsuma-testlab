@@ -88,11 +88,11 @@ SatsumaHost.exe check --config lab.local.json --vm <vm-id> --timeout-seconds 30
 
 ## 5. 生成任务文件
 
-任务步骤只支持 `echo` 和前台 `execute`，以 `schemas/task.schema.json` 和现有 C++ 校验为准。单 VM
-生命周期计划可以使用 `lifecycle.vms[].restore_before`、`on_success`、`on_failure` 和
+任务步骤只支持 `echo` 和前台 `execute`，以 `schemas/task.schema.json` 和现有 C++ 校验为准。一台或多台
+VM 的生命周期计划可以使用 `lifecycle.vms[].restore_before`、`on_success`、`on_failure` 和
 `lifecycle.finally`；必须在计划顶层显式提供唯一 `run_id` 并通过 `orchestrate` 执行，普通 `run` 会明确
-拒绝。不得生成尚未实现的 `background`、多 VM 生命周期或任意 Host 命令，也不得直接生成或修改 claim
-内部字段。
+拒绝。不得生成尚未实现的 `background`、步骤依赖、业务就绪屏障或任意 Host 命令，也不得直接生成或
+修改 claim 内部字段。
 
 文件控制 mailbox、Host stop/cancel API、单调 sequence 和 ACK 尚未实现。AI 不得手工向共享目录写入
 自定义 mailbox 文件或把文件存在当作控制成功；应等待双端协议、补偿扫描和持久证据一起交付。
@@ -107,6 +107,11 @@ SatsumaHost.exe check --config lab.local.json --vm <vm-id> --timeout-seconds 30
 - 每个步骤设置有限的 `timeout_seconds`；危险程序必须有可验证的外部状态或机器可读结果。
 - `echo` 默认可安全重试；`execute` 默认不可重试，只有确认幂等时才设置 `retry_safe: true`。
 - 被测程序优先输出明确退出码、UTF-8 日志和 JSON 总结，不把关键结果只留在 GUI。
+- `lifecycle.vms` 至少包含一台 VM、不得重复，并覆盖全部 Artifact、主步骤和 `finally` 步骤引用的 VM。
+- `lifecycle.vms` 的声明顺序决定恢复、启动和逐台 Agent Ready 检测顺序，清理按逆序执行；不要依赖
+  `lab.json` 中的 VM 排列。
+- 主任务只会在全部 Agent Ready 后发布，但其中的多 VM 步骤没有依赖或服务就绪语义；需要 Gateway
+  业务服务先 Ready 的计划仍不可生成。
 
 ## 6. 执行和取证
 
@@ -123,8 +128,8 @@ SatsumaHost.exe check --config lab.local.json --vm <vm-id> --timeout-seconds 30
 SatsumaHost.exe orchestrate --config lab.local.json --plan <task.json> --timeout-seconds <1-86400>
 ```
 
-计划必须提前固定唯一 `run_id`。Host 恢复时必须复用同一文件的原始字节，不能重新格式化或重建语义相同
-的 JSON；计划 SHA-256 变化会拒绝复用归档。
+计划必须提前固定唯一 `run_id`。Host 恢复时必须复用同一文件的原始字节和相同的有序生命周期 VM 集合，
+不能重新格式化或重建语义相同的 JSON；计划 SHA-256 或 VM 顺序变化都会拒绝复用归档。
 
 退出码 0 表示 `COMPLETED`，退出码 1 表示业务或执行 `FAILED`，退出码 4 表示 `RECOVERY_FAILED`，
 退出码 5 表示 `MANUAL_INTERVENTION_REQUIRED`。
@@ -142,9 +147,15 @@ SatsumaHost.exe orchestrate --config lab.local.json --plan <task.json> --timeout
 - 用户基础快照只读，禁止覆盖或删除；AI 只管理带 `ai_prefix` 的派生快照。
 - 用户已把配置中的 VM 声明为可丢弃测试机并授权生命周期操作后，AI 可以在该范围内启动、关闭和恢复，
   不要为每次相同操作重复要求用户确认；未知 VM、扩大网络范围或删除基础快照不在该授权内。
-- 单 VM 生命周期计划可自动恢复配置中的基础快照或 AI 所有权快照；普通任务仍需显式执行 VM 命令。
-- 已存在生命周期归档时，只有同一 `run_id`、VM 和计划 SHA-256 才允许复用；`executing` 和
-  `collecting_evidence` 可继续处理，已有终态幂等返回，其他非终态必须转入人工门禁。
+- 单 VM 或多 VM 生命周期计划可自动恢复配置中的基础快照或 AI 所有权快照；普通任务仍需显式执行 VM
+  命令。
+- 多 VM 编排按 `lifecycle.vms` 顺序恢复、启动和检测全部 Agent，主任务完成后按逆序执行 teardown；单台
+  清理失败时继续处理其余 VM，最终统一报告 `RECOVERY_FAILED`。
+- AI 快照创建或删除命令报错后，Host 会重新列举快照并以目标实际出现或消失为准；返回
+  `reconciled=true` 时仍需保留元数据中的原始操作错误作为证据，无法对账时停止自动测试。
+- 已存在生命周期归档时，只有同一 `run_id`、相同有序 VM 集合和计划 SHA-256 才允许复用；旧单 VM
+  schema v1 归档继续兼容，新的多 VM 归档使用 schema v2。`executing` 和 `collecting_evidence` 可继续
+  处理，已有终态幂等返回，其他非终态必须转入人工门禁。
 - 真实崩溃恢复只使用默认关闭的 `SatsumaRealVmwareCrashRecovery` 目标，并要求专用 VM、唯一 Agent
   `vm_id` 和精确确认串。普通构建或 `ctest` 不得触发 Host/Agent 强杀。
 - 真实 Shared Folder 瞬断只使用默认关闭的 `SatsumaRealVmwareFaultRecovery` 目标；必须先通过主动检测，
@@ -155,5 +166,5 @@ SatsumaHost.exe orchestrate --config lab.local.json --plan <task.json> --timeout
 
 ## 8. 对用户的最终反馈
 
-每次运行结论先报告：目标 VM、检测状态、`run_id`、步骤退出码/超时、证据路径和未验证项。未实际
+每次运行结论先报告：目标 VM 集合、逐台检测状态、`run_id`、步骤退出码/超时、证据路径和未验证项。未实际
 执行的 VMware、管理员或 Guest 操作必须明确标为待完成，不能用构建通过或模拟测试代替真实环境验收。
