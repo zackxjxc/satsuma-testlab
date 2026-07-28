@@ -213,10 +213,14 @@ if(SATSUMA_BUILD_TESTS)
 endif()
 
 install(TARGETS SatsumaHost SatsumaVM RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
-install(FILES lab.json DESTINATION .)
 install(
     FILES
-        examples/agent-client.json
+        config/lab.template.json
+        config/agent.template.json
+    DESTINATION config
+)
+install(
+    FILES
         examples/hello-vm-task.json
         examples/multi-vm-task.json
     DESTINATION examples
@@ -226,6 +230,7 @@ install(DIRECTORY schemas/ DESTINATION schemas FILES_MATCHING PATTERN "*.json")
 install(
     FILES
         docs/AI操作契约.md
+        docs/首次配置.md
         docs/架构.md
         docs/用户指南.md
         docs/协议.md
@@ -250,6 +255,7 @@ add_custom_target(
         -ExecutionPolicy Bypass
         -File "${CMAKE_SOURCE_DIR}/scripts/package-release.ps1"
         -BuildDirectory "${CMAKE_BINARY_DIR}"
+        -OutputDirectory "${CMAKE_SOURCE_DIR}/output"
         -Configuration "$<CONFIG>"
         -Version "${PROJECT_VERSION}"
     DEPENDS SatsumaHost SatsumaVM

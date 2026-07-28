@@ -22,7 +22,9 @@ jobs:
           python -m pip install check-jsonschema==0.37.4
           check-jsonschema --check-metaschema schemas/*.schema.json
           check-jsonschema --schemafile schemas/lab.schema.json lab.json
+          check-jsonschema --schemafile schemas/lab.schema.json config/lab.template.json
           check-jsonschema --schemafile schemas/agent.schema.json examples/agent-client.json
+          check-jsonschema --schemafile schemas/agent.schema.json config/agent.template.json
           check-jsonschema --schemafile schemas/task.schema.json examples/hello-vm-task.json
           check-jsonschema --schemafile schemas/task.schema.json examples/multi-vm-task.json
 
@@ -47,5 +49,5 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: SatsumaTestLab-windows-x64
-          path: build/windows-default/packages/*.zip
+          path: output/*.zip
           if-no-files-found: error

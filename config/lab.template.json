@@ -1,0 +1,27 @@
+{
+  "$schema": "../schemas/lab.schema.json",
+  "schema_version": 1,
+  "lab_id": "replace_with_lab_id",
+  "provider": {
+    "type": "vmware_workstation",
+    "vmrun": "C:\\REQUIRED\\vmrun.exe"
+  },
+  "host": {
+    "archive_root": "C:\\REQUIRED\\satsuma-archive"
+  },
+  "shared_folder": {
+    "host_root": "C:\\REQUIRED\\vm-share"
+  },
+  "vms": [
+    {
+      "id": "replace_with_vm_id",
+      "vmx": "C:\\REQUIRED\\machine.vmx",
+      "agent_version": "0.1.0",
+      "snapshots": {
+        "base": "replace_with_base_snapshot",
+        "ai_prefix": "satsuma-ai-",
+        "max_ai_snapshots": 8
+      }
+    }
+  ]
+}

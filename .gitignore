@@ -3,9 +3,12 @@
 !/.vscode/settings.json
 /build/
 /out/
+/output/
 /cmake-build-*/
 /CMakeUserPresets.json
 /lab.local.json
+/config/*.local.json
+/config/*.agent.json
 *.user
 *.suo
 *.VC.db
