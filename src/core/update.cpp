@@ -57,13 +57,28 @@ void validate_sha256(const std::string& hash) {
 
 // 验证固定版本的更新清单。
 void validate_manifest(const AgentUpdateManifest& manifest) {
-    if (manifest.schema_version != 1 ||
-        manifest.protocol_version != 1 ||
-        manifest.type != "update_agent") {
-        throw Error("Agent update requires schema_version 1, protocol_version 1 and type update_agent");
+    if (manifest.schema_version != 1 || manifest.type != "update_agent") {
+        throw Error("Agent update requires schema_version 1 and type update_agent");
+    }
+    if (manifest.protocol_version == 1) {
+        if (manifest.next_vm_id.has_value()) {
+            throw Error("Agent update protocol 1 does not support next_vm_id");
+        }
+    } else if (manifest.protocol_version == 2) {
+        if (!manifest.next_vm_id.has_value()) {
+            throw Error("Agent update protocol 2 requires next_vm_id");
+        }
+    } else {
+        throw Error("Agent update protocol_version must be 1 or 2");
     }
     validate_identifier(manifest.lab_id, "update lab_id");
     validate_identifier(manifest.vm_id, "update vm_id");
+    if (manifest.next_vm_id.has_value()) {
+        validate_identifier(*manifest.next_vm_id, "update next_vm_id");
+        if (*manifest.next_vm_id == manifest.vm_id) {
+            throw Error("Agent update next_vm_id must differ from vm_id");
+        }
+    }
     validate_identifier(manifest.update_id, "update_id");
     if (manifest.version.empty() ||
         manifest.version.size() > 64 ||
@@ -149,6 +164,9 @@ void to_json(nlohmann::json& value, const AgentUpdateManifest& manifest) {
         {"sha256", manifest.sha256},
         {"created_at", manifest.created_at},
     };
+    if (manifest.next_vm_id.has_value()) {
+        value["next_vm_id"] = *manifest.next_vm_id;
+    }
 }
 
 void from_json(const nlohmann::json& value, AgentUpdateManifest& manifest) {
@@ -157,6 +175,11 @@ void from_json(const nlohmann::json& value, AgentUpdateManifest& manifest) {
     manifest.type = required_string(value, "type");
     manifest.lab_id = required_string(value, "lab_id");
     manifest.vm_id = required_string(value, "vm_id");
+    if (value.contains("next_vm_id")) {
+        manifest.next_vm_id = required_string(value, "next_vm_id");
+    } else {
+        manifest.next_vm_id.reset();
+    }
     manifest.update_id = required_string(value, "update_id");
     manifest.version = required_string(value, "version");
     manifest.binary = path_from_utf8(required_string(value, "binary"));

@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <optional>
 #include <string>
 
 #include <nlohmann/json_fwd.hpp>
@@ -15,7 +16,8 @@ struct AgentUpdateManifest {
     int protocol_version{1};          // 独立更新通道协议版本
     std::string type{"update_agent"}; // 固定更新类型
     std::string lab_id;               // 目标实验室 ID
-    std::string vm_id;                // 目标 VM ID
+    std::string vm_id;                // 领取更新的当前 VM ID
+    std::optional<std::string> next_vm_id; // 协议 v2 成功后启用的新 VM ID
     std::string update_id;            // 本次更新唯一 ID
     std::string version;              // 候选 Agent 版本
     std::filesystem::path binary;     // 更新目录内的相对候选文件

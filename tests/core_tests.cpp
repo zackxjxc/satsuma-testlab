@@ -670,6 +670,17 @@ void test_agent_update_protocol(const std::filesystem::path& root) {
     expect(decoded.update_id == manifest.update_id, "update manifest ID changed");
     expect(decoded.binary == manifest.binary, "update manifest binary changed");
     expect(decoded.size == manifest.size, "update manifest size changed");
+    expect(!encoded.contains("next_vm_id"), "protocol 1 update serialized next_vm_id");
+
+    satsuma::AgentUpdateManifest rebind = manifest;
+    rebind.protocol_version = 2;
+    rebind.next_vm_id = "gateway";
+    const nlohmann::json encoded_rebind = rebind;
+    const satsuma::AgentUpdateManifest decoded_rebind =
+        encoded_rebind.get<satsuma::AgentUpdateManifest>();
+    expect(
+        decoded_rebind.next_vm_id == rebind.next_vm_id,
+        "update rebind identity changed");
 
     const std::filesystem::path manifest_path = root / L"update.json";
     satsuma::write_json_atomic(manifest_path, encoded);
@@ -692,6 +703,21 @@ void test_agent_update_protocol(const std::filesystem::path& root) {
     expect_error(
         [&invalid] { static_cast<void>(invalid.get<satsuma::AgentUpdateManifest>()); },
         "zero-sized update was accepted");
+    invalid = encoded;
+    invalid["protocol_version"] = 2;
+    expect_error(
+        [&invalid] { static_cast<void>(invalid.get<satsuma::AgentUpdateManifest>()); },
+        "protocol 2 update without next_vm_id was accepted");
+    invalid = encoded;
+    invalid["next_vm_id"] = "gateway";
+    expect_error(
+        [&invalid] { static_cast<void>(invalid.get<satsuma::AgentUpdateManifest>()); },
+        "protocol 1 update with next_vm_id was accepted");
+    invalid = encoded_rebind;
+    invalid["next_vm_id"] = "client";
+    expect_error(
+        [&invalid] { static_cast<void>(invalid.get<satsuma::AgentUpdateManifest>()); },
+        "update rebind accepted its current identity as next_vm_id");
 
     satsuma::AgentUpdateResult result;
     result.update_id = manifest.update_id;

@@ -126,14 +126,19 @@ void write_update_state(
     const AgentUpdateManifest& manifest,
     const std::string& phase,
     const std::string& error = {}) {
-    write_json_atomic(paths.state, {
+    nlohmann::json state = {
         {"schema_version", 1},
+        {"vm_id", manifest.vm_id},
         {"update_id", manifest.update_id},
         {"version", manifest.version},
         {"phase", phase},
         {"error", error},
         {"updated_at", utc_timestamp()},
-    });
+    };
+    if (manifest.next_vm_id.has_value()) {
+        state["next_vm_id"] = *manifest.next_vm_id;
+    }
+    write_json_atomic(paths.state, state);
 }
 
 // 返回用于失败路径的终态结果。
@@ -247,6 +252,27 @@ void wait_for_presence(
     throw Error("Timed out while waiting for matching Agent update presence");
 }
 
+// 验证本机配置仍是清单声明的来源身份，且迁移目标没有 presence 冲突。
+[[nodiscard]] AgentConfig validate_update_source(
+    const UpdatePaths& paths,
+    const AgentUpdateManifest& manifest) {
+    const AgentConfig config = load_agent_config(paths.config);
+    if (config.lab_id != manifest.lab_id || config.vm_id != manifest.vm_id) {
+        throw Error("Agent update config does not match the manifest source identity");
+    }
+    if (manifest.next_vm_id.has_value()) {
+        const std::filesystem::path target_presence =
+            config.shared_root / L"agents" /
+            path_from_utf8(*manifest.next_vm_id + ".json");
+        if (std::filesystem::exists(target_presence)) {
+            throw Error(
+                "Agent rebind target presence already exists: " +
+                path_to_utf8(target_presence));
+        }
+    }
+    return config;
+}
+
 // 原子写入更新后的 agent.json。
 void write_updated_config(
     const UpdatePaths& paths,
@@ -255,6 +281,9 @@ void write_updated_config(
     config["protocol_version"] = kRunManifestProtocolVersion;
     config["agent_version"] = manifest.version;
     config["last_update_id"] = manifest.update_id;
+    if (manifest.next_vm_id.has_value()) {
+        config["vm_id"] = *manifest.next_vm_id;
+    }
     write_json_atomic(paths.config, config);
 }
 
@@ -263,6 +292,33 @@ void restore_config(
     const UpdatePaths& paths,
     const nlohmann::json& original) {
     write_json_atomic(paths.config, original);
+}
+
+// 回滚迁移时只删除由本次候选 PID 发布的目标 presence。
+void remove_rebind_presence_best_effort(
+    const UpdatePaths& paths,
+    const AgentUpdateManifest& manifest,
+    const std::uint32_t process_id) noexcept {
+    if (!manifest.next_vm_id.has_value() || process_id == 0) {
+        return;
+    }
+    try {
+        const AgentConfig config = load_agent_config(paths.config);
+        if (config.vm_id != *manifest.next_vm_id) {
+            return;
+        }
+        const std::filesystem::path presence_path =
+            config.shared_root / L"agents" / path_from_utf8(config.vm_id + ".json");
+        if (presence_matches(
+                presence_path,
+                config,
+                process_id,
+                manifest.version,
+                manifest.update_id)) {
+            remove_update_file_best_effort(presence_path);
+        }
+    } catch (...) {
+    }
 }
 
 // 删除 EXE 备份并完成不可逆的二进制提交。
@@ -358,6 +414,44 @@ void cleanup_committed_update(const UpdatePaths& paths) {
     return finalize_pending_success_result(paths, manifest);
 }
 
+// 身份切换后的新 Agent 从来源更新目录补发已提交的成功结果。
+[[nodiscard]] bool recover_rebound_update_success(const AgentConfig& config) {
+    if (config.last_update_id.empty()) {
+        return false;
+    }
+    const std::filesystem::path updates_root = config.shared_root / L"updates";
+    if (!std::filesystem::exists(updates_root)) {
+        return false;
+    }
+
+    for (const auto& source_entry : std::filesystem::directory_iterator(updates_root)) {
+        if (!source_entry.is_directory() ||
+            source_entry.path().filename().native().starts_with(L".")) {
+            continue;
+        }
+        const std::filesystem::path update_directory =
+            source_entry.path() / path_from_utf8(config.last_update_id);
+        const std::filesystem::path manifest_path = update_directory / L"update.json";
+        if (!std::filesystem::is_regular_file(manifest_path)) {
+            continue;
+        }
+
+        const AgentUpdateManifest manifest =
+            load_agent_update_manifest(manifest_path);
+        if (!manifest.next_vm_id.has_value() ||
+            *manifest.next_vm_id != config.vm_id ||
+            manifest.lab_id != config.lab_id ||
+            manifest.version != config.agent_version ||
+            manifest.update_id != config.last_update_id ||
+            source_entry.path().filename() != path_from_utf8(manifest.vm_id)) {
+            continue;
+        }
+        const UpdatePaths paths = make_update_paths(config, update_directory);
+        return recover_committed_update_success(paths, manifest);
+    }
+    return false;
+}
+
 // 执行停止、改名、启动、presence 和简单恢复状态机。
 [[nodiscard]] AgentUpdateResult run_update_transaction(
     const UpdatePaths& paths,
@@ -369,6 +463,7 @@ void cleanup_committed_update(const UpdatePaths& paths) {
     bool candidate_is_formal = false;
     bool config_updated = false;
     bool update_committed = false;
+    std::uint32_t candidate_process_id = 0;
     nlohmann::json original_config;
     AgentUpdateResult committed_result;
     std::string failure;
@@ -381,6 +476,7 @@ void cleanup_committed_update(const UpdatePaths& paths) {
                 " does not match manifest version " + manifest.version);
         }
         verify_update_binary(paths.new_binary, manifest);
+        static_cast<void>(validate_update_source(paths, manifest));
         if (!std::filesystem::is_regular_file(paths.formal_binary) ||
             std::filesystem::file_size(paths.formal_binary) == 0) {
             throw Error("Current formal SatsumaVM.exe cannot be used as an update backup");
@@ -413,8 +509,11 @@ void cleanup_committed_update(const UpdatePaths& paths) {
         write_updated_config(paths, manifest);
         config_updated = true;
         write_update_state(paths, manifest, "config_updated");
-        const std::uint32_t process_id = operations.start_service();
-        operations.wait_presence(process_id, manifest.version, manifest.update_id);
+        candidate_process_id = operations.start_service();
+        operations.wait_presence(
+            candidate_process_id,
+            manifest.version,
+            manifest.update_id);
         write_update_state(paths, manifest, "presence_verified");
 
         committed_result = AgentUpdateResult{
@@ -424,7 +523,7 @@ void cleanup_committed_update(const UpdatePaths& paths) {
             manifest.version,
             "succeeded",
             "none",
-            process_id,
+            candidate_process_id,
             "",
             utc_timestamp(),
         };
@@ -472,6 +571,10 @@ void cleanup_committed_update(const UpdatePaths& paths) {
             std::filesystem::rename(paths.backup_binary, paths.formal_binary);
             formal_backed_up = false;
         }
+        remove_rebind_presence_best_effort(
+            paths,
+            manifest,
+            candidate_process_id);
         if (config_updated || std::filesystem::is_regular_file(paths.config_backup)) {
             restore_config(paths, original_config);
             config_updated = false;
@@ -580,6 +683,9 @@ void cleanup_finished_update(const UpdatePaths& paths) noexcept {
 bool process_pending_agent_update(
     const AgentConfig& config,
     const std::stop_token stop_token) {
+    if (recover_rebound_update_success(config)) {
+        return false;
+    }
     const std::filesystem::path updates_root =
         config.shared_root / L"updates" / path_from_utf8(config.vm_id);
     if (!std::filesystem::exists(updates_root)) {
@@ -741,12 +847,19 @@ int apply_agent_update_helper(
         return result.status == "succeeded" ? 0 : 1;
     } catch (const std::exception& error) {
         try {
-            const AgentConfig config = load_agent_config(config_path);
             const AgentUpdateManifest manifest =
                 load_agent_update_manifest(manifest_path);
+            const AgentConfig config = load_agent_config(config_path);
+            const std::string effective_vm_id =
+                manifest.next_vm_id.value_or(manifest.vm_id);
+            if (config.lab_id != manifest.lab_id ||
+                (config.vm_id != manifest.vm_id &&
+                 config.vm_id != effective_vm_id)) {
+                throw Error("Agent update helper cannot resolve its source update directory");
+            }
             const std::filesystem::path update_directory =
                 config.shared_root / L"updates" /
-                    path_from_utf8(config.vm_id) /
+                    path_from_utf8(manifest.vm_id) /
                     path_from_utf8(manifest.update_id);
             write_update_result(
                 update_directory / L"result.json",
@@ -815,6 +928,10 @@ bool recover_committed_update_success_for_test(
         paths.state,
     };
     return recover_committed_update_success(internal_paths, manifest);
+}
+
+bool recover_rebound_update_success_for_test(const AgentConfig& config) {
+    return recover_rebound_update_success(config);
 }
 #endif
 

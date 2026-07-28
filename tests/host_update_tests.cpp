@@ -23,6 +23,17 @@ void expect(const bool condition, const std::string& message) {
     }
 }
 
+// 验证指定调用稳定抛出异常。
+template <typename Function>
+void expect_error(Function&& function, const std::string& message) {
+    try {
+        function();
+    } catch (const std::exception&) {
+        return;
+    }
+    throw std::runtime_error(message);
+}
+
 // 创建仅包含更新发布所需字段的实验室配置。
 [[nodiscard]] satsuma::LabConfig make_config(const std::filesystem::path& root) {
     satsuma::LabConfig config;
@@ -31,7 +42,58 @@ void expect(const bool condition, const std::string& message) {
     satsuma::VmConfig vm;
     vm.id = "client";
     config.vms.push_back(std::move(vm));
+    satsuma::VmConfig gateway;
+    gateway.id = "gateway";
+    config.vms.push_back(std::move(gateway));
     return config;
+}
+
+[[nodiscard]] std::filesystem::path update_directory(
+    const std::filesystem::path& share,
+    const satsuma::AgentUpdateManifest& manifest);
+
+// 验证 Host 只向无 presence 的已登记目标发布身份迁移。
+void test_host_rebind_publish(const std::filesystem::path& root) {
+    const satsuma::LabConfig config = make_config(root);
+    std::filesystem::create_directories(config.shared_folder.host_root);
+    const std::filesystem::path candidate = root / L"rebind-candidate.exe";
+    std::ofstream(candidate, std::ios::binary) << "host-rebind-candidate";
+    const satsuma::host::Controller controller(config);
+
+    const satsuma::AgentUpdateManifest manifest =
+        controller.publish_agent_update("client", candidate, "0.1.1", "gateway");
+    expect(manifest.protocol_version == 2, "Host rebind did not use update protocol 2");
+    expect(manifest.next_vm_id == "gateway", "Host rebind lost its target identity");
+    const std::filesystem::path directory =
+        update_directory(config.shared_folder.host_root, manifest);
+    const satsuma::AgentUpdateManifest published =
+        satsuma::load_agent_update_manifest(directory / L"update.json");
+    expect(published.next_vm_id == manifest.next_vm_id,
+        "published rebind manifest lost its target identity");
+
+    expect_error(
+        [&controller, &candidate] {
+            static_cast<void>(controller.publish_agent_update(
+                "client", candidate, "0.1.1", "client"));
+        },
+        "Host accepted a rebind to the current identity");
+    expect_error(
+        [&controller, &candidate] {
+            static_cast<void>(controller.publish_agent_update(
+                "client", candidate, "0.1.1", "missing"));
+        },
+        "Host accepted an unknown rebind target");
+
+    const std::filesystem::path target_presence =
+        config.shared_folder.host_root / L"agents" / L"gateway.json";
+    std::filesystem::create_directories(target_presence.parent_path());
+    std::ofstream(target_presence, std::ios::binary) << "{}";
+    expect_error(
+        [&controller, &candidate] {
+            static_cast<void>(controller.publish_agent_update(
+                "client", candidate, "0.1.1", "gateway"));
+        },
+        "Host accepted a rebind target with an existing presence");
 }
 
 // 返回清单对应的共享更新目录。
@@ -140,6 +202,7 @@ int main() {
         satsuma::path_from_utf8(satsuma::make_id("satsuma-host-update-test"));
     try {
         test_host_update_flow(root);
+        test_host_rebind_publish(root);
         std::filesystem::remove_all(root);
         std::cout << "SatsumaHostUpdateTests passed\n";
         return 0;

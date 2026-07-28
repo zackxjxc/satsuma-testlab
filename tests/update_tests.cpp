@@ -111,6 +111,13 @@ struct UpdateFixture {
     return fixture;
 }
 
+// 将普通更新测试夹具切换为 client 到 gateway 的身份迁移。
+void enable_rebind(UpdateFixture& fixture) {
+    fixture.manifest.protocol_version = 2;
+    fixture.manifest.next_vm_id = "gateway";
+    satsuma::write_json_atomic(fixture.paths.manifest, fixture.manifest);
+}
+
 // 验证成功更新严格清理 new、bak、manifest 和状态文件。
 void test_successful_update(const std::filesystem::path& root) {
     UpdateFixture fixture = make_fixture(root, "success");
@@ -161,6 +168,186 @@ void test_successful_update(const std::filesystem::path& root) {
         "successful update did not persist the update ID");
     expect(satsuma::load_agent_update_result(fixture.paths.result).process_id == 4321,
         "successful result did not persist the Service PID");
+}
+
+// 验证身份迁移在新 Service 上线前原子写入目标 vm_id。
+void test_successful_rebind(const std::filesystem::path& root) {
+    UpdateFixture fixture = make_fixture(root, "rebind-success");
+    enable_rebind(fixture);
+    int stop_calls = 0;
+    int start_calls = 0;
+    int presence_calls = 0;
+    const satsuma::vm::AgentUpdateOperations operations{
+        [&stop_calls] { ++stop_calls; },
+        [&start_calls] {
+            ++start_calls;
+            return std::uint32_t{4401};
+        },
+        [&fixture, &presence_calls](
+            const std::uint32_t process_id,
+            const std::string& version,
+            const std::string& update_id) {
+            ++presence_calls;
+            const satsuma::AgentConfig config =
+                satsuma::load_agent_config(fixture.paths.config);
+            expect(config.vm_id == "gateway", "rebind presence used the source identity");
+            expect(process_id == 4401 && version == "0.1.1" && update_id == "update_001",
+                "rebind presence used the wrong update identity");
+        },
+    };
+
+    const satsuma::AgentUpdateResult result =
+        satsuma::vm::apply_agent_update_for_test(
+            fixture.paths,
+            fixture.manifest,
+            "0.1.1",
+            operations);
+    expect(result.status == "succeeded" && result.vm_id == "client",
+        "valid rebind did not report success through its source identity");
+    expect(stop_calls == 1 && start_calls == 1 && presence_calls == 1,
+        "successful rebind operation count changed");
+    const satsuma::AgentConfig config =
+        satsuma::load_agent_config(fixture.paths.config);
+    expect(config.vm_id == "gateway" &&
+           config.protocol_version == satsuma::kRunManifestProtocolVersion &&
+           config.agent_version == "0.1.1" &&
+           config.last_update_id == "update_001",
+        "successful rebind did not persist the target identity");
+}
+
+// 验证迁移目标已有 presence 时不会停止当前 Service。
+void test_rebind_target_collision(const std::filesystem::path& root) {
+    UpdateFixture fixture = make_fixture(root, "rebind-collision");
+    enable_rebind(fixture);
+    const satsuma::AgentConfig config =
+        satsuma::load_agent_config(fixture.paths.config);
+    satsuma::write_json_atomic(
+        config.shared_root / L"agents" / L"gateway.json",
+        {{"vm_id", "gateway"}});
+    bool service_called = false;
+    const satsuma::vm::AgentUpdateOperations operations{
+        [&service_called] { service_called = true; },
+        [&service_called] {
+            service_called = true;
+            return std::uint32_t{1};
+        },
+        [&service_called](std::uint32_t, const std::string&, const std::string&) {
+            service_called = true;
+        },
+    };
+
+    const satsuma::AgentUpdateResult result =
+        satsuma::vm::apply_agent_update_for_test(
+            fixture.paths,
+            fixture.manifest,
+            "0.1.1",
+            operations);
+    expect(result.status == "failed" && result.rollback_status == "none",
+        "rebind target collision entered the update transaction");
+    expect(!service_called, "rebind target collision touched the Service");
+    expect(satsuma::load_agent_config(fixture.paths.config).vm_id == "client",
+        "rebind target collision changed the source identity");
+}
+
+// 验证目标 presence 失败会恢复来源配置并重新确认旧 Service。
+void test_rebind_presence_failure_rollback(const std::filesystem::path& root) {
+    UpdateFixture fixture = make_fixture(root, "rebind-presence-failure");
+    enable_rebind(fixture);
+    int stop_calls = 0;
+    int start_calls = 0;
+    int presence_calls = 0;
+    const satsuma::vm::AgentUpdateOperations operations{
+        [&stop_calls] { ++stop_calls; },
+        [&start_calls] {
+            ++start_calls;
+            return static_cast<std::uint32_t>(4500 + start_calls);
+        },
+        [&fixture, &presence_calls](
+            const std::uint32_t process_id,
+            const std::string& version,
+            const std::string& update_id) {
+            ++presence_calls;
+            const satsuma::AgentConfig config =
+                satsuma::load_agent_config(fixture.paths.config);
+            if (presence_calls == 1) {
+                expect(config.vm_id == "gateway", "rebind did not start with target config");
+                satsuma::write_json_atomic(
+                    config.shared_root / L"agents" / L"gateway.json",
+                    {
+                        {"schema_version", 1},
+                        {"protocol_version", config.protocol_version},
+                        {"lab_id", config.lab_id},
+                        {"vm_id", config.vm_id},
+                        {"agent_version", version},
+                        {"update_id", update_id},
+                        {"session_id", "session-rebind-test"},
+                        {"boot_id", "boot-rebind-test"},
+                        {"process_id", process_id},
+                        {"status", "idle"},
+                        {"updated_at", "2026-07-27T00:01:00.000Z"},
+                    });
+                throw std::runtime_error("injected rebind presence timeout");
+            }
+            expect(config.vm_id == "client" && version == "0.1.0" && update_id.empty(),
+                "rebind rollback did not restore the source identity");
+        },
+    };
+
+    const satsuma::AgentUpdateResult result =
+        satsuma::vm::apply_agent_update_for_test(
+            fixture.paths,
+            fixture.manifest,
+            "0.1.1",
+            operations);
+    expect(result.status == "failed" && result.rollback_status == "succeeded",
+        "rebind presence failure did not roll back");
+    expect(stop_calls == 2 && start_calls == 2 && presence_calls == 2,
+        "rebind rollback operation count changed");
+    expect(satsuma::load_agent_config(fixture.paths.config).vm_id == "client",
+        "rebind rollback retained the target identity");
+    expect(!std::filesystem::exists(
+            fixture.root / L"shared" / L"agents" / L"gateway.json"),
+        "rebind rollback retained its candidate target presence");
+}
+
+// 验证新身份可在本机清理信息丢失后从来源目录补发成功终态。
+void test_rebind_cross_identity_recovery(const std::filesystem::path& root) {
+    UpdateFixture fixture = make_fixture(root, "rebind-cross-identity-recovery");
+    enable_rebind(fixture);
+    satsuma::write_json_atomic(
+        fixture.paths.update_directory / L"update.json",
+        fixture.manifest);
+
+    nlohmann::json config = satsuma::load_json(fixture.paths.config);
+    config["protocol_version"] = satsuma::kRunManifestProtocolVersion;
+    config["vm_id"] = "gateway";
+    config["agent_version"] = fixture.manifest.version;
+    config["last_update_id"] = fixture.manifest.update_id;
+    satsuma::write_json_atomic(fixture.paths.config, config);
+    std::filesystem::remove(fixture.paths.new_binary);
+    std::filesystem::remove(fixture.paths.manifest);
+
+    satsuma::AgentUpdateResult success;
+    success.update_id = fixture.manifest.update_id;
+    success.vm_id = fixture.manifest.vm_id;
+    success.version = fixture.manifest.version;
+    success.status = "succeeded";
+    success.rollback_status = "none";
+    success.process_id = 4601;
+    success.completed_at = "2026-07-27T00:01:00.000Z";
+    satsuma::write_json_atomic(
+        fixture.paths.update_directory / L".result.pending.json",
+        success);
+
+    expect(
+        satsuma::vm::recover_rebound_update_success_for_test(
+            satsuma::load_agent_config(fixture.paths.config)),
+        "rebound Agent did not recover its source update result");
+    expect(std::filesystem::is_regular_file(fixture.paths.result),
+        "rebound Agent did not publish the recovered result");
+    expect(!std::filesystem::exists(
+            fixture.paths.update_directory / L".result.pending.json"),
+        "rebound Agent retained the pending source result");
 }
 
 // 验证提交后的暂存清理失败由新 Agent 重试，不执行残缺回滚。
@@ -577,6 +764,10 @@ int main() {
         satsuma::path_from_utf8(satsuma::make_id("satsuma-update-test"));
     try {
         test_successful_update(root);
+        test_successful_rebind(root);
+        test_rebind_target_collision(root);
+        test_rebind_presence_failure_rollback(root);
+        test_rebind_cross_identity_recovery(root);
         test_committed_cleanup_retry(root);
         test_success_recovery_cleanup_gate(root);
         test_hash_failure(root);

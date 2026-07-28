@@ -125,7 +125,8 @@ RunManifest Controller::create_run(const TaskPlan& plan) const {
 AgentUpdateManifest Controller::publish_agent_update(
     const std::string& vm_id,
     const std::filesystem::path& binary,
-    const std::string& version) const {
+    const std::string& version,
+    const std::optional<std::string> next_vm_id) const {
     validate_identifier(vm_id, "update VM id");
     if (find_vm(config_, vm_id) == nullptr) {
         throw Error("Agent update references an unknown VM: " + vm_id);
@@ -133,10 +134,30 @@ AgentUpdateManifest Controller::publish_agent_update(
     if (!std::filesystem::is_regular_file(binary)) {
         throw Error("Agent update binary is not a regular file: " + path_to_utf8(binary));
     }
+    if (next_vm_id.has_value()) {
+        validate_identifier(*next_vm_id, "next update VM id");
+        if (*next_vm_id == vm_id) {
+            throw Error("Agent rebind target must differ from its current VM id");
+        }
+        if (find_vm(config_, *next_vm_id) == nullptr) {
+            throw Error("Agent rebind references an unknown target VM: " + *next_vm_id);
+        }
+        const std::filesystem::path target_presence = resolve_under_root(
+            config_.shared_folder.host_root,
+            std::filesystem::path(L"agents") /
+                path_from_utf8(*next_vm_id + ".json"));
+        if (std::filesystem::exists(target_presence)) {
+            throw Error(
+                "Agent rebind target presence already exists: " +
+                path_to_utf8(target_presence));
+        }
+    }
 
     AgentUpdateManifest manifest;
+    manifest.protocol_version = next_vm_id.has_value() ? 2 : 1;
     manifest.lab_id = config_.lab_id;
     manifest.vm_id = vm_id;
+    manifest.next_vm_id = next_vm_id;
     manifest.update_id = make_id("update");
     manifest.version = version;
     manifest.binary = L"SatsumaVM.exe";

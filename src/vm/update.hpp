@@ -65,6 +65,10 @@ struct AgentUpdateOperations {
 [[nodiscard]] bool recover_committed_update_success_for_test(
     const AgentUpdatePaths& paths,
     const AgentUpdateManifest& manifest);
+
+// 验证身份切换后的 Agent 能从来源目录补发已提交结果。
+[[nodiscard]] bool recover_rebound_update_success_for_test(
+    const AgentConfig& config);
 #endif
 
 }  // namespace satsuma::vm

@@ -3,6 +3,7 @@
 
 #include <chrono>
 #include <filesystem>
+#include <optional>
 #include <string>
 
 #include <nlohmann/json.hpp>
@@ -32,7 +33,8 @@ public:
     [[nodiscard]] AgentUpdateManifest publish_agent_update(
         const std::string& vm_id,
         const std::filesystem::path& binary,
-        const std::string& version) const;
+        const std::string& version,
+        std::optional<std::string> next_vm_id = std::nullopt) const;
 
     // 有限等待 Agent 更新终态，成功后删除共享更新目录。
     [[nodiscard]] AgentUpdateResult wait_agent_update(

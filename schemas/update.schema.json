@@ -33,10 +33,11 @@
       ],
       "properties": {
         "schema_version": {"const": 1},
-        "protocol_version": {"const": 1},
+        "protocol_version": {"enum": [1, 2]},
         "type": {"const": "update_agent"},
         "lab_id": {"$ref": "#/$defs/identifier"},
         "vm_id": {"$ref": "#/$defs/identifier"},
+        "next_vm_id": {"$ref": "#/$defs/identifier"},
         "update_id": {"$ref": "#/$defs/identifier"},
         "version": {"type": "string", "minLength": 1, "maxLength": 64},
         "binary": {
@@ -46,7 +47,14 @@
         "size": {"type": "integer", "minimum": 1},
         "sha256": {"$ref": "#/$defs/sha256"},
         "created_at": {"type": "string", "format": "date-time"}
-      }
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"protocol_version": {"const": 2}}},
+          "then": {"required": ["next_vm_id"]},
+          "else": {"not": {"required": ["next_vm_id"]}}
+        }
+      ]
     },
     "result": {
       "type": "object",

@@ -142,6 +142,9 @@ void print_usage() {
         << "  SatsumaHost snapshot delete-ai --vm <vm-id> --snapshot <name> [--config lab.json]\n"
         << "  SatsumaHost agent update --vm <vm-id> --binary SatsumaVM.exe --version <version> "
            "[--timeout-seconds <1-3600>] [--config lab.json]\n"
+        << "  SatsumaHost agent rebind --vm <current-id> --next-vm <new-id> "
+           "--binary SatsumaVM.exe --version <version> "
+           "[--timeout-seconds <1-3600>] [--config lab.json]\n"
         << "  SatsumaHost run --config lab.json --plan task.json\n"
         << "  SatsumaHost orchestrate --config lab.json --plan task.json [--timeout-seconds <1-86400>]\n"
         << "  SatsumaHost report --config lab.json --run <run-id> [--wait-seconds <1-86400>]\n";
@@ -202,7 +205,7 @@ int wmain(const int argc, wchar_t* argv[]) {
         }
 
         if (command == L"agent") {
-            if (subcommand != L"update") {
+            if (subcommand != L"update" && subcommand != L"rebind") {
                 print_usage();
                 return 2;
             }
@@ -211,10 +214,15 @@ int wmain(const int argc, wchar_t* argv[]) {
             const std::filesystem::path binary = require_option(options, L"binary");
             const std::string version = satsuma::path_to_utf8(
                 require_option(options, L"version"));
+            std::optional<std::string> next_vm_id;
+            if (subcommand == L"rebind") {
+                next_vm_id = satsuma::path_to_utf8(
+                    require_option(options, L"next-vm"));
+            }
             const std::chrono::seconds timeout = parse_update_timeout(options);
             satsuma::host::Controller controller(std::move(config));
             const satsuma::AgentUpdateManifest manifest =
-                controller.publish_agent_update(vm_id, binary, version);
+                controller.publish_agent_update(vm_id, binary, version, next_vm_id);
             const satsuma::AgentUpdateResult result = controller.wait_agent_update(
                 vm_id,
                 manifest.update_id,
