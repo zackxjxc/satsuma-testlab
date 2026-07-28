@@ -112,7 +112,8 @@ void test_report_uses_canonical_result_paths(const std::filesystem::path& root) 
     expect(
         incomplete.at("reported_steps") == 1 &&
             incomplete.at("successful_steps") == 1 &&
-            !incomplete.at("complete").get<bool>(),
+            !incomplete.at("complete").get<bool>() &&
+            incomplete.at("status") == "pending",
         "collected execution.json changed the canonical completion count");
 
     satsuma::write_json_atomic(
@@ -122,8 +123,50 @@ void test_report_uses_canonical_result_paths(const std::filesystem::path& root) 
     expect(
         complete.at("reported_steps") == 2 &&
             complete.at("successful_steps") == 2 &&
-            complete.at("complete").get<bool>(),
+            complete.at("complete").get<bool>() &&
+            complete.at("status") == "succeeded",
         "canonical execution results did not complete the report");
+
+    satsuma::ExecutionResult failed = make_execution(
+        manifest,
+        manifest.steps.at(1),
+        "job_report_second");
+    failed.exit_code = 7;
+    satsuma::write_json_atomic(
+        result_path(config, manifest.run_id, manifest.steps.at(1)),
+        failed);
+    const nlohmann::json failed_report = controller.build_report(manifest.run_id);
+    expect(
+        failed_report.at("complete").get<bool>() &&
+            failed_report.at("failed_steps") == 1 &&
+            failed_report.at("status") == "failed",
+        "complete report did not expose its failed business status");
+}
+
+// 验证危险 claim 恢复门禁优先成为报告顶层状态。
+void test_report_exposes_manual_intervention(const std::filesystem::path& root) {
+    const satsuma::LabConfig config = make_config(root);
+    const satsuma::host::Controller controller(config);
+    satsuma::TaskPlan plan = make_plan("report_manual_intervention");
+    plan.steps.resize(1);
+    const satsuma::RunManifest manifest = controller.create_run(plan);
+    const satsuma::TaskStep& step = manifest.steps.front();
+    const std::filesystem::path recovery_path =
+        config.shared_folder.host_root / L"runs" /
+        satsuma::path_from_utf8(manifest.run_id) / L"state" /
+        satsuma::path_from_utf8(step.vm) /
+        satsuma::path_from_utf8(step.id + ".claim-recovery.json");
+    satsuma::write_json_atomic(recovery_path, {
+        {"status", "manual_intervention_required"},
+        {"error", "unsafe expired claim"},
+    });
+
+    const nlohmann::json report = controller.build_report(manifest.run_id);
+    expect(
+        report.at("status") == "manual_intervention_required" &&
+            report.at("manual_intervention_required").get<bool>() &&
+            !report.at("complete").get<bool>(),
+        "manual intervention gate did not become the report status");
 }
 
 // 验证规范路径中的串属结果会阻止报告完成。
@@ -160,6 +203,7 @@ int main() {
         satsuma::path_from_utf8(satsuma::make_id("satsuma-host-controller-test"));
     try {
         test_report_uses_canonical_result_paths(root / L"paths");
+        test_report_exposes_manual_intervention(root / L"manual");
         test_report_rejects_mismatched_identity(root / L"identity");
         std::filesystem::remove_all(root);
         std::cout << "SatsumaHostControllerTests passed\n";

@@ -321,16 +321,29 @@ nlohmann::json Controller::build_report(const std::string& run_id) const {
             });
         }
     }
+    const bool complete = executions.size() == manifest.steps.size(); // 是否已收到全部规范结果
+    const bool manual_intervention_required = !blocked_steps.empty(); // 是否存在人工恢复门禁
+    std::string status;
+    if (manual_intervention_required) {
+        status = "manual_intervention_required";
+    } else if (!complete) {
+        status = "pending";
+    } else if (failed != 0) {
+        status = "failed";
+    } else {
+        status = "succeeded";
+    }
     return {
         {"schema_version", 1},
         {"run_id", run_id},
         {"name", manifest.name},
+        {"status", status},
         {"expected_steps", manifest.steps.size()},
         {"reported_steps", executions.size()},
         {"successful_steps", completed},
         {"failed_steps", failed},
-        {"complete", executions.size() == manifest.steps.size()},
-        {"manual_intervention_required", !blocked_steps.empty()},
+        {"complete", complete},
+        {"manual_intervention_required", manual_intervention_required},
         {"blocked_steps", std::move(blocked_steps)},
         {"executions", std::move(executions)},
     };
