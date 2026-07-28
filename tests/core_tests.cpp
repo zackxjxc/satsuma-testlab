@@ -10,7 +10,6 @@
 #include <vector>
 
 #include <nlohmann/json.hpp>
-#include <ylt/struct_pack.hpp>
 #include <windows.h>
 
 #include "satsuma/core/config.hpp"
@@ -20,7 +19,6 @@
 #include "satsuma/core/json_io.hpp"
 #include "satsuma/core/lifecycle.hpp"
 #include "satsuma/core/path.hpp"
-#include "satsuma/core/rpc_protocol.hpp"
 #include "satsuma/core/sha256.hpp"
 #include "satsuma/core/snapshot.hpp"
 #include "satsuma/core/task.hpp"
@@ -149,8 +147,8 @@ void test_snapshot_configuration(const std::filesystem::path& root) {
         {"schema_version", 1},
         {"lab_id", "snapshot_test"},
         {"provider", {{"type", "vmware_workstation"}, {"vmrun", "C:/vmrun.exe"}}},
-        {"host", {{"listen", "127.0.0.1:37100"}, {"archive_root", "C:/archive"}}},
-        {"shared_folder", {{"host_root", "C:/share"}, {"guest_root", "C:/share"}}},
+        {"host", {{"archive_root", "C:/archive"}}},
+        {"shared_folder", {{"host_root", "C:/share"}}},
         {"vms", {{{
             "id", "client"},
             {"vmx", "C:/Client.vmx"},
@@ -167,15 +165,6 @@ void test_snapshot_configuration(const std::filesystem::path& root) {
     const satsuma::LabConfig config = satsuma::load_lab_config(config_path);
     expect(config.vms.at(0).snapshots.base == "clean", "snapshot base was not parsed");
     expect(config.vms.at(0).snapshots.max_ai_snapshots == 8, "snapshot quota was not parsed");
-    expect(!config.vms.at(0).management_ip.has_value(), "missing management IP was not accepted");
-
-    value["vms"][0]["management_ip"] = "127.0.0.1";
-    satsuma::write_json_atomic(config_path, value);
-    const satsuma::LabConfig config_with_management_ip = satsuma::load_lab_config(config_path);
-    expect(
-        config_with_management_ip.vms.at(0).management_ip == std::optional<std::string>("127.0.0.1"),
-        "optional management IP was not parsed");
-
     value["vms"][0]["snapshots"]["base"] = "satsuma-ai-user-base";
     satsuma::write_json_atomic(config_path, value);
     expect_error(
@@ -189,8 +178,8 @@ void test_absolute_configuration_paths(const std::filesystem::path& root) {
         {"schema_version", 1},
         {"lab_id", "absolute_path_test"},
         {"provider", {{"type", "vmware_workstation"}, {"vmrun", "C:/vmrun.exe"}}},
-        {"host", {{"listen", "127.0.0.1:37100"}, {"archive_root", "C:/archive"}}},
-        {"shared_folder", {{"host_root", "C:/share"}, {"guest_root", "C:/share"}}},
+        {"host", {{"archive_root", "C:/archive"}}},
+        {"shared_folder", {{"host_root", "C:/share"}}},
         {"vms", {{
             {"id", "client"},
             {"vmx", "C:/Client.vmx"},
@@ -225,6 +214,9 @@ void test_absolute_configuration_paths(const std::filesystem::path& root) {
     invalid_lab = lab;
     invalid_lab["vms"][0]["vmx"] = "Client.vmx";
     expect_lab_rejected(invalid_lab, "relative VMX path was accepted");
+    invalid_lab = lab;
+    invalid_lab["host"]["listen"] = "127.0.0.1:37100";
+    expect_lab_rejected(invalid_lab, "removed Host network configuration was accepted");
 
     const nlohmann::json agent = {
         {"schema_version", 1},
@@ -232,7 +224,6 @@ void test_absolute_configuration_paths(const std::filesystem::path& root) {
         {"lab_id", "absolute_path_test"},
         {"vm_id", "client"},
         {"agent_version", "0.1.0"},
-        {"host", "127.0.0.1:37100"},
         {"shared_root", "C:/share"},
         {"local_work_root", "C:/work"},
     };
@@ -252,6 +243,9 @@ void test_absolute_configuration_paths(const std::filesystem::path& root) {
     invalid_agent = agent;
     invalid_agent["local_work_root"] = "work";
     expect_agent_rejected(invalid_agent, "relative Agent work root was accepted");
+    invalid_agent = agent;
+    invalid_agent["host"] = "127.0.0.1:37100";
+    expect_agent_rejected(invalid_agent, "removed Agent network configuration was accepted");
 }
 
 // 验证 AI 快照命名、重名检查和数量配额。
@@ -772,44 +766,6 @@ void test_claim_recovery_decision(const std::filesystem::path& root) {
         "legacy claim lease did not receive renewal defaults");
 }
 
-// 验证 RPC 请求的版本、实验室和状态边界。
-void test_rpc_protocol_validation() {
-    satsuma::AgentHello hello;
-    hello.lab_id = "test_lab";
-    hello.vm_id = "client";
-    hello.session_id = "session_1";
-    hello.boot_id = "boot_1";
-    hello.request_id = "request_1";
-    hello.agent_version = "0.1.0";
-    satsuma::validate_rpc_request(hello, "test_lab");
-
-    const auto encoded = struct_pack::serialize(hello);
-    const auto decoded = struct_pack::deserialize<satsuma::AgentHello>(encoded);
-    expect(decoded.has_value(), "AgentHello could not be deserialized by struct_pack");
-    expect(decoded.value().request_id == hello.request_id, "AgentHello changed during struct_pack round trip");
-
-    expect_error(
-        [&hello] {
-            satsuma::AgentHello invalid = hello;
-            invalid.protocol_version = 2;
-            satsuma::validate_rpc_request(invalid, "test_lab");
-        },
-        "incompatible RPC protocol version was accepted");
-
-    satsuma::AgentStatus status;
-    status.lab_id = hello.lab_id;
-    status.vm_id = hello.vm_id;
-    status.session_id = hello.session_id;
-    status.boot_id = hello.boot_id;
-    status.request_id = "request_2";
-    status.status = "idle";
-    satsuma::validate_rpc_request(status, "test_lab");
-    status.status = "unknown";
-    expect_error(
-        [&status] { satsuma::validate_rpc_request(status, "test_lab"); },
-        "unknown Agent status was accepted");
-}
-
 // 验证独立更新清单和终态结果的严格协议。
 void test_agent_update_protocol(const std::filesystem::path& root) {
     satsuma::AgentUpdateManifest manifest;
@@ -927,7 +883,6 @@ int main() {
         test_task_input_validation(root);
         test_run_lifecycle(root);
         test_claim_recovery_decision(root);
-        test_rpc_protocol_validation();
         test_agent_update_protocol(root);
         test_windows_command_line();
         std::filesystem::remove_all(root);

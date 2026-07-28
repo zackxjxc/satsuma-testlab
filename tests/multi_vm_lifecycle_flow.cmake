@@ -85,19 +85,17 @@ function(run_multi_vm_scenario name expected_exit expected_status client_step ga
   "schema_version": 1,
   "lab_id": "multi_vm_lab",
   "provider": {"type": "vmware_workstation", "vmrun": "@VMRUN@"},
-  "host": {"listen": "127.0.0.1:37100", "archive_root": "@ARCHIVE@"},
-  "shared_folder": {"host_root": "@SHARE@", "guest_root": "@SHARE@"},
+  "host": {"archive_root": "@ARCHIVE@"},
+  "shared_folder": {"host_root": "@SHARE@"},
   "vms": [
     {
       "id": "gateway",
-      "role": "gateway",
       "vmx": "@GATEWAY_VMX@",
       "agent_version": "0.1.0",
       "snapshots": {"base": "clean", "ai_prefix": "satsuma-ai-", "max_ai_snapshots": 8}
     },
     {
       "id": "client",
-      "role": "client",
       "vmx": "@CLIENT_VMX@",
       "agent_version": "0.1.0",
       "snapshots": {"base": "clean", "ai_prefix": "satsuma-ai-", "max_ai_snapshots": 8}
@@ -119,12 +117,10 @@ function(run_multi_vm_scenario name expected_exit expected_status client_step ga
   "lab_id": "multi_vm_lab",
   "vm_id": "@VM_ID@",
   "agent_version": "0.1.0",
-  "host": "127.0.0.1:37100",
   "shared_root": "@SHARE@",
   "local_work_root": "@LOCAL@",
   "poll_interval_ms": 100,
-  "reconnect_interval_ms": 100,
-  "rpc_timeout_ms": 1000
+  "reconnect_interval_ms": 100
 }
 ]=])
     string(REPLACE "@SHARE@" "${share_path}" client_agent_json "${agent_json}")
@@ -452,3 +448,6 @@ unset(ENV{SATSUMA_MULTI_VM_FAIL_GATEWAY_SOFT_STOP})
 unset(ENV{SATSUMA_MULTI_VM_DELAYED_STOP_VMX})
 unset(ENV{SATSUMA_MULTI_VM_FAIL_CLIENT_START})
 unset(ENV{SATSUMA_MULTI_VM_DELAYED_START_VMX})
+
+# 成功运行不保留大体积临时 VM/Artifact；失败会在到达此处前终止并保留证据。
+file(REMOVE_RECURSE "${TEST_ROOT}")

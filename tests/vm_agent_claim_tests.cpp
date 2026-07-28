@@ -59,7 +59,6 @@ void expect(const bool condition, const std::string& message) {
     config.lab_id = "vm_agent_claim_test";
     config.vm_id = "client";
     config.agent_version = "0.1.0";
-    config.host = "192.0.2.1:9";
     config.shared_root = shared_root;
     config.local_work_root = local_work_root;
     config.poll_interval_ms = 30'000;

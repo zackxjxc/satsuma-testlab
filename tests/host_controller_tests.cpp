@@ -194,6 +194,39 @@ void test_report_rejects_mismatched_identity(const std::filesystem::path& root) 
     expect(rejected, "Host report accepted a mismatched canonical execution identity");
 }
 
+// 验证运行列表、取消请求和只删除终态运行的保留策略。
+void test_run_management(const std::filesystem::path& root) {
+    const satsuma::LabConfig config = make_config(root);
+    const satsuma::host::Controller controller(config);
+    satsuma::TaskPlan complete_plan = make_plan("completed_for_prune");
+    complete_plan.steps.resize(1);
+    const satsuma::RunManifest complete = controller.create_run(complete_plan);
+    satsuma::write_json_atomic(
+        result_path(config, complete.run_id, complete.steps.front()),
+        make_execution(complete, complete.steps.front(), "job_completed_for_prune"));
+    const satsuma::RunManifest pending = controller.create_run(make_plan("pending_for_cancel"));
+
+    const nlohmann::json listed = controller.list_runs();
+    expect(listed.at("runs").size() == 2, "run list omitted a shared run");
+    const nlohmann::json cancelled = controller.cancel_run(
+        pending.run_id,
+        "controller test cancellation");
+    expect(
+        cancelled.at("status") == "cancellation_requested" &&
+            std::filesystem::is_regular_file(
+                config.shared_folder.host_root / L"runs" / L"pending_for_cancel" / L"cancel.json"),
+        "run cancellation was not published atomically");
+
+    const nlohmann::json pruned = controller.prune_runs(0);
+    expect(pruned.at("removed").size() == 1, "run pruning did not remove one completed run");
+    expect(
+        !std::filesystem::exists(
+            config.shared_folder.host_root / L"runs" / L"completed_for_prune") &&
+            std::filesystem::is_directory(
+                config.shared_folder.host_root / L"runs" / L"pending_for_cancel"),
+        "run pruning removed a pending run or retained a completed run");
+}
+
 }  // namespace
 
 // 运行 Host Controller 测试并清理专用临时目录。
@@ -205,6 +238,7 @@ int main() {
         test_report_uses_canonical_result_paths(root / L"paths");
         test_report_exposes_manual_intervention(root / L"manual");
         test_report_rejects_mismatched_identity(root / L"identity");
+        test_run_management(root / L"run-management");
         std::filesystem::remove_all(root);
         std::cout << "SatsumaHostControllerTests passed\n";
         return 0;

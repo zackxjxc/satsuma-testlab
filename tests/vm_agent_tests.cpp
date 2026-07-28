@@ -217,6 +217,25 @@ void test_process_runner_cancellation(
     expect(stop_duration < 5s, "ProcessRunner cancellation exceeded five seconds");
 }
 
+// 验证失控日志会终止完整进程树，而不是持续耗尽磁盘。
+void test_process_runner_output_limit(
+    const std::filesystem::path& root,
+    const std::filesystem::path& fixture) {
+    std::filesystem::create_directories(root);
+    satsuma::vm::ProcessRequest request;
+    request.program = fixture;
+    request.arguments = {"--stdout-bytes", "1048576"};
+    request.working_directory = root;
+    request.stdout_path = root / L"stdout.log";
+    request.stderr_path = root / L"stderr.log";
+    request.timeout = 5s;
+    request.max_output_bytes = 64 * 1024;
+
+    const satsuma::vm::ProcessResult result = satsuma::vm::ProcessRunner{}.run(request);
+    expect(result.output_limit_exceeded, "ProcessRunner accepted output above its limit");
+    expect(!result.timed_out, "output limit was reported as a timeout");
+}
+
 // 验证 watch 模式不依赖 Host，并在停止时生成失败执行证据。
 void test_file_watch_and_agent_stop(
     const std::filesystem::path& root,
@@ -229,7 +248,6 @@ void test_file_watch_and_agent_stop(
     config.lab_id = "vm_agent_test";
     config.vm_id = "client";
     config.agent_version = "0.1.0";
-    config.host = "192.0.2.1:9";
     config.shared_root = shared_root;
     config.local_work_root = root / L"work";
     config.poll_interval_ms = 30'000;
@@ -261,7 +279,7 @@ void test_file_watch_and_agent_stop(
         std::rethrow_exception(worker_error);
     }
 
-    expect(echo_completed, "Agent did not complete a file task without Host RPC");
+    expect(echo_completed, "Agent did not complete a file task without a Host control channel");
     expect(execute_started, "Agent did not start the cancellable file task");
     expect(stop_duration < 5s, "Agent stop exceeded five seconds");
     expect(
@@ -291,6 +309,47 @@ void test_file_watch_and_agent_stop(
     expect(stopped.error == "Agent stop requested", "Agent stop did not preserve the stable error text");
 }
 
+// 验证 Host 文件取消请求会终止当前 Job Object 并生成稳定结果。
+void test_file_cancellation(
+    const std::filesystem::path& root,
+    const std::filesystem::path& fixture) {
+    const std::filesystem::path shared_root = root / L"share";
+    write_cancellable_run(shared_root, fixture);
+    satsuma::AgentConfig config;
+    config.lab_id = "vm_agent_test";
+    config.vm_id = "client";
+    config.agent_version = "0.1.0";
+    config.shared_root = shared_root;
+    config.local_work_root = root / L"work";
+    config.poll_interval_ms = 30'000;
+    config.reconnect_interval_ms = 30'000;
+
+    satsuma::vm::Agent agent(std::move(config));
+    std::stop_source stop_source;
+    std::thread worker([&] { agent.run_watch(stop_source.get_token()); });
+    const std::filesystem::path ready =
+        root / L"work" / L"run_stop_execution" / L"ready.marker";
+    expect(wait_for_file(ready, 5s), "cancellable task did not start");
+    const std::filesystem::path run_directory =
+        shared_root / L"runs" / L"run_stop_execution";
+    satsuma::write_json_atomic(run_directory / L"cancel.json", {
+        {"schema_version", 1},
+        {"run_id", "run_stop_execution"},
+        {"reason", "test cancellation"},
+    });
+    const std::filesystem::path result_path =
+        run_directory / L"results" / L"client" / L"execute_until_stopped" / L"execution.json";
+    const bool completed = wait_for_file(result_path, 5s);
+    stop_source.request_stop();
+    worker.join();
+    expect(completed, "file cancellation did not publish execution.json");
+    const satsuma::ExecutionResult result =
+        satsuma::load_json(result_path).get<satsuma::ExecutionResult>();
+    expect(
+        result.status == "failed" && result.error == "Run cancellation requested",
+        "file cancellation did not preserve its stable result");
+}
+
 // 验证 Agent 通过用户 helper 执行、收集文件并记录真实 Session。
 void test_agent_interactive_execution(
     const std::filesystem::path& root,
@@ -304,7 +363,6 @@ void test_agent_interactive_execution(
     config.lab_id = "vm_agent_test";
     config.vm_id = "client";
     config.agent_version = "0.1.0";
-    config.host = "192.0.2.1:9";
     config.shared_root = shared_root;
     config.local_work_root = root / L"system-work";
     satsuma::vm::Agent agent(config, helper);
@@ -364,7 +422,6 @@ void test_agent_no_interactive_session(
     config.lab_id = "vm_agent_test";
     config.vm_id = "client";
     config.agent_version = "0.1.0";
-    config.host = "192.0.2.1:9";
     config.shared_root = shared_root;
     config.local_work_root = root / L"system-work";
     satsuma::vm::Agent agent(std::move(config), helper);
@@ -405,6 +462,34 @@ void test_agent_no_interactive_session(
         "Agent did not execute the SYSTEM step after a no-session failure");
 }
 
+// 验证一个损坏运行不会阻塞按名称排在它之后的合法任务。
+void test_invalid_run_is_isolated(const std::filesystem::path& root) {
+    const std::filesystem::path shared_root = root / L"share";
+    const std::filesystem::path invalid_run = shared_root / L"runs" / L"a-invalid-run";
+    std::filesystem::create_directories(invalid_run);
+    std::ofstream(invalid_run / L"task.json", std::ios::binary) << "{invalid json";
+    write_echo_run(shared_root);
+
+    satsuma::AgentConfig config;
+    config.lab_id = "vm_agent_test";
+    config.vm_id = "client";
+    config.agent_version = "0.1.0";
+    config.shared_root = shared_root;
+    config.local_work_root = root / L"work";
+    satsuma::vm::Agent agent(std::move(config));
+
+    expect(agent.run_once() == 1, "invalid run blocked a later valid run");
+    expect(
+        std::filesystem::is_regular_file(
+            invalid_run / L"state" / L"client-agent-error.json"),
+        "invalid run did not receive a stable Agent error record");
+    expect(
+        std::filesystem::is_regular_file(
+            shared_root / L"runs" / L"run_file_success" / L"results" /
+            L"client" / L"echo_success" / L"execution.json"),
+        "valid run after an invalid run did not complete");
+}
+
 // 验证兼容读取的 v1 配置不能构造生产 Agent。
 void test_agent_rejects_legacy_file_protocol(const std::filesystem::path& root) {
     satsuma::AgentConfig config;
@@ -412,7 +497,6 @@ void test_agent_rejects_legacy_file_protocol(const std::filesystem::path& root) 
     config.lab_id = "vm_agent_test";
     config.vm_id = "client";
     config.agent_version = "0.1.0";
-    config.host = "192.0.2.1:9";
     config.shared_root = root / L"share";
     config.local_work_root = root / L"work";
     bool rejected = false;
@@ -440,7 +524,9 @@ int main(const int argc, char* argv[]) {
         const std::filesystem::path fixture = std::filesystem::absolute(argv[1]);
         const std::filesystem::path helper = std::filesystem::absolute(argv[2]);
         test_process_runner_cancellation(root / L"process-runner", fixture);
+        test_process_runner_output_limit(root / L"process-output-limit", fixture);
         test_file_watch_and_agent_stop(root / L"agent-watch", fixture);
+        test_file_cancellation(root / L"file-cancellation", fixture);
         test_agent_interactive_execution(
             root / L"interactive-agent",
             fixture,
@@ -449,6 +535,7 @@ int main(const int argc, char* argv[]) {
             root / L"no-interactive-session",
             fixture,
             helper);
+        test_invalid_run_is_isolated(root / L"invalid-run-isolation");
         test_agent_rejects_legacy_file_protocol(root / L"legacy-protocol");
         std::filesystem::remove_all(root);
         std::cout << "SatsumaVmAgentTests passed\n";

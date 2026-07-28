@@ -1,4 +1,5 @@
 // Host/VM 集成测试使用的无害被测程序。
+#include <algorithm>
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
@@ -289,6 +290,7 @@ int main(const int argc, char* argv[]) {
         bool child_mode = false;  // 是否作为进程树测试的子进程运行
         int child_delay_ms = 0;
         int sleep_ms = 0;
+        int stdout_bytes = 0; // 输出容量门禁测试使用的字节数
         for (int index = 1; index < argc; ++index) {
             const std::string argument = argv[index];
             if (argument == "--message" && index + 1 < argc) {
@@ -299,6 +301,8 @@ int main(const int argc, char* argv[]) {
                 ready_path = argv[++index];
             } else if (argument == "--sleep-ms" && index + 1 < argc) {
                 sleep_ms = std::stoi(argv[++index]);
+            } else if (argument == "--stdout-bytes" && index + 1 < argc) {
+                stdout_bytes = std::stoi(argv[++index]);
             } else if (argument == "--rename-self" && index + 1 < argc) {
                 rename_self_path = argv[++index];
             } else if (argument == "--replace-self" && index + 2 < argc) {
@@ -404,6 +408,17 @@ int main(const int argc, char* argv[]) {
             if (!replace_backup_path.empty()) {
                 std::filesystem::remove(replace_backup_path);
             }
+        }
+        if (stdout_bytes < 0 || stdout_bytes > 16 * 1024 * 1024) {
+            throw std::runtime_error("fixture stdout byte count is outside the test limit");
+        }
+        if (stdout_bytes > 0) {
+            const std::string chunk(4096, 'x');
+            for (int written = 0; written < stdout_bytes; written += static_cast<int>(chunk.size())) {
+                std::cout.write(chunk.data(), std::min<int>(
+                    static_cast<int>(chunk.size()), stdout_bytes - written));
+            }
+            std::cout.flush();
         }
         std::cout << message << '\n';
         if (!session_path.empty()) {

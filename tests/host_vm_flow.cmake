@@ -30,50 +30,40 @@ set(lab_json [=[
     "type": "vmware_workstation",
     "vmrun": "@VMRUN@"
   },
-  "host": {
-    "listen": "127.0.0.1:37100",
-    "archive_root": "@ARCHIVE@"
-  },
+  "host": {"archive_root": "@ARCHIVE@"},
   "shared_folder": {
-    "host_root": "@SHARE@",
-    "guest_root": "@SHARE@"
+    "host_root": "@SHARE@"
   },
   "vms": [
     {
       "id": "client",
-      "role": "client",
       "vmx": "@VMX@",
       "agent_version": "0.1.0",
       "snapshots": {
         "base": "clean",
         "ai_prefix": "satsuma-ai-",
         "max_ai_snapshots": 8
-      },
-      "management_ip": "127.0.0.1"
+      }
     },
     {
       "id": "hard-stop",
-      "role": "hard-stop-test",
       "vmx": "@HARD_VMX@",
       "agent_version": "0.1.0",
       "snapshots": {
         "base": "clean",
         "ai_prefix": "satsuma-ai-",
         "max_ai_snapshots": 8
-      },
-      "management_ip": "127.0.0.2"
+      }
     },
     {
       "id": "snapshot-reconcile",
-      "role": "snapshot-reconcile-test",
       "vmx": "@RECONCILE_VMX@",
       "agent_version": "0.1.0",
       "snapshots": {
         "base": "clean",
         "ai_prefix": "satsuma-ai-",
         "max_ai_snapshots": 8
-      },
-      "management_ip": "127.0.0.3"
+      }
     }
   ]
 }
@@ -93,12 +83,10 @@ set(agent_json [=[
   "lab_id": "integration_lab",
   "vm_id": "client",
   "agent_version": "0.1.0",
-  "host": "127.0.0.1:37100",
   "shared_root": "@SHARE@",
   "local_work_root": "@LOCAL@",
   "poll_interval_ms": 100,
-  "reconnect_interval_ms": 100,
-  "rpc_timeout_ms": 1000
+  "reconnect_interval_ms": 100
 }
 ]=])
 string(REPLACE "@SHARE@" "${share_path}" agent_json "${agent_json}")
@@ -1067,7 +1055,7 @@ execute_process(
     OUTPUT_VARIABLE unsafe_report_output
     ERROR_VARIABLE unsafe_report_error
 )
-if(NOT unsafe_report_result EQUAL 0)
+if(NOT unsafe_report_result EQUAL 5)
     message(FATAL_ERROR "Unsafe claim report failed: ${unsafe_report_error}\n${unsafe_report_output}")
 endif()
 string(FIND
@@ -1477,7 +1465,7 @@ execute_process(
     OUTPUT_VARIABLE report_output
     ERROR_VARIABLE report_error
 )
-if(NOT report_result EQUAL 0)
+if(NOT report_result EQUAL 1)
     message(FATAL_ERROR "SatsumaHost report failed: ${report_error}\n${report_output}")
 endif()
 string(FIND "${report_output}" "\"wait_status\": \"completed\"" report_wait_position)

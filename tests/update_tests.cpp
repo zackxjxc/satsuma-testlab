@@ -77,12 +77,10 @@ struct UpdateFixture {
         {"lab_id", "test_lab"},
         {"vm_id", "client"},
         {"agent_version", "0.1.0"},
-        {"host", "127.0.0.1:37100"},
         {"shared_root", satsuma::path_to_utf8(shared_root)},
         {"local_work_root", satsuma::path_to_utf8(install_root / L"work")},
         {"poll_interval_ms", 100},
         {"reconnect_interval_ms", 100},
-        {"rpc_timeout_ms", 1000},
     });
 
     fixture.manifest.lab_id = "test_lab";

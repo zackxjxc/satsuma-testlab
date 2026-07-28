@@ -1,0 +1,21 @@
+# 验证仓库内全部 JSON Schema 至少是可解析的对象文档。
+if(NOT DEFINED SCHEMA_ROOT)
+    message(FATAL_ERROR "SCHEMA_ROOT is required")
+endif()
+
+file(GLOB schema_files LIST_DIRECTORIES FALSE "${SCHEMA_ROOT}/*.schema.json")
+if(NOT schema_files)
+    message(FATAL_ERROR "No JSON Schema files were found")
+endif()
+
+foreach(schema_file IN LISTS schema_files)
+    file(READ "${schema_file}" schema_text)
+    string(JSON schema_type TYPE "${schema_text}")
+    if(NOT schema_type STREQUAL "OBJECT")
+        message(FATAL_ERROR "Schema root must be an object: ${schema_file}")
+    endif()
+    string(JSON schema_dialect GET "${schema_text}" "$schema")
+    if(NOT schema_dialect STREQUAL "https://json-schema.org/draft/2020-12/schema")
+        message(FATAL_ERROR "Schema uses an unsupported dialect: ${schema_file}")
+    endif()
+endforeach()
