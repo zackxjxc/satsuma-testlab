@@ -142,6 +142,91 @@ set(task_json [=[
 string(REPLACE "@FIXTURE@" "${fixture_path}" task_json "${task_json}")
 file(WRITE "${TEST_ROOT}/task.json" "${task_json}")
 
+# Host 帮助和版本必须在不读取配置时可用。
+execute_process(
+    COMMAND "${HOST_EXE}" --help
+    RESULT_VARIABLE host_help_result
+    OUTPUT_VARIABLE host_help_output
+    ERROR_VARIABLE host_help_error
+)
+string(FIND "${host_help_output}" "Usage:" host_help_usage_position)
+if(NOT host_help_result EQUAL 0 OR host_help_usage_position EQUAL -1)
+    message(FATAL_ERROR "SatsumaHost --help failed: ${host_help_error}\n${host_help_output}")
+endif()
+
+execute_process(
+    COMMAND "${HOST_EXE}" --version
+    RESULT_VARIABLE host_version_result
+    OUTPUT_VARIABLE host_version_output
+    ERROR_VARIABLE host_version_error
+)
+string(STRIP "${host_version_output}" host_version_output)
+if(NOT host_version_result EQUAL 0 OR NOT host_version_output STREQUAL "0.1.0")
+    message(FATAL_ERROR
+        "SatsumaHost --version returned an unexpected result: "
+        "${host_version_error}\n${host_version_output}")
+endif()
+
+# 命令结构和选项拼写错误必须在读取配置或调用 VMware 前失败。
+execute_process(
+    COMMAND "${HOST_EXE}" unknown-command
+    RESULT_VARIABLE unknown_command_result
+    OUTPUT_VARIABLE unknown_command_output
+    ERROR_VARIABLE unknown_command_error
+)
+string(FIND "${unknown_command_output}" "Usage:" unknown_command_usage_position)
+if(NOT unknown_command_result EQUAL 2 OR unknown_command_usage_position EQUAL -1)
+    message(FATAL_ERROR
+        "SatsumaHost unknown command did not return usage: "
+        "${unknown_command_error}\n${unknown_command_output}")
+endif()
+
+execute_process(
+    COMMAND "${HOST_EXE}" vm start --id client
+    WORKING_DIRECTORY "${TEST_ROOT}"
+    RESULT_VARIABLE missing_config_result
+    OUTPUT_VARIABLE missing_config_output
+    ERROR_VARIABLE missing_config_error
+)
+string(FIND "${missing_config_error}" "--config" missing_config_error_position)
+if(missing_config_result EQUAL 0 OR missing_config_error_position EQUAL -1)
+    message(FATAL_ERROR
+        "SatsumaHost vm start accepted an implicit configuration: "
+        "${missing_config_error}\n${missing_config_output}")
+endif()
+
+execute_process(
+    COMMAND "${HOST_EXE}" vm stop
+        --config "${TEST_ROOT}/lab.json"
+        --id hard-stop
+        --mdoe hard
+    RESULT_VARIABLE unknown_option_result
+    OUTPUT_VARIABLE unknown_option_output
+    ERROR_VARIABLE unknown_option_error
+)
+string(FIND "${unknown_option_error}" "--mdoe" unknown_option_error_position)
+if(unknown_option_result EQUAL 0 OR unknown_option_error_position EQUAL -1)
+    message(FATAL_ERROR
+        "SatsumaHost silently ignored a misspelled option: "
+        "${unknown_option_error}\n${unknown_option_output}")
+endif()
+
+execute_process(
+    COMMAND "${HOST_EXE}" run --config "${TEST_ROOT}/lab.json"
+    RESULT_VARIABLE missing_plan_result
+    OUTPUT_VARIABLE missing_plan_output
+    ERROR_VARIABLE missing_plan_error
+)
+string(FIND "${missing_plan_error}" "--plan" missing_plan_error_position)
+if(missing_plan_result EQUAL 0 OR missing_plan_error_position EQUAL -1)
+    message(FATAL_ERROR
+        "SatsumaHost missing option error omitted --plan: "
+        "${missing_plan_error}\n${missing_plan_output}")
+endif()
+if(EXISTS "${share_path}/runs")
+    message(FATAL_ERROR "Rejected Host CLI calls unexpectedly created the runs directory")
+endif()
+
 set(lifecycle_task_json [=[
 {
   "schema_version": 1,
@@ -1151,7 +1236,7 @@ if(blocked_archive_status_position EQUAL -1 OR blocked_archive_agent_position EQ
 endif()
 
 execute_process(
-    COMMAND "${HOST_EXE}" vm start --id client
+    COMMAND "${HOST_EXE}" vm start --config "${TEST_ROOT}/lab.json" --id client
     WORKING_DIRECTORY "${TEST_ROOT}"
     RESULT_VARIABLE vm_start_result
     OUTPUT_VARIABLE vm_start_output
@@ -1166,7 +1251,7 @@ if(vm_start_position EQUAL -1)
 endif()
 
 execute_process(
-    COMMAND "${HOST_EXE}" vm stop --id client
+    COMMAND "${HOST_EXE}" vm stop --config "${TEST_ROOT}/lab.json" --id client
     WORKING_DIRECTORY "${TEST_ROOT}"
     RESULT_VARIABLE vm_stop_result
     OUTPUT_VARIABLE vm_stop_output
@@ -1181,7 +1266,8 @@ if(vm_stop_position EQUAL -1)
 endif()
 
 execute_process(
-    COMMAND "${HOST_EXE}" vm stop --id hard-stop --mode hard
+    COMMAND "${HOST_EXE}" vm stop
+        --config "${TEST_ROOT}/lab.json" --id hard-stop --mode hard
     WORKING_DIRECTORY "${TEST_ROOT}"
     RESULT_VARIABLE vm_hard_stop_result
     OUTPUT_VARIABLE vm_hard_stop_output
@@ -1196,7 +1282,8 @@ if(vm_hard_stop_position EQUAL -1)
 endif()
 
 execute_process(
-    COMMAND "${HOST_EXE}" vm restore --id client --snapshot clean
+    COMMAND "${HOST_EXE}" vm restore
+        --config "${TEST_ROOT}/lab.json" --id client --snapshot clean
     WORKING_DIRECTORY "${TEST_ROOT}"
     RESULT_VARIABLE vm_restore_result
     OUTPUT_VARIABLE vm_restore_output
@@ -1211,7 +1298,7 @@ if(vm_restore_position EQUAL -1)
 endif()
 
 execute_process(
-    COMMAND "${HOST_EXE}" snapshot list --vm client
+    COMMAND "${HOST_EXE}" snapshot list --config "${TEST_ROOT}/lab.json" --vm client
     WORKING_DIRECTORY "${TEST_ROOT}"
     RESULT_VARIABLE snapshot_list_result
     OUTPUT_VARIABLE snapshot_list_output
@@ -1226,7 +1313,8 @@ if(snapshot_list_position EQUAL -1)
 endif()
 
 execute_process(
-    COMMAND "${HOST_EXE}" snapshot delete-ai --vm client --snapshot clean
+    COMMAND "${HOST_EXE}" snapshot delete-ai
+        --config "${TEST_ROOT}/lab.json" --vm client --snapshot clean
     WORKING_DIRECTORY "${TEST_ROOT}"
     RESULT_VARIABLE base_delete_result
     OUTPUT_VARIABLE base_delete_output
@@ -1237,7 +1325,8 @@ if(base_delete_result EQUAL 0)
 endif()
 
 execute_process(
-    COMMAND "${HOST_EXE}" snapshot create-ai --vm client --name network-ready
+    COMMAND "${HOST_EXE}" snapshot create-ai
+        --config "${TEST_ROOT}/lab.json" --vm client --name network-ready
     WORKING_DIRECTORY "${TEST_ROOT}"
     RESULT_VARIABLE snapshot_create_result
     OUTPUT_VARIABLE snapshot_create_output
@@ -1263,7 +1352,8 @@ if(snapshot_metadata_position EQUAL -1)
 endif()
 
 execute_process(
-    COMMAND "${HOST_EXE}" snapshot delete-ai --vm client --snapshot satsuma-ai-obsolete
+    COMMAND "${HOST_EXE}" snapshot delete-ai
+        --config "${TEST_ROOT}/lab.json" --vm client --snapshot satsuma-ai-obsolete
     WORKING_DIRECTORY "${TEST_ROOT}"
     RESULT_VARIABLE snapshot_delete_result
     OUTPUT_VARIABLE snapshot_delete_output
@@ -1285,7 +1375,8 @@ endif()
 
 # vmrun 报错但目标状态已经生效时，Host 必须通过重新读取快照列表完成对账。
 execute_process(
-    COMMAND "${HOST_EXE}" snapshot create-ai --vm snapshot-reconcile --name late-success
+    COMMAND "${HOST_EXE}" snapshot create-ai
+        --config "${TEST_ROOT}/lab.json" --vm snapshot-reconcile --name late-success
     WORKING_DIRECTORY "${TEST_ROOT}"
     RESULT_VARIABLE reconcile_create_result
     OUTPUT_VARIABLE reconcile_create_output
@@ -1324,6 +1415,7 @@ file(WRITE "${reconcile_metadata_path}" "${reconcile_metadata_json}\n")
 
 execute_process(
     COMMAND "${HOST_EXE}" snapshot delete-ai
+        --config "${TEST_ROOT}/lab.json"
         --vm snapshot-reconcile
         --snapshot "${reconcile_snapshot_name}"
     WORKING_DIRECTORY "${TEST_ROOT}"

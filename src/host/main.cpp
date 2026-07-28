@@ -4,10 +4,12 @@
 #include <chrono>
 #include <exception>
 #include <filesystem>
+#include <initializer_list>
 #include <iostream>
 #include <map>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -21,9 +23,15 @@
 #include "satsuma/core/json_io.hpp"
 #include "satsuma/core/path.hpp"
 #include "satsuma/core/snapshot.hpp"
+#include "satsuma/core/version.hpp"
 #include "vmrun_provider.hpp"
 
 namespace {
+
+// 将宽字符选项名转换为稳定的 UTF-8 错误文本。
+[[nodiscard]] std::string option_name_utf8(const std::wstring_view name) {
+    return satsuma::path_to_utf8(std::filesystem::path(std::wstring(name)));
+}
 
 // 解析 --name value 形式的严格命令行选项。
 [[nodiscard]] std::map<std::wstring, std::wstring> parse_options(
@@ -36,11 +44,82 @@ namespace {
             throw satsuma::Error("Options must use --name value pairs");
         }
         const std::wstring name = std::wstring(argv[index]).substr(2);
+        if (name.empty()) {
+            throw satsuma::Error("Command-line option name must not be empty");
+        }
         if (!options.emplace(name, argv[index + 1]).second) {
-            throw satsuma::Error("Duplicate command-line option");
+            throw satsuma::Error("Duplicate command-line option: --" + option_name_utf8(name));
         }
     }
     return options;
+}
+
+// 拒绝当前命令不认识的选项，避免拼写错误静默回落为默认行为。
+void validate_options(
+    const std::map<std::wstring, std::wstring>& options,
+    const std::initializer_list<std::wstring_view> allowed) {
+    for (const auto& [name, value] : options) {
+        static_cast<void>(value);
+        if (std::find(allowed.begin(), allowed.end(), name) == allowed.end()) {
+            throw satsuma::Error("Unknown command-line option: --" + option_name_utf8(name));
+        }
+    }
+}
+
+// 判断命令和子命令是否属于当前稳定 CLI。
+[[nodiscard]] bool is_supported_command(
+    const std::wstring_view command,
+    const std::wstring_view subcommand) {
+    if (command == L"check" || command == L"serve" || command == L"run" ||
+        command == L"orchestrate" || command == L"report") {
+        return subcommand.empty();
+    }
+    if (command == L"vm") {
+        return subcommand == L"start" || subcommand == L"stop" || subcommand == L"restore";
+    }
+    if (command == L"snapshot") {
+        return subcommand == L"list" || subcommand == L"create-ai" || subcommand == L"delete-ai";
+    }
+    if (command == L"agent") {
+        return subcommand == L"update" || subcommand == L"rebind";
+    }
+    return false;
+}
+
+// 校验每个稳定命令允许的完整选项集合。
+void validate_command_options(
+    const std::wstring_view command,
+    const std::wstring_view subcommand,
+    const std::map<std::wstring, std::wstring>& options) {
+    if (command == L"check") {
+        validate_options(options, {L"config", L"vm", L"timeout-seconds"});
+    } else if (command == L"serve") {
+        validate_options(options, {L"config"});
+    } else if (command == L"run") {
+        validate_options(options, {L"config", L"plan"});
+    } else if (command == L"orchestrate") {
+        validate_options(options, {L"config", L"plan", L"timeout-seconds"});
+    } else if (command == L"report") {
+        validate_options(options, {L"config", L"run", L"wait-seconds"});
+    } else if (command == L"vm" && subcommand == L"start") {
+        validate_options(options, {L"config", L"id"});
+    } else if (command == L"vm" && subcommand == L"stop") {
+        validate_options(options, {L"config", L"id", L"mode"});
+    } else if (command == L"vm" && subcommand == L"restore") {
+        validate_options(options, {L"config", L"id", L"snapshot"});
+    } else if (command == L"snapshot" && subcommand == L"list") {
+        validate_options(options, {L"config", L"vm"});
+    } else if (command == L"snapshot" && subcommand == L"create-ai") {
+        validate_options(options, {L"config", L"vm", L"name"});
+    } else if (command == L"snapshot" && subcommand == L"delete-ai") {
+        validate_options(options, {L"config", L"vm", L"snapshot"});
+    } else if (command == L"agent" && subcommand == L"update") {
+        validate_options(options, {L"config", L"vm", L"binary", L"version", L"timeout-seconds"});
+    } else if (command == L"agent" && subcommand == L"rebind") {
+        validate_options(
+            options,
+            {L"config", L"vm", L"next-vm", L"binary", L"version", L"timeout-seconds"});
+    }
 }
 
 // 读取必需命令行选项。
@@ -49,7 +128,7 @@ namespace {
     const std::wstring& name) {
     const auto match = options.find(name);
     if (match == options.end() || match->second.empty()) {
-        throw satsuma::Error("Missing required command-line option");
+        throw satsuma::Error("Missing required command-line option: --" + option_name_utf8(name));
     }
     return match->second;
 }
@@ -151,24 +230,27 @@ void clear_snapshot_operation_diagnostics(nlohmann::json& metadata) {
 // 输出当前首个增量支持的 CLI 用法。
 void print_usage() {
     std::cout
-        << "SatsumaHost 0.1.0\n"
+        << "SatsumaHost " << satsuma::kVersion << '\n'
         << "Usage:\n"
-        << "  SatsumaHost check --config lab.json [--vm <vm-id>] [--timeout-seconds <1-300>]\n"
-        << "  SatsumaHost serve --config lab.json\n"
-        << "  SatsumaHost vm start --id <vm-id> [--config lab.json]\n"
-        << "  SatsumaHost vm stop --id <vm-id> [--mode soft|hard] [--config lab.json]\n"
-        << "  SatsumaHost vm restore --id <vm-id> --snapshot <name> [--config lab.json]\n"
-        << "  SatsumaHost snapshot list --vm <vm-id> [--config lab.json]\n"
-        << "  SatsumaHost snapshot create-ai --vm <vm-id> --name <purpose> [--config lab.json]\n"
-        << "  SatsumaHost snapshot delete-ai --vm <vm-id> --snapshot <name> [--config lab.json]\n"
+        << "  SatsumaHost --help\n"
+        << "  SatsumaHost --version\n"
+        << "  SatsumaHost check --config lab.local.json [--vm <vm-id>] [--timeout-seconds <1-300>]\n"
+        << "  SatsumaHost serve --config lab.local.json\n"
+        << "  SatsumaHost vm start --config lab.local.json --id <vm-id>\n"
+        << "  SatsumaHost vm stop --config lab.local.json --id <vm-id> [--mode soft|hard]\n"
+        << "  SatsumaHost vm restore --config lab.local.json --id <vm-id> --snapshot <name>\n"
+        << "  SatsumaHost snapshot list --config lab.local.json --vm <vm-id>\n"
+        << "  SatsumaHost snapshot create-ai --config lab.local.json --vm <vm-id> --name <purpose>\n"
+        << "  SatsumaHost snapshot delete-ai --config lab.local.json --vm <vm-id> --snapshot <name>\n"
         << "  SatsumaHost agent update --vm <vm-id> --binary SatsumaVM.exe --version <version> "
-           "[--timeout-seconds <1-3600>] [--config lab.json]\n"
+           "[--timeout-seconds <1-3600>] --config lab.local.json\n"
         << "  SatsumaHost agent rebind --vm <current-id> --next-vm <new-id> "
            "--binary SatsumaVM.exe --version <version> "
-           "[--timeout-seconds <1-3600>] [--config lab.json]\n"
-        << "  SatsumaHost run --config lab.json --plan task.json\n"
-        << "  SatsumaHost orchestrate --config lab.json --plan task.json [--timeout-seconds <1-86400>]\n"
-        << "  SatsumaHost report --config lab.json --run <run-id> [--wait-seconds <1-86400>]\n";
+           "[--timeout-seconds <1-3600>] --config lab.local.json\n"
+        << "  SatsumaHost run --config lab.local.json --plan task.json\n"
+        << "  SatsumaHost orchestrate --config lab.local.json --plan task.json "
+           "[--timeout-seconds <1-86400>]\n"
+        << "  SatsumaHost report --config lab.local.json --run <run-id> [--wait-seconds <1-86400>]\n";
 }
 
 }  // namespace
@@ -182,6 +264,15 @@ int wmain(const int argc, wchar_t* argv[]) {
         }
 
         const std::wstring command = argv[1];
+        if (argc == 2 && (command == L"--help" || command == L"help")) {
+            print_usage();
+            return 0;
+        }
+        if (argc == 2 && command == L"--version") {
+            std::cout << satsuma::kVersion << '\n';
+            return 0;
+        }
+
         std::wstring subcommand;
         int options_start = 2;
         const bool grouped_command =
@@ -195,11 +286,14 @@ int wmain(const int argc, wchar_t* argv[]) {
             options_start = 3;
         }
 
+        if (!is_supported_command(command, subcommand)) {
+            print_usage();
+            return 2;
+        }
+
         const auto options = parse_options(argc, argv, options_start);
-        const std::filesystem::path config_path =
-            grouped_command && !options.contains(L"config")
-                ? std::filesystem::path(L"lab.json")
-                : std::filesystem::path(require_option(options, L"config"));
+        validate_command_options(command, subcommand, options);
+        const std::filesystem::path config_path = require_option(options, L"config");
         satsuma::LabConfig config = satsuma::load_lab_config(config_path);
 
         if (command == L"serve") {
