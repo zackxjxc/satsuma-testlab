@@ -25,6 +25,9 @@
 namespace satsuma::host {
 namespace {
 
+constexpr std::chrono::seconds kEnvironmentRecheckTimeout{30}; // Agent 上线后的环境收敛等待上限
+constexpr std::chrono::seconds kEnvironmentRecheckDelay{1}; // 环境复检间隔
+
 // 向机器可读报告追加一项独立检查。
 void add_check(
     nlohmann::json& checks,
@@ -96,6 +99,21 @@ void probe_writable_directory(const std::filesystem::path& root) {
         }
     }
     return false;
+}
+
+// 仅在 VMware Tools 是唯一未通过项时等待冷启动状态收敛。
+[[nodiscard]] bool only_vmware_tools_pending(const nlohmann::json& report) {
+    bool tools_pending = false; // 至少存在一项未就绪的 Tools 检查
+    for (const auto& check : report.at("checks")) {
+        if (check.at("status") == "passed") {
+            continue;
+        }
+        if (check.at("name") != "vmware_tools" || check.at("status") != "failed") {
+            return false;
+        }
+        tools_pending = true;
+    }
+    return tools_pending;
 }
 
 }  // namespace
@@ -242,7 +260,14 @@ nlohmann::json Diagnostics::run_probe(
     }
     const std::vector<const VmConfig*> targets = select_targets(config_, vm_id);
     nlohmann::json report = inspect_environment(vm_id);
-    const std::string environment_status = report.at("status").get<std::string>();
+    std::string environment_status = report.at("status").get<std::string>();
+    const std::string initial_environment_status = environment_status; // Agent 等待前的环境状态
+    const nlohmann::json initial_environment = {
+        {"status", initial_environment_status},
+        {"checked_at", report.at("checked_at")},
+        {"summary", report.at("summary")},
+        {"checks", report.at("checks")},
+    }; // 冷启动复检时保留最初的机器可读证据
 
     if (!check_passed(report, "shared_folder")) {
         nlohmann::json agents = nlohmann::json::array();
@@ -384,6 +409,28 @@ nlohmann::json Diagnostics::run_probe(
         agent_skipped += agent.at("status") == "skipped" ? 1 : 0;
     }
     const std::size_t agent_failed = agents.size() - agent_passed - agent_skipped;
+    if (agent_failed == 0 &&
+        environment_status != "ready" &&
+        only_vmware_tools_pending(report)) {
+        // Agent 上线后 VMware Tools heartbeat 仍可能延迟，有限等待环境状态收敛。
+        const auto recheck_deadline =
+            std::chrono::steady_clock::now() + kEnvironmentRecheckTimeout;
+        std::size_t recheck_attempts = 0; // 实际执行的环境复检次数
+        do {
+            report = inspect_environment(vm_id);
+            ++recheck_attempts;
+            environment_status = report.at("status").get<std::string>();
+            if (environment_status == "ready" ||
+                std::chrono::steady_clock::now() >= recheck_deadline) {
+                break;
+            }
+            std::this_thread::sleep_for(kEnvironmentRecheckDelay);
+        } while (true);
+        report["environment_rechecked_after_agent"] = true;
+        report["environment_recheck_attempts"] = recheck_attempts;
+        report["initial_environment_status"] = initial_environment_status;
+        report["initial_environment"] = initial_environment;
+    }
     const std::string status = agent_failed > 0 || agent_skipped > 0
         ? "failed"
         : (environment_status == "ready" ? "ready" : "degraded");

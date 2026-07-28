@@ -25,9 +25,42 @@ function(require_log_order log_text first_command second_command context)
     endif()
 endfunction()
 
+# 核对日志中从指定命令开始的连续子序列。
+function(require_log_sequence log_text context)
+    set(remaining_log "${log_text}")
+    foreach(expected_command IN LISTS ARGN)
+        string(FIND "${remaining_log}" "${expected_command}" command_position)
+        if(command_position EQUAL -1)
+            message(FATAL_ERROR
+                "${context} command sequence is invalid at ${expected_command}\n${log_text}")
+        endif()
+        string(LENGTH "${expected_command}" command_length)
+        math(EXPR next_position "${command_position} + ${command_length}")
+        string(SUBSTRING "${remaining_log}" ${next_position} -1 remaining_log)
+    endforeach()
+endfunction()
+
+# 核对清理命令的精确序列，拒绝额外或重复策略。
+function(require_cleanup_sequence log_text expected_cleanup context)
+    string(REPLACE "\r\n" "\n" normalized_log "${log_text}")
+    string(REPLACE "\n" ";" log_lines "${normalized_log}")
+    set(actual_cleanup "")
+    foreach(log_line IN LISTS log_lines)
+        if(log_line MATCHES "^(stop|revertToSnapshot)\\|")
+            list(APPEND actual_cleanup "${log_line}")
+        endif()
+    endforeach()
+    if(NOT actual_cleanup STREQUAL expected_cleanup)
+        message(FATAL_ERROR
+            "${context} cleanup sequence is invalid\n"
+            "expected: ${expected_cleanup}\nactual: ${actual_cleanup}\n${log_text}")
+    endif()
+endfunction()
+
 # 执行一个隔离场景并核对双 VM manifest、业务结果和逆序清理。
-function(run_multi_vm_scenario name expected_exit expected_status gateway_step
-         expected_successful expected_failed fail_gateway_cleanup)
+function(run_multi_vm_scenario name expected_exit expected_status client_step gateway_step
+         expected_successful expected_failed expected_client_status expected_gateway_status
+         fail_gateway_cleanup fail_gateway_soft_stop fail_client_start)
     set(root "${TEST_ROOT}/${name}")
     set(share "${root}/share")
     set(archive "${root}/archive")
@@ -56,16 +89,16 @@ function(run_multi_vm_scenario name expected_exit expected_status gateway_step
   "shared_folder": {"host_root": "@SHARE@", "guest_root": "@SHARE@"},
   "vms": [
     {
-      "id": "client",
-      "role": "client",
-      "vmx": "@CLIENT_VMX@",
+      "id": "gateway",
+      "role": "gateway",
+      "vmx": "@GATEWAY_VMX@",
       "agent_version": "0.1.0",
       "snapshots": {"base": "clean", "ai_prefix": "satsuma-ai-", "max_ai_snapshots": 8}
     },
     {
-      "id": "gateway",
-      "role": "gateway",
-      "vmx": "@GATEWAY_VMX@",
+      "id": "client",
+      "role": "client",
+      "vmx": "@CLIENT_VMX@",
       "agent_version": "0.1.0",
       "snapshots": {"base": "clean", "ai_prefix": "satsuma-ai-", "max_ai_snapshots": 8}
     }
@@ -112,12 +145,17 @@ function(run_multi_vm_scenario name expected_exit expected_status gateway_step
   "artifacts": [
     {
       "source": "@FIXTURE@",
+      "vm": "client",
+      "shared_destination": "artifacts/client/SatsumaTestFixture.exe"
+    },
+    {
+      "source": "@FIXTURE@",
       "vm": "gateway",
       "shared_destination": "artifacts/gateway/SatsumaTestFixture.exe"
     }
   ],
   "steps": [
-    {"id": "client_step", "vm": "client", "type": "echo", "message": "client completed"},
+    @CLIENT_STEP@,
     @GATEWAY_STEP@
   ],
   "lifecycle": {
@@ -143,6 +181,7 @@ function(run_multi_vm_scenario name expected_exit expected_status gateway_step
     string(REPLACE "@NAME@" "${name}" plan_json "${plan_json}")
     string(REPLACE "@RUN_ID@" "${run_id}" plan_json "${plan_json}")
     string(REPLACE "@FIXTURE@" "${fixture_path}" plan_json "${plan_json}")
+    string(REPLACE "@CLIENT_STEP@" "${client_step}" plan_json "${plan_json}")
     string(REPLACE "@GATEWAY_STEP@" "${gateway_step}" plan_json "${plan_json}")
     file(WRITE "${root}/plan.json" "${plan_json}")
 
@@ -153,6 +192,20 @@ function(run_multi_vm_scenario name expected_exit expected_status gateway_step
         set(ENV{SATSUMA_MULTI_VM_FAIL_GATEWAY_REVERT} "1")
     else()
         unset(ENV{SATSUMA_MULTI_VM_FAIL_GATEWAY_REVERT})
+    endif()
+    if(fail_gateway_soft_stop)
+        set(ENV{SATSUMA_MULTI_VM_FAIL_GATEWAY_SOFT_STOP} "1")
+        set(ENV{SATSUMA_MULTI_VM_DELAYED_STOP_VMX} "${gateway_vmx_path}")
+    else()
+        unset(ENV{SATSUMA_MULTI_VM_FAIL_GATEWAY_SOFT_STOP})
+        unset(ENV{SATSUMA_MULTI_VM_DELAYED_STOP_VMX})
+    endif()
+    if(fail_client_start)
+        set(ENV{SATSUMA_MULTI_VM_FAIL_CLIENT_START} "1")
+        set(ENV{SATSUMA_MULTI_VM_DELAYED_START_VMX} "${client_vmx_path}")
+    else()
+        unset(ENV{SATSUMA_MULTI_VM_FAIL_CLIENT_START})
+        unset(ENV{SATSUMA_MULTI_VM_DELAYED_START_VMX})
     endif()
     execute_process(
         COMMAND "${CMAKE_COMMAND}"
@@ -171,8 +224,6 @@ function(run_multi_vm_scenario name expected_exit expected_status gateway_step
         OUTPUT_VARIABLE host_output
         ERROR_VARIABLE process_error
     )
-    unset(ENV{SATSUMA_MULTI_VM_VMRUN_LOG})
-    unset(ENV{SATSUMA_MULTI_VM_FAIL_GATEWAY_REVERT})
     if(NOT results STREQUAL "0;${expected_exit}")
         message(FATAL_ERROR
             "Multi-VM ${name} scenario failed (${results}): ${process_error}\n${host_output}")
@@ -204,6 +255,15 @@ function(run_multi_vm_scenario name expected_exit expected_status gateway_step
        NOT EXISTS "${main_evidence}/results/gateway/gateway_step/execution.json")
         message(FATAL_ERROR "Multi-VM ${name} omitted main task evidence")
     endif()
+    file(READ "${main_evidence}/results/client/client_step/execution.json" client_execution)
+    file(READ "${main_evidence}/results/gateway/gateway_step/execution.json" gateway_execution)
+    string(JSON client_status GET "${client_execution}" status)
+    string(JSON gateway_status GET "${gateway_execution}" status)
+    if(NOT client_status STREQUAL expected_client_status OR
+       NOT gateway_status STREQUAL expected_gateway_status)
+        message(FATAL_ERROR
+            "Multi-VM ${name} result ownership is invalid: ${client_status}, ${gateway_status}")
+    endif()
     set(finally_evidence "${archive}/runs/${run_id}/evidence/finally")
     if(NOT EXISTS "${finally_evidence}/task.json" OR
        NOT EXISTS "${finally_evidence}/results/client/client_finally/execution.json" OR
@@ -226,6 +286,28 @@ function(run_multi_vm_scenario name expected_exit expected_status gateway_step
        NOT failed_steps EQUAL expected_failed)
         message(FATAL_ERROR "Multi-VM ${name} report counts are invalid: ${host_output}")
     endif()
+    string(JSON diagnostic_count LENGTH "${host_output}" diagnostics)
+    if(NOT diagnostic_count EQUAL 2)
+        message(FATAL_ERROR "Multi-VM ${name} diagnostic count is invalid: ${host_output}")
+    endif()
+    foreach(diagnostic_index RANGE 0 1)
+        string(JSON initial_status GET
+            "${host_output}" diagnostics ${diagnostic_index} result initial_environment status)
+        string(JSON recheck_attempts GET
+            "${host_output}" diagnostics ${diagnostic_index} result environment_recheck_attempts)
+        if(NOT initial_status STREQUAL "failed" OR recheck_attempts LESS 2)
+            message(FATAL_ERROR
+                "Multi-VM ${name} omitted delayed environment convergence evidence")
+        endif()
+    endforeach()
+    string(JSON finally_expected GET "${host_output}" finally_report expected_steps)
+    string(JSON finally_successful GET "${host_output}" finally_report successful_steps)
+    string(JSON finally_failed GET "${host_output}" finally_report failed_steps)
+    if(NOT finally_expected EQUAL 2 OR
+       NOT finally_successful EQUAL 2 OR
+       NOT finally_failed EQUAL 0)
+        message(FATAL_ERROR "Multi-VM ${name} finally report is invalid: ${host_output}")
+    endif()
 
     file(READ "${vmrun_log}" vmrun_commands)
     require_log_order(
@@ -239,27 +321,34 @@ function(run_multi_vm_scenario name expected_exit expected_status gateway_step
         "checkToolsState|Gateway VM.vmx"
         "${name} Agent diagnostics")
     if(expected_status STREQUAL "COMPLETED")
-        require_log_order(
-            "${vmrun_commands}"
-            "stop|Gateway VM.vmx|soft"
-            "stop|Client VM.vmx|soft"
-            "${name} success cleanup")
+        set(expected_cleanup
+            "stop|Gateway VM.vmx|soft;stop|Client VM.vmx|soft")
     else()
-        require_log_order(
+        set(expected_cleanup
+            "stop|Gateway VM.vmx|hard;revertToSnapshot|Gateway VM.vmx|clean"
+            "stop|Client VM.vmx|hard;revertToSnapshot|Client VM.vmx|clean")
+    endif()
+    require_cleanup_sequence(
+        "${vmrun_commands}"
+        "${expected_cleanup}"
+        "${name}")
+    if(fail_gateway_soft_stop)
+        require_log_sequence(
             "${vmrun_commands}"
-            "stop|Gateway VM.vmx|hard"
-            "revertToSnapshot|Gateway VM.vmx|clean"
-            "${name} gateway failure cleanup")
-        require_log_order(
+            "${name} delayed stop reconciliation"
+            "stop|Gateway VM.vmx|soft"
+            "list\n"
+            "list\n"
+            "stop|Client VM.vmx|soft")
+    endif()
+    if(fail_client_start)
+        require_log_sequence(
             "${vmrun_commands}"
-            "revertToSnapshot|Gateway VM.vmx|clean"
-            "stop|Client VM.vmx|hard"
-            "${name} reverse failure cleanup")
-        require_log_order(
-            "${vmrun_commands}"
-            "stop|Client VM.vmx|hard"
-            "revertToSnapshot|Client VM.vmx|clean"
-            "${name} client failure cleanup")
+            "${name} delayed start reconciliation"
+            "start|Client VM.vmx|nogui"
+            "list\n"
+            "list\n"
+            "start|Gateway VM.vmx|nogui")
     endif()
 
     # 终态重入不得再次调用 VMware，且清理动作结构必须保持稳定。
@@ -303,8 +392,27 @@ function(run_multi_vm_scenario name expected_exit expected_status gateway_step
     if(NOT vmrun_log_size_after_reentry EQUAL vmrun_log_size_before_reentry)
         message(FATAL_ERROR "Multi-VM ${name} terminal reentry called vmrun again")
     endif()
+    unset(ENV{SATSUMA_MULTI_VM_VMRUN_LOG})
+    unset(ENV{SATSUMA_MULTI_VM_FAIL_GATEWAY_REVERT})
+    unset(ENV{SATSUMA_MULTI_VM_FAIL_GATEWAY_SOFT_STOP})
+    unset(ENV{SATSUMA_MULTI_VM_DELAYED_STOP_VMX})
+    unset(ENV{SATSUMA_MULTI_VM_FAIL_CLIENT_START})
+    unset(ENV{SATSUMA_MULTI_VM_DELAYED_START_VMX})
 endfunction()
 
+set(client_success_step
+    [=[{"id": "client_step", "vm": "client", "type": "echo", "message": "client completed"}]=])
+set(client_failure_step [=[
+{
+  "id": "client_step",
+  "vm": "client",
+  "type": "execute",
+  "program": "artifacts/client/SatsumaTestFixture.exe",
+  "arguments": ["--message", "client business failure"],
+  "timeout_seconds": 5,
+  "collect_files": ["missing-client-result.txt"]
+}
+]=])
 set(gateway_success_step
     [=[{"id": "gateway_step", "vm": "gateway", "type": "echo", "message": "gateway completed"}]=])
 set(gateway_failure_step [=[
@@ -319,9 +427,28 @@ set(gateway_failure_step [=[
 }
 ]=])
 
-run_multi_vm_scenario(success 0 COMPLETED "${gateway_success_step}" 2 0 FALSE)
-run_multi_vm_scenario(failure 1 FAILED "${gateway_failure_step}" 1 1 FALSE)
-run_multi_vm_scenario(cleanup_failure 4 RECOVERY_FAILED "${gateway_failure_step}" 1 1 TRUE)
+run_multi_vm_scenario(
+    success 0 COMPLETED "${client_success_step}" "${gateway_success_step}"
+    2 0 exited exited FALSE FALSE FALSE)
+run_multi_vm_scenario(
+    stop_reconciled 0 COMPLETED "${client_success_step}" "${gateway_success_step}"
+    2 0 exited exited FALSE TRUE FALSE)
+run_multi_vm_scenario(
+    start_recon 0 COMPLETED "${client_success_step}" "${gateway_success_step}"
+    2 0 exited exited FALSE FALSE TRUE)
+run_multi_vm_scenario(
+    gateway_failure 1 FAILED "${client_success_step}" "${gateway_failure_step}"
+    1 1 exited failed FALSE FALSE FALSE)
+run_multi_vm_scenario(
+    client_failure 1 FAILED "${client_failure_step}" "${gateway_success_step}"
+    1 1 failed exited FALSE FALSE FALSE)
+run_multi_vm_scenario(
+    cleanup_failure 4 RECOVERY_FAILED "${client_success_step}" "${gateway_failure_step}"
+    1 1 exited failed TRUE FALSE FALSE)
 
 unset(ENV{SATSUMA_MULTI_VM_VMRUN_LOG})
 unset(ENV{SATSUMA_MULTI_VM_FAIL_GATEWAY_REVERT})
+unset(ENV{SATSUMA_MULTI_VM_FAIL_GATEWAY_SOFT_STOP})
+unset(ENV{SATSUMA_MULTI_VM_DELAYED_STOP_VMX})
+unset(ENV{SATSUMA_MULTI_VM_FAIL_CLIENT_START})
+unset(ENV{SATSUMA_MULTI_VM_DELAYED_START_VMX})

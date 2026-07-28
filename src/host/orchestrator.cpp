@@ -46,6 +46,9 @@ struct OrchestrationArchive {
     bool resumed{false}; // 是否从已有归档恢复
 };
 
+constexpr std::chrono::seconds kVmStateReconciliationTimeout{5}; // 启停报错后的状态收敛等待上限
+constexpr std::chrono::milliseconds kVmStateReconciliationDelay{100}; // 状态对账轮询间隔
+
 // 返回指定编排在 Host 归档中的稳定根目录。
 [[nodiscard]] std::filesystem::path orchestration_archive_root(
     const LabConfig& config,
@@ -224,7 +227,7 @@ void validate_plan_scope(
             staging / L"orchestration.json",
             orchestration_identity_json(identity));
         write_json_atomic_existing_parent(staging / L"lifecycle.json", state);
-        std::filesystem::rename(staging, root);
+        rename_path_with_retry(staging, root);
     } catch (...) {
         std::error_code cleanup_error;
         std::filesystem::remove_all(staging, cleanup_error);
@@ -260,6 +263,78 @@ void validate_managed_snapshot(
     return false;
 }
 
+// 在有限时间内等待 vmrun 运行列表收敛到目标电源状态。
+[[nodiscard]] bool wait_for_vm_running_state(
+    const vmware::VmrunProvider& provider,
+    const std::filesystem::path& vmx,
+    const bool expected_running) {
+    const auto deadline = std::chrono::steady_clock::now() + kVmStateReconciliationTimeout;
+    std::string last_error; // 最后一次运行列表查询错误
+    for (;;) {
+        try {
+            if (is_vm_running(provider, vmx) == expected_running) {
+                return true;
+            }
+            last_error.clear();
+        } catch (const std::exception& error) {
+            last_error = error.what();
+        }
+        if (std::chrono::steady_clock::now() >= deadline) {
+            break;
+        }
+        std::this_thread::sleep_for(kVmStateReconciliationDelay);
+    }
+    if (!last_error.empty()) {
+        throw Error("VM state reconciliation failed: " + last_error);
+    }
+    return false;
+}
+
+// vmrun 启动报错后以运行列表对账，避免晚到成功被误判为失败。
+void start_vm_with_reconciliation(
+    const vmware::VmrunProvider& provider,
+    const std::filesystem::path& vmx) {
+    try {
+        provider.start(vmx);
+    } catch (const std::exception& operation_error) {
+        try {
+            if (wait_for_vm_running_state(provider, vmx, true)) {
+                return;
+            }
+        } catch (const std::exception& reconciliation_error) {
+            throw Error(
+                std::string(operation_error.what()) +
+                "; cannot reconcile VM start: " + reconciliation_error.what());
+        }
+        throw Error(
+            std::string(operation_error.what()) +
+            "; VM remained stopped after start reconciliation");
+    }
+}
+
+// vmrun 关闭报错后以运行列表对账，确认已关机时继续清理流程。
+void stop_vm_with_reconciliation(
+    const vmware::VmrunProvider& provider,
+    const std::filesystem::path& vmx,
+    const vmware::VmStopMode mode) {
+    try {
+        provider.stop(vmx, mode);
+    } catch (const std::exception& operation_error) {
+        try {
+            if (wait_for_vm_running_state(provider, vmx, false)) {
+                return;
+            }
+        } catch (const std::exception& reconciliation_error) {
+            throw Error(
+                std::string(operation_error.what()) +
+                "; cannot reconcile VM stop: " + reconciliation_error.what());
+        }
+        throw Error(
+            std::string(operation_error.what()) +
+            "; VM remained running after stop reconciliation");
+    }
+}
+
 // 有限等待运行目录中的全部预期结果完成。
 [[nodiscard]] nlohmann::json wait_for_report(
     const Controller& controller,
@@ -267,15 +342,24 @@ void validate_managed_snapshot(
     const std::chrono::seconds timeout) {
     const auto deadline = std::chrono::steady_clock::now() + timeout;
     nlohmann::json report;
+    std::string last_io_error; // 共享层瞬时读取失败的最后一条诊断
     do {
-        report = controller.build_report(run_id);
-        if (report.at("complete").get<bool>() ||
-            report.value("manual_intervention_required", false)) {
-            return report;
+        try {
+            report = controller.build_report(run_id);
+            last_io_error.clear();
+            if (report.at("complete").get<bool>() ||
+                report.value("manual_intervention_required", false)) {
+                return report;
+            }
+        } catch (const JsonIoError& error) {
+            // 已原子发布的结果可能被安全软件短暂占用，下一轮重新读取完整证据。
+            last_io_error = error.what();
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     } while (std::chrono::steady_clock::now() < deadline);
-    throw Error("Run did not complete before orchestration timeout: " + run_id);
+    throw Error(
+        "Run did not complete before orchestration timeout: " + run_id +
+        (last_io_error.empty() ? "" : "; last JSON I/O error: " + last_io_error));
 }
 
 // 复制目录时拒绝任何重解析点，避免归档越过运行根目录。
@@ -332,7 +416,7 @@ void archive_run_evidence(
         path_from_utf8("." + label + "-" + make_id("archive")));
     try {
         copy_tree_without_reparse_points(source, staging);
-        std::filesystem::rename(staging, destination);
+        rename_path_with_retry(staging, destination);
     } catch (...) {
         std::error_code cleanup_error;
         std::filesystem::remove_all(staging, cleanup_error);
@@ -439,12 +523,12 @@ void apply_terminal_state_output(
     }
     if (policy.action == VmCleanupAction::Stop) {
         if (assumed_running) {
-            provider.stop(vm.vmx, vmware::VmStopMode::Soft);
+            stop_vm_with_reconciliation(provider, vm.vmx, vmware::VmStopMode::Soft);
         }
         return false;
     }
     if (assumed_running) {
-        provider.stop(vm.vmx, vmware::VmStopMode::Hard);
+        stop_vm_with_reconciliation(provider, vm.vmx, vmware::VmStopMode::Hard);
     }
     provider.revert_to_snapshot(vm.vmx, *policy.snapshot);
     return false;
@@ -591,7 +675,10 @@ nlohmann::json Orchestrator::execute(
                     }
                     const VmConfig& vm = *vms[index];
                     if (assumed_running[index]) {
-                        provider.stop(vm.vmx, vmware::VmStopMode::Hard);
+                        stop_vm_with_reconciliation(
+                            provider,
+                            vm.vmx,
+                            vmware::VmStopMode::Hard);
                         assumed_running[index] = false;
                     }
                     provider.revert_to_snapshot(vm.vmx, *policy.restore_before);
@@ -606,7 +693,7 @@ nlohmann::json Orchestrator::execute(
                 "start target VMs in lifecycle order");
             for (std::size_t index = 0; index < vms.size(); ++index) {
                 if (!assumed_running[index]) {
-                    provider.start(vms[index]->vmx);
+                    start_vm_with_reconciliation(provider, vms[index]->vmx);
                     assumed_running[index] = true;
                 }
             }
