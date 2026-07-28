@@ -17,8 +17,10 @@ file(TO_CMAKE_PATH "${FIXTURE_EXE}" fixture_path)
 file(TO_CMAKE_PATH "${VMRUN_EXE}" vmrun_path)
 file(TO_CMAKE_PATH "${TEST_ROOT}/Client VM.vmx" vmx_path)
 file(TO_CMAKE_PATH "${TEST_ROOT}/Hard VM.vmx" hard_vmx_path)
+file(TO_CMAKE_PATH "${TEST_ROOT}/Reconcile VM.vmx" reconcile_vmx_path)
 file(WRITE "${vmx_path}" "# Test VMX placeholder\n")
 file(WRITE "${hard_vmx_path}" "# Test VMX placeholder\n")
+file(WRITE "${reconcile_vmx_path}" "# Snapshot reconciliation VMX placeholder\n")
 
 set(lab_json [=[
 {
@@ -60,6 +62,18 @@ set(lab_json [=[
         "max_ai_snapshots": 8
       },
       "management_ip": "127.0.0.2"
+    },
+    {
+      "id": "snapshot-reconcile",
+      "role": "snapshot-reconcile-test",
+      "vmx": "@RECONCILE_VMX@",
+      "agent_version": "0.1.0",
+      "snapshots": {
+        "base": "clean",
+        "ai_prefix": "satsuma-ai-",
+        "max_ai_snapshots": 8
+      },
+      "management_ip": "127.0.0.3"
     }
   ]
 }
@@ -69,6 +83,7 @@ string(REPLACE "@SHARE@" "${share_path}" lab_json "${lab_json}")
 string(REPLACE "@VMRUN@" "${vmrun_path}" lab_json "${lab_json}")
 string(REPLACE "@VMX@" "${vmx_path}" lab_json "${lab_json}")
 string(REPLACE "@HARD_VMX@" "${hard_vmx_path}" lab_json "${lab_json}")
+string(REPLACE "@RECONCILE_VMX@" "${reconcile_vmx_path}" lab_json "${lab_json}")
 file(WRITE "${TEST_ROOT}/lab.json" "${lab_json}")
 
 set(agent_json [=[
@@ -1266,6 +1281,79 @@ file(READ "${deleted_metadata_path}" deleted_metadata_json)
 string(FIND "${deleted_metadata_json}" "\"status\": \"deleted\"" deleted_metadata_position)
 if(deleted_metadata_position EQUAL -1)
     message(FATAL_ERROR "Snapshot deletion metadata was not finalized: ${deleted_metadata_json}")
+endif()
+
+# vmrun 报错但目标状态已经生效时，Host 必须通过重新读取快照列表完成对账。
+execute_process(
+    COMMAND "${HOST_EXE}" snapshot create-ai --vm snapshot-reconcile --name late-success
+    WORKING_DIRECTORY "${TEST_ROOT}"
+    RESULT_VARIABLE reconcile_create_result
+    OUTPUT_VARIABLE reconcile_create_output
+    ERROR_VARIABLE reconcile_create_error
+)
+if(NOT reconcile_create_result EQUAL 0)
+    message(FATAL_ERROR
+        "SatsumaHost did not reconcile late snapshot creation: "
+        "${reconcile_create_error}\n${reconcile_create_output}")
+endif()
+string(JSON reconcile_create_status GET "${reconcile_create_output}" status)
+string(JSON reconcile_create_flag GET "${reconcile_create_output}" reconciled)
+string(JSON reconcile_snapshot_name GET "${reconcile_create_output}" snapshot)
+if(NOT reconcile_create_status STREQUAL "created" OR NOT reconcile_create_flag)
+    message(FATAL_ERROR
+        "Late snapshot creation returned unexpected output: ${reconcile_create_output}")
+endif()
+set(reconcile_metadata_path
+    "${archive_path}/snapshots/snapshot-reconcile/${reconcile_snapshot_name}.json")
+file(READ "${reconcile_metadata_path}" reconcile_metadata_json)
+string(JSON reconcile_metadata_status GET "${reconcile_metadata_json}" status)
+string(JSON reconcile_metadata_flag GET "${reconcile_metadata_json}" reconciled_after_error)
+string(JSON reconcile_operation_error GET "${reconcile_metadata_json}" operation_error)
+if(NOT reconcile_metadata_status STREQUAL "created" OR
+   NOT reconcile_metadata_flag OR
+   reconcile_operation_error STREQUAL "")
+    message(FATAL_ERROR
+        "Late snapshot creation metadata was not reconciled: ${reconcile_metadata_json}")
+endif()
+# 模拟旧事务残留，验证后续删除不会混入过期失败诊断。
+string(JSON reconcile_metadata_json
+    SET "${reconcile_metadata_json}" error "\"stale create failure\"")
+string(JSON reconcile_metadata_json
+    SET "${reconcile_metadata_json}" reconciliation_error "\"stale reconciliation failure\"")
+file(WRITE "${reconcile_metadata_path}" "${reconcile_metadata_json}\n")
+
+execute_process(
+    COMMAND "${HOST_EXE}" snapshot delete-ai
+        --vm snapshot-reconcile
+        --snapshot "${reconcile_snapshot_name}"
+    WORKING_DIRECTORY "${TEST_ROOT}"
+    RESULT_VARIABLE reconcile_delete_result
+    OUTPUT_VARIABLE reconcile_delete_output
+    ERROR_VARIABLE reconcile_delete_error
+)
+if(NOT reconcile_delete_result EQUAL 0)
+    message(FATAL_ERROR
+        "SatsumaHost did not reconcile late snapshot deletion: "
+        "${reconcile_delete_error}\n${reconcile_delete_output}")
+endif()
+string(JSON reconcile_delete_status GET "${reconcile_delete_output}" status)
+string(JSON reconcile_delete_flag GET "${reconcile_delete_output}" reconciled)
+if(NOT reconcile_delete_status STREQUAL "deleted" OR NOT reconcile_delete_flag)
+    message(FATAL_ERROR
+        "Late snapshot deletion returned unexpected output: ${reconcile_delete_output}")
+endif()
+file(READ "${reconcile_metadata_path}" reconcile_deleted_metadata_json)
+string(JSON reconcile_deleted_status GET "${reconcile_deleted_metadata_json}" status)
+string(FIND "${reconcile_deleted_metadata_json}" "\"error\":" stale_error_position)
+string(FIND
+    "${reconcile_deleted_metadata_json}"
+    "\"reconciliation_error\":"
+    stale_reconciliation_error_position)
+if(NOT reconcile_deleted_status STREQUAL "deleted" OR
+   NOT stale_error_position EQUAL -1 OR
+   NOT stale_reconciliation_error_position EQUAL -1)
+    message(FATAL_ERROR
+        "Late snapshot deletion metadata was not finalized: ${reconcile_deleted_metadata_json}")
 endif()
 
 execute_process(

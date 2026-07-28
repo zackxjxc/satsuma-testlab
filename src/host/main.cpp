@@ -1,6 +1,8 @@
 // SatsumaHost 命令行入口。
+#include <algorithm>
 #include <charconv>
 #include <chrono>
+#include <exception>
 #include <filesystem>
 #include <iostream>
 #include <map>
@@ -125,6 +127,25 @@ namespace {
             "Agent update timeout must be an integer between 1 and 3600 seconds");
     }
     return std::chrono::seconds(seconds);
+}
+
+// 在控制命令报错后重新读取 VMware 状态，判断目标快照是否存在。
+[[nodiscard]] bool snapshot_exists(
+    const satsuma::vmware::VmrunProvider& provider,
+    const std::filesystem::path& vmx,
+    const std::string& snapshot_name) {
+    const std::vector<std::string> snapshots = provider.list_snapshots(vmx);
+    return std::find(snapshots.begin(), snapshots.end(), snapshot_name) != snapshots.end();
+}
+
+// 开始新的快照操作前清除上一事务留下的终态诊断字段。
+void clear_snapshot_operation_diagnostics(nlohmann::json& metadata) {
+    metadata.erase("error");
+    metadata.erase("reconciliation_error");
+    metadata.erase("reconciled_after_error");
+    metadata.erase("operation_error");
+    metadata.erase("reconciled_at");
+    metadata.erase("deleted_at");
 }
 
 // 输出当前首个增量支持的 CLI 用法。
@@ -330,24 +351,44 @@ int wmain(const int argc, wchar_t* argv[]) {
                         {"vm_id", vm_id},
                         {"snapshot", snapshot_name},
                     });
+                clear_snapshot_operation_diagnostics(metadata);
                 metadata["status"] = "deleting";
                 satsuma::write_json_atomic(metadata_path, metadata);
+                bool reconciled = false; // vmrun 报错后由实际快照状态确认操作结果
                 try {
                     provider.delete_snapshot(vm->vmx, snapshot_name);
                 } catch (const std::exception& error) {
-                    metadata["status"] = "delete_failed";
-                    metadata["error"] = error.what();
-                    satsuma::write_json_atomic(metadata_path, metadata);
-                    throw;
+                    std::string reconciliation_error;
+                    try {
+                        reconciled = !snapshot_exists(provider, vm->vmx, snapshot_name);
+                    } catch (const std::exception& reconciliation_failure) {
+                        reconciliation_error = reconciliation_failure.what();
+                    }
+                    if (!reconciled) {
+                        metadata["status"] = "delete_failed";
+                        metadata["error"] = error.what();
+                        if (!reconciliation_error.empty()) {
+                            metadata["reconciliation_error"] = reconciliation_error;
+                        }
+                        satsuma::write_json_atomic(metadata_path, metadata);
+                        throw;
+                    }
+                    metadata["reconciled_after_error"] = true;
+                    metadata["operation_error"] = error.what();
+                    metadata["reconciled_at"] = satsuma::utc_timestamp();
                 }
                 metadata["status"] = "deleted";
                 metadata["deleted_at"] = satsuma::utc_timestamp();
                 satsuma::write_json_atomic(metadata_path, metadata);
-                std::cout << nlohmann::json({
+                nlohmann::json output = {
                     {"status", "deleted"},
                     {"vm_id", vm_id},
                     {"snapshot", snapshot_name},
-                }).dump(2) << '\n';
+                };
+                if (reconciled) {
+                    output["reconciled"] = true;
+                }
+                std::cout << output.dump(2) << '\n';
                 return 0;
             }
 
@@ -374,21 +415,40 @@ int wmain(const int argc, wchar_t* argv[]) {
                 {"created_at", satsuma::utc_timestamp()},
             };
             satsuma::write_json_atomic(metadata_path, metadata);
+            bool reconciled = false; // vmrun 报错后由实际快照状态确认操作结果
             try {
                 provider.create_snapshot(vm->vmx, snapshot_name);
             } catch (const std::exception& error) {
-                metadata["status"] = "failed";
-                metadata["error"] = error.what();
-                satsuma::write_json_atomic(metadata_path, metadata);
-                throw;
+                std::string reconciliation_error;
+                try {
+                    reconciled = snapshot_exists(provider, vm->vmx, snapshot_name);
+                } catch (const std::exception& reconciliation_failure) {
+                    reconciliation_error = reconciliation_failure.what();
+                }
+                if (!reconciled) {
+                    metadata["status"] = "failed";
+                    metadata["error"] = error.what();
+                    if (!reconciliation_error.empty()) {
+                        metadata["reconciliation_error"] = reconciliation_error;
+                    }
+                    satsuma::write_json_atomic(metadata_path, metadata);
+                    throw;
+                }
+                metadata["reconciled_after_error"] = true;
+                metadata["operation_error"] = error.what();
+                metadata["reconciled_at"] = satsuma::utc_timestamp();
             }
             metadata["status"] = "created";
             satsuma::write_json_atomic(metadata_path, metadata);
-            std::cout << nlohmann::json({
+            nlohmann::json output = {
                 {"status", "created"},
                 {"vm_id", vm_id},
                 {"snapshot", snapshot_name},
-            }).dump(2) << '\n';
+            };
+            if (reconciled) {
+                output["reconciled"] = true;
+            }
+            std::cout << output.dump(2) << '\n';
             return 0;
         }
 

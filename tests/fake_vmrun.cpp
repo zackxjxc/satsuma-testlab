@@ -1,6 +1,7 @@
 // VmrunProvider 测试使用的无害 vmrun 替身。
 #include <algorithm>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <string>
 #include <string_view>
@@ -16,6 +17,12 @@ namespace {
     return std::all_of(name.begin() + prefix.size(), name.end(), [](const wchar_t character) {
         return character >= L'0' && character <= L'9';
     });
+}
+
+// 返回快照晚到成功场景使用的跨进程状态文件。
+[[nodiscard]] std::filesystem::path reconciliation_state_path(
+    const std::filesystem::path& vmx) {
+    return vmx.parent_path() / L"snapshot-reconciliation.state";
 }
 
 }  // namespace
@@ -47,6 +54,19 @@ int wmain(const int argc, wchar_t* argv[]) {
             << "clean\n"
             << "satsuma-ai-obsolete\n"
             << "satsuma-ai-recovery-fail\n";
+        return 0;
+    }
+    if (argc == 3 &&
+        std::wstring(argv[1]) == L"listSnapshots" &&
+        std::filesystem::path(argv[2]).filename() == L"Reconcile VM.vmx") {
+        std::ifstream state(reconciliation_state_path(argv[2]));
+        std::string snapshot_name;
+        std::getline(state, snapshot_name);
+        if (snapshot_name.empty()) {
+            std::cout << "Total snapshots: 1\nclean\n";
+        } else {
+            std::cout << "Total snapshots: 2\nclean\n" << snapshot_name << '\n';
+        }
         return 0;
     }
     if (argc == 3 && std::wstring(argv[1]) == L"checkToolsState") {
@@ -97,12 +117,26 @@ int wmain(const int argc, wchar_t* argv[]) {
         return 0;
     }
     if (argc == 4 &&
+        std::wstring(argv[1]) == L"snapshot" &&
+        std::filesystem::path(argv[2]).filename() == L"Reconcile VM.vmx") {
+        std::ofstream state(reconciliation_state_path(argv[2]), std::ios::binary | std::ios::trunc);
+        state << std::filesystem::path(argv[3]).string();
+        return state ? 7 : 3;
+    }
+    if (argc == 4 &&
         std::wstring(argv[1]) == L"deleteSnapshot" &&
         ((std::filesystem::path(argv[2]).filename() == L"Delete VM.vmx" &&
           std::wstring(argv[3]) == L"satsuma-ai-obsolete") ||
          (std::filesystem::path(argv[2]).filename() == L"Client VM.vmx" &&
           std::wstring(argv[3]) == L"satsuma-ai-obsolete"))) {
         return 0;
+    }
+    if (argc == 4 &&
+        std::wstring(argv[1]) == L"deleteSnapshot" &&
+        std::filesystem::path(argv[2]).filename() == L"Reconcile VM.vmx") {
+        std::error_code error;
+        const bool removed = std::filesystem::remove(reconciliation_state_path(argv[2]), error);
+        return removed && !error ? 7 : 3;
     }
     std::cerr << "unsupported fake vmrun command\n";
     return 2;
