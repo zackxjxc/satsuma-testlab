@@ -8,6 +8,7 @@
 #include <iostream>
 #include <mutex>
 #include <optional>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -20,7 +21,6 @@
 #include "satsuma/core/json_io.hpp"
 #include "satsuma/core/path.hpp"
 #include "claim_store.hpp"
-#include "rpc_client.hpp"
 #include "satsuma/core/sha256.hpp"
 #include "interactive_process.hpp"
 #include "update.hpp"
@@ -92,6 +92,28 @@ void append_result_error(ExecutionResult& result, const std::string& error) {
         result.error += "; ";
     }
     result.error += error;
+}
+
+// 尽力记录单个损坏运行，避免它阻塞共享目录中的后续任务。
+void write_run_error_best_effort(
+    const std::filesystem::path& run_directory,
+    const AgentConfig& config,
+    const std::string& error) noexcept {
+    try {
+        const std::filesystem::path state_directory = run_directory / L"state";
+        std::filesystem::create_directories(state_directory);
+        write_json_atomic(
+            state_directory / path_from_utf8(config.vm_id + "-agent-error.json"),
+            {
+                {"schema_version", 1},
+                {"lab_id", config.lab_id},
+                {"vm_id", config.vm_id},
+                {"status", "invalid_run"},
+                {"error", error},
+                {"observed_at", utc_timestamp()},
+            });
+    } catch (...) {
+    }
 }
 
 // 将 partial 日志收束为当前 job 的完整暂存文件。
@@ -187,6 +209,11 @@ int Agent::run_once(const std::stop_token stop_token) {
         if (!entry.is_directory() || entry.path().filename().native().starts_with(L".")) {
             continue;
         }
+        const DWORD attributes = GetFileAttributesW(entry.path().c_str());
+        if (attributes == INVALID_FILE_ATTRIBUTES ||
+            (attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
+            continue;
+        }
         if (std::filesystem::is_regular_file(entry.path() / L"task.json")) {
             run_directories.push_back(entry.path());
         }
@@ -198,101 +225,120 @@ int Agent::run_once(const std::stop_token stop_token) {
         if (stop_token.stop_requested()) {
             break;
         }
-        const RunManifest manifest = load_run_manifest(run_directory / L"task.json");
-        if (manifest.lab_id != config_.lab_id || manifest.protocol_version != config_.protocol_version) {
-            continue;
-        }
-        if (path_from_utf8(manifest.run_id) != run_directory.filename()) {
-            throw Error("Run manifest ID does not match its directory name");
-        }
-
-        for (const auto& step : manifest.steps) {
-            if (stop_token.stop_requested()) {
-                return executed_steps;
-            }
-            if (step.vm != config_.vm_id) {
+        try {
+            const RunManifest manifest = load_run_manifest(run_directory / L"task.json");
+            if (manifest.lab_id != config_.lab_id ||
+                manifest.protocol_version != config_.protocol_version) {
                 continue;
             }
-
-            const std::filesystem::path result_directory = resolve_under_root(
-                run_directory,
-                std::filesystem::path(L"results") /
-                    path_from_utf8(config_.vm_id) /
-                    path_from_utf8(step.id));
-            const std::filesystem::path result_path = result_directory / L"execution.json";
-
-            const std::string job_id = make_id("job");
-            const std::filesystem::path claim_path = resolve_under_root(
-                run_directory,
-                std::filesystem::path(L"state") /
-                    path_from_utf8(config_.vm_id) /
-                    path_from_utf8(step.id + ".claim.json"));
-            const std::filesystem::path recovery_path = resolve_under_root(
-                run_directory,
-                std::filesystem::path(L"state") /
-                    path_from_utf8(config_.vm_id) /
-                    path_from_utf8(step.id + ".claim-recovery.json"));
-            const StepClaimLease proposed_claim = make_step_claim_lease(
-                manifest.run_id,
-                config_.vm_id,
-                step.id,
-                job_id,
-                session_id_,
-                boot_id_,
-                unix_time_ms(),
-                runtime_options_.claim_lease_policy.lease_duration.count(),
-                step.retry_safe);
-            StepClaimAcquireResult acquisition;
-            try {
-                acquisition = acquire_step_claim_transaction(
-                    claim_path,
-                    result_path,
-                    proposed_claim,
-                    boot_id_);
-            } catch (const StepClaimStateError& error) {
-                write_json_atomic(recovery_path, {
-                    {"schema_version", 1},
-                    {"status", "manual_intervention_required"},
-                    {"reason", "claim state failed validation"},
-                    {"error", error.what()},
-                    {"current_boot_id", boot_id_},
-                    {"observed_at", utc_timestamp()},
-                });
-                continue;
+            if (path_from_utf8(manifest.run_id) != run_directory.filename()) {
+                throw Error("Run manifest ID does not match its directory name");
             }
-            if (acquisition.status == StepClaimAcquireStatus::Completed ||
-                acquisition.status == StepClaimAcquireStatus::Wait) {
-                continue;
-            }
-            if (acquisition.status == StepClaimAcquireStatus::ManualInterventionRequired) {
-                if (!acquisition.claim.has_value()) {
-                    throw Error("Manual claim recovery result omitted the persisted claim");
+
+            for (const auto& step : manifest.steps) {
+                if (stop_token.stop_requested()) {
+                    return executed_steps;
                 }
-                write_json_atomic(recovery_path, {
-                    {"schema_version", 1},
-                    {"status", "manual_intervention_required"},
-                    {"reason", "expired claim belongs to an unsafe step"},
-                    {"claim", *acquisition.claim},
-                    {"current_boot_id", boot_id_},
-                    {"observed_at", utc_timestamp()},
-                });
-                continue;
-            }
-            if (acquisition.status != StepClaimAcquireStatus::Acquired ||
-                !acquisition.claim.has_value()) {
-                throw Error("Claim acquisition transaction returned an invalid state");
-            }
-            std::error_code marker_error;
-            std::filesystem::remove(recovery_path, marker_error);
+                if (step.vm != config_.vm_id) {
+                    continue;
+                }
 
-            execute_step(
-                run_directory,
-                manifest,
-                step,
-                claim_path,
-                *acquisition.claim,
-                stop_token);
-            ++executed_steps;
+                const std::filesystem::path result_directory = resolve_under_root(
+                    run_directory,
+                    std::filesystem::path(L"results") /
+                        path_from_utf8(config_.vm_id) /
+                        path_from_utf8(step.id));
+                const std::filesystem::path result_path = result_directory / L"execution.json";
+
+                const std::string job_id = make_id("job");
+                const std::filesystem::path claim_path = resolve_under_root(
+                    run_directory,
+                    std::filesystem::path(L"state") /
+                        path_from_utf8(config_.vm_id) /
+                        path_from_utf8(step.id + ".claim.json"));
+                const std::filesystem::path recovery_path = resolve_under_root(
+                    run_directory,
+                    std::filesystem::path(L"state") /
+                        path_from_utf8(config_.vm_id) /
+                        path_from_utf8(step.id + ".claim-recovery.json"));
+                const StepClaimLease proposed_claim = make_step_claim_lease(
+                    manifest.run_id,
+                    config_.vm_id,
+                    step.id,
+                    job_id,
+                    session_id_,
+                    boot_id_,
+                    unix_time_ms(),
+                    runtime_options_.claim_lease_policy.lease_duration.count(),
+                    step.retry_safe);
+                StepClaimAcquireResult acquisition;
+                try {
+                    acquisition = acquire_step_claim_transaction(
+                        claim_path,
+                        result_path,
+                        proposed_claim,
+                        boot_id_);
+                } catch (const StepClaimStateError& error) {
+                    write_json_atomic(recovery_path, {
+                        {"schema_version", 1},
+                        {"status", "manual_intervention_required"},
+                        {"reason", "claim state failed validation"},
+                        {"error", error.what()},
+                        {"current_boot_id", boot_id_},
+                        {"observed_at", utc_timestamp()},
+                    });
+                    continue;
+                }
+                if (acquisition.status == StepClaimAcquireStatus::Completed ||
+                    acquisition.status == StepClaimAcquireStatus::Wait) {
+                    continue;
+                }
+                if (acquisition.status == StepClaimAcquireStatus::ManualInterventionRequired) {
+                    if (!acquisition.claim.has_value()) {
+                        throw Error("Manual claim recovery result omitted the persisted claim");
+                    }
+                    write_json_atomic(recovery_path, {
+                        {"schema_version", 1},
+                        {"status", "manual_intervention_required"},
+                        {"reason", "expired claim belongs to an unsafe step"},
+                        {"claim", *acquisition.claim},
+                        {"current_boot_id", boot_id_},
+                        {"observed_at", utc_timestamp()},
+                    });
+                    continue;
+                }
+                if (acquisition.status != StepClaimAcquireStatus::Acquired ||
+                    !acquisition.claim.has_value()) {
+                    throw Error("Claim acquisition transaction returned an invalid state");
+                }
+                std::error_code marker_error;
+                std::filesystem::remove(recovery_path, marker_error);
+
+                execute_step(
+                    run_directory,
+                    manifest,
+                    step,
+                    claim_path,
+                    *acquisition.claim,
+                    stop_token);
+                ++executed_steps;
+            }
+            const bool current_vm_complete = std::all_of(
+                manifest.steps.begin(),
+                manifest.steps.end(),
+                [&run_directory, this](const TaskStep& step) {
+                    return step.vm != config_.vm_id || std::filesystem::is_regular_file(
+                        run_directory / L"results" / path_from_utf8(config_.vm_id) /
+                        path_from_utf8(step.id) / L"execution.json");
+                });
+            if (current_vm_complete) {
+                std::error_code cleanup_error;
+                std::filesystem::remove_all(
+                    resolve_under_root(config_.local_work_root, path_from_utf8(manifest.run_id)),
+                    cleanup_error);
+            }
+        } catch (const std::exception& error) {
+            write_run_error_best_effort(run_directory, config_, error.what());
         }
     }
     return executed_steps;
@@ -342,31 +388,6 @@ void Agent::write_presence() const {
         presence);
 }
 
-bool Agent::synchronize_rpc() {
-    RpcClient client(config_, session_id_, boot_id_);
-    if (!client.connected()) {
-        static_cast<void>(client.connect());
-    }
-
-    const HostDirective directive = client.heartbeat("idle", "");
-    if (directive.action == "stop") {
-        throw Error("Host stopped the Agent session: " + directive.message);
-    }
-    if (directive.action != "poll") {
-        return false;
-    }
-
-    const TaskReference task = client.poll_task();
-    if (task.type == "error") {
-        throw Error("Host task polling failed: " + task.manifest);
-    }
-    if (task.has_task) {
-        validate_identifier(task.run_id, "run_id");
-        validate_relative_path(path_from_utf8(task.manifest));
-    }
-    return task.has_task;
-}
-
 void Agent::deploy_artifacts(
     const std::filesystem::path& run_directory,
     const std::filesystem::path& local_run_directory,
@@ -380,7 +401,9 @@ void Agent::deploy_artifacts(
         }
 
         const std::filesystem::path shared_file = resolve_under_root(run_directory, artifact.path);
-        if (!std::filesystem::is_regular_file(shared_file) || sha256_file(shared_file) != artifact.sha256) {
+        if (!std::filesystem::is_regular_file(shared_file) ||
+            std::filesystem::file_size(shared_file) > kMaxArtifactBytes ||
+            sha256_file(shared_file) != artifact.sha256) {
             throw Error("Artifact is missing or has an invalid hash: " + path_to_utf8(artifact.path));
         }
 
@@ -421,6 +444,25 @@ void Agent::execute_step(
         lease_loss_token,
         [&execution_stop_source] { execution_stop_source.request_stop(); });
     const std::stop_token execution_stop_token = execution_stop_source.get_token();
+    const std::filesystem::path cancellation_path = run_directory / L"cancel.json";
+    std::jthread cancellation_monitor(
+        [&execution_stop_source, cancellation_path, run_id = manifest.run_id](
+            const std::stop_token monitor_stop) {
+            while (!monitor_stop.stop_requested()) {
+                try {
+                    if (std::filesystem::is_regular_file(cancellation_path)) {
+                        const nlohmann::json cancellation = load_json(cancellation_path);
+                        if (cancellation.value("schema_version", 0) == 1 &&
+                            cancellation.value("run_id", std::string{}) == run_id) {
+                            execution_stop_source.request_stop();
+                            return;
+                        }
+                    }
+                } catch (...) {
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            }
+        });
 
     const std::filesystem::path result_directory = resolve_under_root(
         run_directory,
@@ -494,6 +536,7 @@ void Agent::execute_step(
             request.stdout_path = stdout_partial;
             request.stderr_path = stderr_partial;
             request.timeout = std::chrono::seconds(step.timeout_seconds);
+            request.max_output_bytes = kDefaultMaxOutputBytes;
             request.stop_token = execution_stop_token;
             const ProcessResult process_result = interactive_session
                 ? interactive_session->run(helper_executable_, request)
@@ -502,13 +545,23 @@ void Agent::execute_step(
             result.exit_code = process_result.exit_code;
             result.timed_out = process_result.timed_out;
             result.duration_ms = process_result.duration_ms;
+            if (process_result.output_limit_exceeded) {
+                throw Error("Process output exceeded the 64 MiB limit");
+            }
 
+            std::uintmax_t collected_total_bytes = 0;
             for (const auto& collect_file : step.collect_files) {
                 throw_if_stop_requested(execution_stop_token);
                 const std::filesystem::path source = resolve_under_root(local_run_directory, collect_file);
                 if (!std::filesystem::is_regular_file(source)) {
                     throw Error("Declared result file does not exist: " + path_to_utf8(collect_file));
                 }
+                const std::uintmax_t collected_size = std::filesystem::file_size(source);
+                if (collected_size > kMaxCollectedFileBytes ||
+                    collected_total_bytes > kMaxCollectedTotalBytes - collected_size) {
+                    throw Error("Declared result files exceed the collection size limit");
+                }
+                collected_total_bytes += collected_size;
                 const std::filesystem::path staged_destination = resolve_under_root(
                     job_directory,
                     std::filesystem::path(L"files") / collect_file);
@@ -532,7 +585,9 @@ void Agent::execute_step(
         result.status = result.timed_out ? "timed_out" : "exited";
     } catch (const std::exception& error) {
         result.status = "failed";
-        result.error = error.what();
+        result.error = std::filesystem::is_regular_file(cancellation_path)
+            ? "Run cancellation requested"
+            : error.what();
     }
 
     finalize_staged_log(stdout_partial, stdout_staged, result);

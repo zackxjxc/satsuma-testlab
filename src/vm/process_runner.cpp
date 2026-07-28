@@ -1,6 +1,7 @@
 // Windows Job Object 进程树执行实现。
 #include "process_runner.hpp"
 
+#include <algorithm>
 #include <limits>
 #include <string>
 #include <vector>
@@ -127,6 +128,21 @@ void ensure_win32(const BOOL success, const char* operation) {
     throw Error("Agent stop requested");
 }
 
+// 判断两个持续写入日志的当前总大小是否超过请求上限。
+[[nodiscard]] bool output_limit_exceeded(
+    const HANDLE standard_output,
+    const HANDLE standard_error,
+    const std::uint64_t limit) {
+    LARGE_INTEGER stdout_size{};
+    LARGE_INTEGER stderr_size{};
+    ensure_win32(GetFileSizeEx(standard_output, &stdout_size), "GetFileSizeEx(stdout)");
+    ensure_win32(GetFileSizeEx(standard_error, &stderr_size), "GetFileSizeEx(stderr)");
+    return stdout_size.QuadPart < 0 || stderr_size.QuadPart < 0 ||
+        static_cast<std::uint64_t>(stdout_size.QuadPart) > limit ||
+        static_cast<std::uint64_t>(stderr_size.QuadPart) >
+            limit - static_cast<std::uint64_t>(stdout_size.QuadPart);
+}
+
 }  // namespace
 
 ProcessResult ProcessRunner::run(const ProcessRequest& request) const {
@@ -139,6 +155,9 @@ ProcessResult ProcessRunner::run(const ProcessRequest& request) const {
     if (request.timeout.count() <= 0 ||
         request.timeout.count() > static_cast<std::int64_t>(std::numeric_limits<DWORD>::max())) {
         throw Error("Process timeout is outside the supported range");
+    }
+    if (request.max_output_bytes == 0) {
+        throw Error("Process output limit must be greater than zero");
     }
     if (request.stop_token.stop_requested()) {
         throw Error("Agent stop requested");
@@ -200,21 +219,42 @@ ProcessResult ProcessRunner::run(const ProcessRequest& request) const {
             throw Error("ResumeThread failed with Win32 error " + std::to_string(GetLastError()));
         }
 
-        const HANDLE wait_handles[] = {process.get(), cancel_event.get()};
-        const DWORD wait_result = WaitForMultipleObjects(
-            2,
-            wait_handles,
-            FALSE,
-            static_cast<DWORD>(request.timeout.count()));
         ProcessResult result;
-        if (wait_result == WAIT_TIMEOUT) {
-            result.timed_out = true;
-            ensure_win32(TerminateJobObject(job.get(), ERROR_TIMEOUT), "TerminateJobObject");
-            WaitForSingleObject(process.get(), 5'000);
-        } else if (wait_result == WAIT_OBJECT_0 + 1) {
-            cancel_job(job.get(), process.get());
-        } else if (wait_result != WAIT_OBJECT_0) {
-            throw Error("WaitForMultipleObjects failed with Win32 error " + std::to_string(GetLastError()));
+        const HANDLE wait_handles[] = {process.get(), cancel_event.get()};
+        const auto deadline = start_time + request.timeout;
+        for (;;) {
+            const auto now = std::chrono::steady_clock::now();
+            const auto remaining = now < deadline
+                ? std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now)
+                : std::chrono::milliseconds::zero();
+            const DWORD wait_ms = static_cast<DWORD>(std::min(remaining, std::chrono::milliseconds(100)).count());
+            const DWORD wait_result = WaitForMultipleObjects(2, wait_handles, FALSE, wait_ms);
+            if (wait_result == WAIT_OBJECT_0) {
+                result.output_limit_exceeded = output_limit_exceeded(
+                    standard_output.get(), standard_error.get(), request.max_output_bytes);
+                break;
+            }
+            if (wait_result == WAIT_OBJECT_0 + 1) {
+                cancel_job(job.get(), process.get());
+            }
+            if (wait_result != WAIT_TIMEOUT) {
+                throw Error("WaitForMultipleObjects failed with Win32 error " + std::to_string(GetLastError()));
+            }
+            if (output_limit_exceeded(
+                    standard_output.get(),
+                    standard_error.get(),
+                    request.max_output_bytes)) {
+                result.output_limit_exceeded = true;
+                ensure_win32(TerminateJobObject(job.get(), ERROR_FILE_TOO_LARGE), "TerminateJobObject");
+                WaitForSingleObject(process.get(), 5'000);
+                break;
+            }
+            if (std::chrono::steady_clock::now() >= deadline) {
+                result.timed_out = true;
+                ensure_win32(TerminateJobObject(job.get(), ERROR_TIMEOUT), "TerminateJobObject");
+                WaitForSingleObject(process.get(), 5'000);
+                break;
+            }
         }
 
         DWORD exit_code = 0;

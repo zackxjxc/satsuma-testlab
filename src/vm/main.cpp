@@ -8,7 +8,6 @@
 #include <nlohmann/json.hpp>
 
 #include "agent.hpp"
-#include "autostart.hpp"
 #include "interactive_process.hpp"
 #include "service.hpp"
 #include "update.hpp"
@@ -25,16 +24,15 @@ void print_usage() {
     std::cout
         << "SatsumaVM " << satsuma::kVersion << '\n'
         << "Usage:\n"
+        << "  SatsumaVM --help\n"
         << "  SatsumaVM --version\n"
         << "  SatsumaVM --config agent.json --once\n"
-        << "  SatsumaVM --config agent.json --rpc-once\n"
         << "  SatsumaVM --config agent.json --watch\n"
         << "  SatsumaVM --config agent.json --service\n"
         << "  SatsumaVM --config agent.json --validate-config\n"
         << "  SatsumaVM --config agent.json --install-service\n"
         << "  SatsumaVM --config agent.json --remove-service\n"
-        << "  SatsumaVM --config agent.json --apply-update update-manifest.json\n"
-        << "  SatsumaVM --config agent.json --install-autostart\n";
+        << "  SatsumaVM --config agent.json --apply-update update-manifest.json\n";
 }
 
 // 拒绝把兼容读取的旧 agent.json 用于安装或执行新 Agent。
@@ -55,20 +53,6 @@ void require_current_file_protocol(const satsuma::AgentConfig& config) {
             return "unchanged";
         default:
             throw satsuma::Error("Unknown service change");
-    }
-}
-
-// 将计划任务变更转换为稳定机器文本。
-[[nodiscard]] const char* autostart_change_name(const satsuma::vm::AutostartChange change) {
-    switch (change) {
-        case satsuma::vm::AutostartChange::Created:
-            return "created";
-        case satsuma::vm::AutostartChange::Updated:
-            return "updated";
-        case satsuma::vm::AutostartChange::Unchanged:
-            return "unchanged";
-        default:
-            throw satsuma::Error("Unknown autostart change");
     }
 }
 
@@ -103,6 +87,10 @@ int wmain(const int argc, wchar_t* argv[]) {
         }
         if (argc == 2 && std::wstring(argv[1]) == L"--version") {
             std::cout << satsuma::kVersion << '\n';
+            return 0;
+        }
+        if (argc == 2 && (std::wstring(argv[1]) == L"--help" || std::wstring(argv[1]) == L"help")) {
+            print_usage();
             return 0;
         }
         if ((argc != 4 && argc != 5) || std::wstring(argv[1]) != L"--config") {
@@ -151,17 +139,6 @@ int wmain(const int argc, wchar_t* argv[]) {
             }).dump() << '\n';
             return 0;
         }
-        if (mode == L"--install-autostart") {
-            const satsuma::vm::AgentAutostartResult result =
-                satsuma::vm::ensure_agent_autostart(config_path, config.local_work_root, true);
-            std::cout << nlohmann::json({
-                {"status", autostart_change_name(result.change)},
-                {"task_path", result.task_path},
-                {"start_requested", result.start_requested},
-                {"engine_process_id", result.engine_process_id},
-            }).dump() << '\n';
-            return 0;
-        }
         if (mode == L"--install-service") {
             const satsuma::vm::AgentServiceResult result =
                 satsuma::vm::ensure_agent_service(config_path, config.local_work_root, true);
@@ -177,12 +154,6 @@ int wmain(const int argc, wchar_t* argv[]) {
         if (mode == L"--once") {
             const int executed = agent.run_once();
             std::cout << "{\"executed_steps\":" << executed << "}\n";
-            return 0;
-        }
-        if (mode == L"--rpc-once") {
-            const bool has_task = agent.synchronize_rpc();
-            std::cout << "{\"rpc_connected\":true,\"has_task\":"
-                      << (has_task ? "true" : "false") << "}\n";
             return 0;
         }
         if (mode == L"--watch") {

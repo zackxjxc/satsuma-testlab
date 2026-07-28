@@ -1,6 +1,7 @@
 // 交互用户 Session 令牌、跨 Session 句柄传递和隐藏 helper 实现。
 #include "interactive_process.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <exception>
@@ -166,6 +167,21 @@ void ensure_win32(const BOOL success, const char* operation) {
             std::string(operation) + " failed with Win32 error " +
             std::to_string(GetLastError()));
     }
+}
+
+// 判断交互执行的 stdout 与 stderr 当前总大小是否超过上限。
+[[nodiscard]] bool output_limit_exceeded(
+    const HANDLE standard_output,
+    const HANDLE standard_error,
+    const std::uint64_t limit) {
+    LARGE_INTEGER stdout_size{};
+    LARGE_INTEGER stderr_size{};
+    ensure_win32(GetFileSizeEx(standard_output, &stdout_size), "GetFileSizeEx(stdout)");
+    ensure_win32(GetFileSizeEx(standard_error, &stderr_size), "GetFileSizeEx(stderr)");
+    return stdout_size.QuadPart < 0 || stderr_size.QuadPart < 0 ||
+        static_cast<std::uint64_t>(stdout_size.QuadPart) > limit ||
+        static_cast<std::uint64_t>(stderr_size.QuadPart) >
+            limit - static_cast<std::uint64_t>(stdout_size.QuadPart);
 }
 
 // 拒绝 WTS 无活动控制台 Session 的哨兵值。
@@ -626,6 +642,9 @@ ProcessResult InteractiveUserSession::run(
             static_cast<std::int64_t>(std::numeric_limits<DWORD>::max())) {
         throw Error("Process timeout is outside the supported range");
     }
+    if (request.max_output_bytes == 0) {
+        throw Error("Process output limit must be greater than zero");
+    }
     if (request.stop_token.stop_requested()) {
         throw Error("Agent stop requested");
     }
@@ -699,6 +718,7 @@ ProcessResult InteractiveUserSession::run(
     std::wstring desktop = L"winsta0\\default";
     startup.lpDesktop = desktop.data();
     PROCESS_INFORMATION helper_info{};
+    // Helper 保持挂起，直到加入 Job、发布请求并再次验证 Session 与 SID。
     const DWORD creation_flags =
         CREATE_SUSPENDED | CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT;
     BOOL launched = FALSE;
@@ -804,51 +824,67 @@ ProcessResult InteractiveUserSession::run(
                 std::to_string(GetLastError()));
         }
 
-        const HANDLE wait_handles[] = {helper_process.get(), cancel_event.get()};
-        const DWORD wait_result = WaitForMultipleObjects(
-            2,
-            wait_handles,
-            FALSE,
-            static_cast<DWORD>(request.timeout.count()));
         ProcessResult result;
-        if (wait_result == WAIT_TIMEOUT) {
-            result.timed_out = true;
+        const HANDLE wait_handles[] = {helper_process.get(), cancel_event.get()};
+        const auto deadline = start_time + request.timeout;
+        for (;;) {
+            const auto now = std::chrono::steady_clock::now();
+            const auto remaining = now < deadline
+                ? std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now)
+                : std::chrono::milliseconds::zero();
+            const DWORD wait_ms = static_cast<DWORD>(
+                std::min(remaining, std::chrono::milliseconds(100)).count());
+            const DWORD wait_result = WaitForMultipleObjects(2, wait_handles, FALSE, wait_ms);
+            if (wait_result == WAIT_OBJECT_0) {
+                helper_exit_confirmed = true;
+                result.output_limit_exceeded = output_limit_exceeded(
+                    standard_output.get(), standard_error.get(), request.max_output_bytes);
+                break;
+            }
+            if (wait_result == WAIT_OBJECT_0 + 1) {
+                const HelperTermination termination = terminate_helper_and_wait(
+                    job, helper_process.get(), assigned_to_job, ERROR_OPERATION_ABORTED);
+                helper_exit_confirmed = termination.exited;
+                if (termination.exited) {
+                    remove_helper_protocol_files(helper_request, helper_result);
+                }
+                if (!termination.error.empty()) {
+                    throw Error("Agent stop requested; " + termination.error);
+                }
+                throw Error("Agent stop requested");
+            }
+            if (wait_result != WAIT_TIMEOUT) {
+                throw Error(
+                    "WaitForMultipleObjects failed with Win32 error " +
+                    std::to_string(GetLastError()));
+            }
+            DWORD termination_code = ERROR_SUCCESS;
+            if (output_limit_exceeded(
+                    standard_output.get(),
+                    standard_error.get(),
+                    request.max_output_bytes)) {
+                result.output_limit_exceeded = true;
+                termination_code = ERROR_FILE_TOO_LARGE;
+            } else if (std::chrono::steady_clock::now() >= deadline) {
+                result.timed_out = true;
+                termination_code = ERROR_TIMEOUT;
+            } else {
+                continue;
+            }
             const HelperTermination termination = terminate_helper_and_wait(
-                job,
-                helper_process.get(),
-                assigned_to_job,
-                ERROR_TIMEOUT);
+                job, helper_process.get(), assigned_to_job, termination_code);
             helper_exit_confirmed = termination.exited;
             if (!termination.exited || !termination.error.empty()) {
                 throw Error(
-                    "Interactive process timeout cleanup failed" +
+                    "Interactive process cleanup failed" +
                     (termination.error.empty()
                         ? std::string{}
                         : std::string(": ") + termination.error));
             }
-        } else if (wait_result == WAIT_OBJECT_0 + 1) {
-            const HelperTermination termination = terminate_helper_and_wait(
-                job,
-                helper_process.get(),
-                assigned_to_job,
-                ERROR_OPERATION_ABORTED);
-            helper_exit_confirmed = termination.exited;
-            if (termination.exited) {
-                remove_helper_protocol_files(helper_request, helper_result);
-            }
-            if (!termination.error.empty()) {
-                throw Error("Agent stop requested; " + termination.error);
-            }
-            throw Error("Agent stop requested");
-        } else if (wait_result != WAIT_OBJECT_0) {
-            throw Error(
-                "WaitForMultipleObjects failed with Win32 error " +
-                std::to_string(GetLastError()));
-        } else {
-            helper_exit_confirmed = true;
+            break;
         }
 
-        if (!result.timed_out) {
+        if (!result.timed_out && !result.output_limit_exceeded) {
             if (!std::filesystem::is_regular_file(helper_result)) {
                 throw Error("Interactive process helper exited without a result");
             }

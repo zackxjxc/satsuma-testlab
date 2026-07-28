@@ -19,6 +19,7 @@ struct ProcessRequest {
     std::filesystem::path stdout_path;      // 持续落盘的 stdout 路径
     std::filesystem::path stderr_path;      // 持续落盘的 stderr 路径
     std::chrono::milliseconds timeout;      // 完整进程树超时
+    std::uint64_t max_output_bytes{64ULL * 1024 * 1024}; // stdout 与 stderr 合计上限
     std::stop_token stop_token;             // Agent 生命周期停止信号
 };
 
@@ -26,6 +27,7 @@ struct ProcessRequest {
 struct ProcessResult {
     std::optional<std::uint32_t> exit_code; // 进程正常退出时的退出码
     bool timed_out{false};                  // 是否因超时终止 Job Object
+    bool output_limit_exceeded{false};      // 是否因日志超过上限终止
     std::int64_t duration_ms{0};            // 执行耗时
 };
 

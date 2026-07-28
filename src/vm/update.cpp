@@ -527,6 +527,7 @@ void cleanup_committed_update(const UpdatePaths& paths) {
             "",
             utc_timestamp(),
         };
+        // 先预写可补发结果，再删除备份形成不可逆提交；提交后只允许补偿收尾。
         write_update_result(
             pending_success_result_path(paths),
             committed_result);

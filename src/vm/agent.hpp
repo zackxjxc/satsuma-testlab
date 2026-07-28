@@ -35,11 +35,8 @@ public:
     // 按配置的间隔持续扫描共享目录，直到收到停止请求。
     void run_watch(std::stop_token stop_token = {});
 
-    // 完成一次连接、心跳和任务通知同步。
-    [[nodiscard]] bool synchronize_rpc();
-
 private:
-    // 执行一个已领取步骤并始终生成 execution.json。
+    // 执行已领取步骤，仅在仍持有有效 claim 时发布规范 execution.json。
     void execute_step(
         const std::filesystem::path& run_directory,
         const RunManifest& manifest,
