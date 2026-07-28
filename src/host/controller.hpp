@@ -2,6 +2,7 @@
 #pragma once
 
 #include <chrono>
+#include <cstddef>
 #include <filesystem>
 #include <optional>
 #include <string>
@@ -28,6 +29,17 @@ public:
 
     // 汇总指定运行当前已落盘的执行结果。
     [[nodiscard]] nlohmann::json build_report(const std::string& run_id) const;
+
+    // 列出共享目录中的运行及其当前状态。
+    [[nodiscard]] nlohmann::json list_runs() const;
+
+    // 原子发布单个运行的取消请求。
+    [[nodiscard]] nlohmann::json cancel_run(
+        const std::string& run_id,
+        const std::string& reason) const;
+
+    // 删除超过保留数量且已经终态完成的共享运行。
+    [[nodiscard]] nlohmann::json prune_runs(std::size_t keep) const;
 
     // 原子发布单个 VM 的 Agent 更新候选和清单。
     [[nodiscard]] AgentUpdateManifest publish_agent_update(

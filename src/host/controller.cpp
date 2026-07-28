@@ -6,6 +6,7 @@
 #include <limits>
 #include <set>
 #include <thread>
+#include <vector>
 
 #include <windows.h>
 
@@ -51,6 +52,13 @@ void validate_artifact_destination(const std::filesystem::path& destination) {
     if (first == destination.end() || _wcsicmp(first->native().c_str(), L"artifacts") != 0) {
         throw Error("Artifact destination must be under artifacts/: " + path_to_utf8(destination));
     }
+}
+
+// 拒绝把目录联接或符号链接当成可枚举、可删除的运行目录。
+[[nodiscard]] bool is_reparse_point(const std::filesystem::path& path) noexcept {
+    const DWORD attributes = GetFileAttributesW(path.c_str());
+    return attributes == INVALID_FILE_ATTRIBUTES ||
+        (attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
 }
 
 }  // namespace
@@ -99,6 +107,9 @@ RunManifest Controller::create_run(const TaskPlan& plan) const {
             validate_artifact_destination(input.destination);
             if (!std::filesystem::is_regular_file(input.source)) {
                 throw Error("Artifact source is not a regular file: " + path_to_utf8(input.source));
+            }
+            if (std::filesystem::file_size(input.source) > kMaxArtifactBytes) {
+                throw Error("Artifact exceeds the 2 GiB size limit: " + path_to_utf8(input.source));
             }
 
             const std::filesystem::path target = resolve_under_root(staging_directory, input.destination);
@@ -346,6 +357,122 @@ nlohmann::json Controller::build_report(const std::string& run_id) const {
         {"manual_intervention_required", manual_intervention_required},
         {"blocked_steps", std::move(blocked_steps)},
         {"executions", std::move(executions)},
+    };
+}
+
+nlohmann::json Controller::list_runs() const {
+    const std::filesystem::path runs_root = config_.shared_folder.host_root / L"runs";
+    nlohmann::json runs = nlohmann::json::array();
+    if (!std::filesystem::is_directory(runs_root)) {
+        return {{"schema_version", 1}, {"runs", std::move(runs)}};
+    }
+    std::vector<std::filesystem::path> directories;
+    for (const auto& entry : std::filesystem::directory_iterator(runs_root)) {
+        if (entry.is_directory() && !is_reparse_point(entry.path()) &&
+            !entry.path().filename().native().starts_with(L".")) {
+            directories.push_back(entry.path());
+        }
+    }
+    std::sort(directories.begin(), directories.end());
+    for (const auto& directory : directories) {
+        const std::string run_id = path_to_utf8(directory.filename());
+        try {
+            nlohmann::json report = build_report(run_id);
+            runs.push_back({
+                {"run_id", run_id},
+                {"name", report.at("name")},
+                {"status", report.at("status")},
+                {"complete", report.at("complete")},
+            });
+        } catch (const std::exception& error) {
+            runs.push_back({
+                {"run_id", run_id},
+                {"status", "invalid"},
+                {"complete", false},
+                {"error", error.what()},
+            });
+        }
+    }
+    return {{"schema_version", 1}, {"runs", std::move(runs)}};
+}
+
+nlohmann::json Controller::cancel_run(
+    const std::string& run_id,
+    const std::string& reason) const {
+    validate_identifier(run_id, "run_id");
+    if (reason.empty() || reason.size() > 512 || reason.find('\0') != std::string::npos) {
+        throw Error("Cancellation reason must contain between 1 and 512 non-NUL characters");
+    }
+    const std::filesystem::path run_directory = resolve_under_root(
+        config_.shared_folder.host_root,
+        std::filesystem::path(L"runs") / path_from_utf8(run_id));
+    if (!std::filesystem::is_regular_file(run_directory / L"task.json")) {
+        throw Error("Unknown run_id: " + run_id);
+    }
+    const nlohmann::json report = build_report(run_id);
+    if (report.at("complete").get<bool>()) {
+        return {
+            {"schema_version", 1},
+            {"run_id", run_id},
+            {"status", "already_complete"},
+        };
+    }
+    write_json_atomic(run_directory / L"cancel.json", {
+        {"schema_version", 1},
+        {"run_id", run_id},
+        {"reason", reason},
+        {"requested_at", utc_timestamp()},
+    });
+    return {
+        {"schema_version", 1},
+        {"run_id", run_id},
+        {"status", "cancellation_requested"},
+    };
+}
+
+nlohmann::json Controller::prune_runs(const std::size_t keep) const {
+    if (keep > 10'000) {
+        throw Error("Run retention must be between 0 and 10000");
+    }
+    const std::filesystem::path runs_root = config_.shared_folder.host_root / L"runs";
+    std::vector<std::filesystem::directory_entry> entries;
+    if (std::filesystem::is_directory(runs_root)) {
+        for (const auto& entry : std::filesystem::directory_iterator(runs_root)) {
+            if (entry.is_directory() && !is_reparse_point(entry.path()) &&
+                !entry.path().filename().native().starts_with(L".")) {
+                entries.push_back(entry);
+            }
+        }
+    }
+    std::sort(entries.begin(), entries.end(), [](const auto& left, const auto& right) {
+        return left.last_write_time() > right.last_write_time();
+    });
+    nlohmann::json removed = nlohmann::json::array();
+    nlohmann::json retained = nlohmann::json::array();
+    for (std::size_t index = 0; index < entries.size(); ++index) {
+        const std::string run_id = path_to_utf8(entries[index].path().filename());
+        if (index < keep) {
+            retained.push_back(run_id);
+            continue;
+        }
+        try {
+            const nlohmann::json report = build_report(run_id);
+            if (!report.at("complete").get<bool>()) {
+                retained.push_back(run_id);
+                continue;
+            }
+            std::filesystem::remove_all(entries[index].path());
+            removed.push_back(run_id);
+        } catch (...) {
+            retained.push_back(run_id);
+        }
+    }
+    return {
+        {"schema_version", 1},
+        {"status", "pruned"},
+        {"keep", keep},
+        {"removed", std::move(removed)},
+        {"retained", std::move(retained)},
     };
 }
 

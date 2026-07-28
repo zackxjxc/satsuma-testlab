@@ -545,6 +545,7 @@ nlohmann::json Orchestrator::execute(
         throw Error("Orchestration timeout must be between 1 and 86400 seconds");
     }
 
+    // 新运行依次准备、执行、取证、finally 和逆序清理；恢复只接管可安全重入的后半阶段。
     TaskPlan plan = load_task_plan(plan_path);
     const std::vector<VmLifecyclePolicy>& policies = require_lifecycle_policies(plan);
     validate_plan_scope(plan, policies);

@@ -16,7 +16,6 @@
 #include "controller.hpp"
 #include "diagnostics.hpp"
 #include "orchestrator.hpp"
-#include "rpc_server.hpp"
 #include "satsuma/core/config.hpp"
 #include "satsuma/core/errors.hpp"
 #include "satsuma/core/id.hpp"
@@ -70,7 +69,7 @@ void validate_options(
 [[nodiscard]] bool is_supported_command(
     const std::wstring_view command,
     const std::wstring_view subcommand) {
-    if (command == L"check" || command == L"serve" || command == L"run" ||
+    if (command == L"check" || command == L"run" ||
         command == L"orchestrate" || command == L"report") {
         return subcommand.empty();
     }
@@ -83,6 +82,9 @@ void validate_options(
     if (command == L"agent") {
         return subcommand == L"update" || subcommand == L"rebind";
     }
+    if (command == L"runs") {
+        return subcommand == L"list" || subcommand == L"cancel" || subcommand == L"prune";
+    }
     return false;
 }
 
@@ -93,8 +95,6 @@ void validate_command_options(
     const std::map<std::wstring, std::wstring>& options) {
     if (command == L"check") {
         validate_options(options, {L"config", L"vm", L"timeout-seconds"});
-    } else if (command == L"serve") {
-        validate_options(options, {L"config"});
     } else if (command == L"run") {
         validate_options(options, {L"config", L"plan"});
     } else if (command == L"orchestrate") {
@@ -119,6 +119,12 @@ void validate_command_options(
         validate_options(
             options,
             {L"config", L"vm", L"next-vm", L"binary", L"version", L"timeout-seconds"});
+    } else if (command == L"runs" && subcommand == L"list") {
+        validate_options(options, {L"config"});
+    } else if (command == L"runs" && subcommand == L"cancel") {
+        validate_options(options, {L"config", L"run", L"reason"});
+    } else if (command == L"runs" && subcommand == L"prune") {
+        validate_options(options, {L"config", L"keep"});
     }
 }
 
@@ -184,6 +190,18 @@ void validate_command_options(
     return std::chrono::seconds(seconds);
 }
 
+// 解析共享运行保留数量。
+[[nodiscard]] std::size_t parse_run_retention(
+    const std::map<std::wstring, std::wstring>& options) {
+    const std::string value = satsuma::path_to_utf8(require_option(options, L"keep"));
+    unsigned int keep = 0;
+    const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), keep);
+    if (error != std::errc{} || end != value.data() + value.size() || keep > 10'000) {
+        throw satsuma::Error("Run retention must be an integer between 0 and 10000");
+    }
+    return keep;
+}
+
 // 解析 Agent 更新结果的有限等待秒数。
 [[nodiscard]] std::chrono::seconds parse_update_timeout(
     const std::map<std::wstring, std::wstring>& options) {
@@ -235,7 +253,6 @@ void print_usage() {
         << "  SatsumaHost --help\n"
         << "  SatsumaHost --version\n"
         << "  SatsumaHost check --config lab.local.json [--vm <vm-id>] [--timeout-seconds <1-300>]\n"
-        << "  SatsumaHost serve --config lab.local.json\n"
         << "  SatsumaHost vm start --config lab.local.json --id <vm-id>\n"
         << "  SatsumaHost vm stop --config lab.local.json --id <vm-id> [--mode soft|hard]\n"
         << "  SatsumaHost vm restore --config lab.local.json --id <vm-id> --snapshot <name>\n"
@@ -250,7 +267,10 @@ void print_usage() {
         << "  SatsumaHost run --config lab.local.json --plan task.json\n"
         << "  SatsumaHost orchestrate --config lab.local.json --plan task.json "
            "[--timeout-seconds <1-86400>]\n"
-        << "  SatsumaHost report --config lab.local.json --run <run-id> [--wait-seconds <1-86400>]\n";
+        << "  SatsumaHost report --config lab.local.json --run <run-id> [--wait-seconds <1-86400>]\n"
+        << "  SatsumaHost runs list --config lab.local.json\n"
+        << "  SatsumaHost runs cancel --config lab.local.json --run <run-id> [--reason <text>]\n"
+        << "  SatsumaHost runs prune --config lab.local.json --keep <0-10000>\n";
 }
 
 }  // namespace
@@ -276,7 +296,8 @@ int wmain(const int argc, wchar_t* argv[]) {
         std::wstring subcommand;
         int options_start = 2;
         const bool grouped_command =
-            command == L"vm" || command == L"snapshot" || command == L"agent";
+            command == L"vm" || command == L"snapshot" || command == L"agent" ||
+            command == L"runs";
         if (grouped_command) {
             if (argc < 3) {
                 print_usage();
@@ -296,9 +317,22 @@ int wmain(const int argc, wchar_t* argv[]) {
         const std::filesystem::path config_path = require_option(options, L"config");
         satsuma::LabConfig config = satsuma::load_lab_config(config_path);
 
-        if (command == L"serve") {
-            satsuma::host::RpcServer server(std::move(config));
-            server.start();
+        if (command == L"runs") {
+            satsuma::host::Controller controller(std::move(config));
+            if (subcommand == L"list") {
+                std::cout << controller.list_runs().dump(2) << '\n';
+                return 0;
+            }
+            if (subcommand == L"cancel") {
+                const std::string run_id = satsuma::path_to_utf8(require_option(options, L"run"));
+                const auto reason_option = options.find(L"reason");
+                const std::string reason = reason_option == options.end()
+                    ? "Cancellation requested by SatsumaHost"
+                    : satsuma::path_to_utf8(reason_option->second);
+                std::cout << controller.cancel_run(run_id, reason).dump(2) << '\n';
+                return 0;
+            }
+            std::cout << controller.prune_runs(parse_run_retention(options)).dump(2) << '\n';
             return 0;
         }
 
@@ -613,10 +647,13 @@ int wmain(const int argc, wchar_t* argv[]) {
                     std::chrono::steady_clock::now() - started).count();
             }
             std::cout << report.dump(2) << '\n';
-            if (wait_status == "manual_intervention_required") {
+            if (report.at("status") == "manual_intervention_required") {
                 return 5;
             }
-            return wait_status == "timeout" ? 3 : 0;
+            if (wait_status == "timeout") {
+                return 3;
+            }
+            return report.at("status") == "failed" ? 1 : 0;
         }
 
         print_usage();
