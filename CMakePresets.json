@@ -36,6 +36,14 @@
       "output": {
         "outputOnFailure": true
       }
+    },
+    {
+      "name": "windows-release",
+      "configurePreset": "windows-default",
+      "configuration": "Release",
+      "output": {
+        "outputOnFailure": true
+      }
     }
   ]
 }

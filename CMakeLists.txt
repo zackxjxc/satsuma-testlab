@@ -3,6 +3,8 @@ cmake_minimum_required(VERSION 3.25)
 
 project(SatsumaTestLab VERSION 0.1.0 LANGUAGES CXX)
 
+include(GNUInstallDirs)
+
 if(NOT WIN32)
     message(FATAL_ERROR "Satsuma 0.1.0 currently supports Windows only")
 endif()
@@ -209,3 +211,48 @@ if(SATSUMA_BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests)
 endif()
+
+install(TARGETS SatsumaHost SatsumaVM RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+install(FILES lab.json DESTINATION .)
+install(
+    FILES
+        examples/agent-client.json
+        examples/hello-vm-task.json
+        examples/multi-vm-task.json
+    DESTINATION examples
+)
+install(FILES scripts/install-agent.ps1 DESTINATION scripts)
+install(DIRECTORY schemas/ DESTINATION schemas FILES_MATCHING PATTERN "*.json")
+install(
+    FILES
+        docs/AI操作契约.md
+        docs/架构.md
+        docs/用户指南.md
+        docs/协议.md
+        docs/开发指南.md
+    DESTINATION docs
+)
+install(
+    FILES
+        README.md
+        更新日志.md
+        贡献指南.md
+        安全策略.md
+        第三方声明.md
+    DESTINATION .
+)
+
+add_custom_target(
+    SatsumaPackage
+    COMMAND
+        powershell.exe
+        -NoProfile
+        -ExecutionPolicy Bypass
+        -File "${CMAKE_SOURCE_DIR}/scripts/package-release.ps1"
+        -BuildDirectory "${CMAKE_BINARY_DIR}"
+        -Configuration "$<CONFIG>"
+        -Version "${PROJECT_VERSION}"
+    DEPENDS SatsumaHost SatsumaVM
+    USES_TERMINAL
+    VERBATIM
+)
