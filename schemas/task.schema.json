@@ -153,7 +153,11 @@
             },
             "retry_safe": {"type": "boolean"},
             "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 86400},
-            "collect_files": {"type": "array", "items": {"type": "string", "minLength": 1}}
+            "collect_files": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": {"type": "string", "minLength": 1}
+            }
           }
         }
       ]

@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <set>
+#include <string_view>
 
 #include <nlohmann/json.hpp>
 
@@ -33,6 +34,13 @@ namespace {
         throw Error(std::string("Missing or invalid integer field: ") + field);
     }
     return value.at(field).get<int>();
+}
+
+// 配置中的运行路径必须独立于 Host 或 Windows Service 的当前目录。
+void require_absolute_path(const std::filesystem::path& path, const std::string_view field) {
+    if (!path.is_absolute()) {
+        throw Error("Configuration path must be absolute: " + std::string(field));
+    }
 }
 
 // 验证基础快照不会被 AI 快照所有权规则覆盖。
@@ -71,6 +79,7 @@ LabConfig load_lab_config(const std::filesystem::path& path) {
     const auto& provider = value.at("provider");
     config.provider.type = required_string(provider, "type");
     config.provider.vmrun = path_from_utf8(required_string(provider, "vmrun"));
+    require_absolute_path(config.provider.vmrun, "provider.vmrun");
     if (config.provider.type != "vmware_workstation") {
         throw Error("Unsupported provider type: " + config.provider.type);
     }
@@ -78,10 +87,12 @@ LabConfig load_lab_config(const std::filesystem::path& path) {
     const auto& host = value.at("host");
     config.host.listen = required_string(host, "listen");
     config.host.archive_root = path_from_utf8(required_string(host, "archive_root"));
+    require_absolute_path(config.host.archive_root, "host.archive_root");
 
     const auto& shared_folder = value.at("shared_folder");
     config.shared_folder.host_root = path_from_utf8(required_string(shared_folder, "host_root"));
     config.shared_folder.guest_root = required_string(shared_folder, "guest_root");
+    require_absolute_path(config.shared_folder.host_root, "shared_folder.host_root");
 
     if (!value.contains("vms") || !value.at("vms").is_array() || value.at("vms").empty()) {
         throw Error("lab.json must contain at least one VM");
@@ -94,6 +105,7 @@ LabConfig load_lab_config(const std::filesystem::path& path) {
         validate_identifier(vm.id, "VM id");
         vm.role = vm_value.value("role", vm.id);
         vm.vmx = path_from_utf8(required_string(vm_value, "vmx"));
+        require_absolute_path(vm.vmx, "vms[].vmx for " + vm.id);
         vm.agent_version = required_string(vm_value, "agent_version");
         if (!vm_value.contains("snapshots") || !vm_value.at("snapshots").is_object()) {
             throw Error("Missing or invalid snapshots object for VM: " + vm.id);
@@ -130,6 +142,8 @@ AgentConfig load_agent_config(const std::filesystem::path& path) {
     validate_identifier(config.vm_id, "vm_id");
     config.shared_root = path_from_utf8(required_string(value, "shared_root"));
     config.local_work_root = path_from_utf8(required_string(value, "local_work_root"));
+    require_absolute_path(config.shared_root, "shared_root");
+    require_absolute_path(config.local_work_root, "local_work_root");
     config.poll_interval_ms = value.value("poll_interval_ms", 1000);
     config.reconnect_interval_ms = value.value("reconnect_interval_ms", 1000);
     config.rpc_timeout_ms = value.value("rpc_timeout_ms", 5000);

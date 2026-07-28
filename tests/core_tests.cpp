@@ -183,6 +183,77 @@ void test_snapshot_configuration(const std::filesystem::path& root) {
         "base snapshot using the AI prefix was accepted");
 }
 
+// 验证 Host 和 Agent 的关键路径不会依赖调用进程的当前目录。
+void test_absolute_configuration_paths(const std::filesystem::path& root) {
+    const nlohmann::json lab = {
+        {"schema_version", 1},
+        {"lab_id", "absolute_path_test"},
+        {"provider", {{"type", "vmware_workstation"}, {"vmrun", "C:/vmrun.exe"}}},
+        {"host", {{"listen", "127.0.0.1:37100"}, {"archive_root", "C:/archive"}}},
+        {"shared_folder", {{"host_root", "C:/share"}, {"guest_root", "C:/share"}}},
+        {"vms", {{
+            {"id", "client"},
+            {"vmx", "C:/Client.vmx"},
+            {"agent_version", "0.1.0"},
+            {"snapshots", {
+                {"base", "clean"},
+                {"ai_prefix", "satsuma-ai-"},
+                {"max_ai_snapshots", 8},
+            }},
+        }}},
+    };
+    const std::filesystem::path lab_path = root / L"absolute-lab.json";
+
+    const auto expect_lab_rejected = [&lab_path](
+        const nlohmann::json& invalid,
+        const std::string& message) {
+        satsuma::write_json_atomic(lab_path, invalid);
+        expect_error(
+            [&lab_path] { static_cast<void>(satsuma::load_lab_config(lab_path)); },
+            message);
+    };
+
+    nlohmann::json invalid_lab = lab;
+    invalid_lab["provider"]["vmrun"] = "vmrun.exe";
+    expect_lab_rejected(invalid_lab, "relative vmrun path was accepted");
+    invalid_lab = lab;
+    invalid_lab["host"]["archive_root"] = "archive";
+    expect_lab_rejected(invalid_lab, "relative archive root was accepted");
+    invalid_lab = lab;
+    invalid_lab["shared_folder"]["host_root"] = "share";
+    expect_lab_rejected(invalid_lab, "relative shared folder root was accepted");
+    invalid_lab = lab;
+    invalid_lab["vms"][0]["vmx"] = "Client.vmx";
+    expect_lab_rejected(invalid_lab, "relative VMX path was accepted");
+
+    const nlohmann::json agent = {
+        {"schema_version", 1},
+        {"protocol_version", 2},
+        {"lab_id", "absolute_path_test"},
+        {"vm_id", "client"},
+        {"agent_version", "0.1.0"},
+        {"host", "127.0.0.1:37100"},
+        {"shared_root", "C:/share"},
+        {"local_work_root", "C:/work"},
+    };
+    const std::filesystem::path agent_path = root / L"absolute-agent.json";
+    const auto expect_agent_rejected = [&agent_path](
+        const nlohmann::json& invalid,
+        const std::string& message) {
+        satsuma::write_json_atomic(agent_path, invalid);
+        expect_error(
+            [&agent_path] { static_cast<void>(satsuma::load_agent_config(agent_path)); },
+            message);
+    };
+
+    nlohmann::json invalid_agent = agent;
+    invalid_agent["shared_root"] = "share";
+    expect_agent_rejected(invalid_agent, "relative Agent shared root was accepted");
+    invalid_agent = agent;
+    invalid_agent["local_work_root"] = "work";
+    expect_agent_rejected(invalid_agent, "relative Agent work root was accepted");
+}
+
 // 验证 AI 快照命名、重名检查和数量配额。
 void test_ai_snapshot_plan() {
     satsuma::SnapshotConfig config;
@@ -501,6 +572,61 @@ void test_task_lifecycle_policy(const std::filesystem::path& root) {
         "restore cleanup action accepted a missing snapshot");
 }
 
+// 验证用户任务会尽早拒绝未知字段和 Windows 等价的重复收集路径。
+void test_task_input_validation(const std::filesystem::path& root) {
+    const nlohmann::json plan = {
+        {"schema_version", 1},
+        {"name", "strict-task-input"},
+        {"artifacts", {{
+            {"source", "C:/fixture.exe"},
+            {"vm", "client"},
+            {"shared_destination", "artifacts/client/fixture.exe"},
+        }}},
+        {"steps", {{
+            {"id", "execute"},
+            {"vm", "client"},
+            {"type", "execute"},
+            {"program", "artifacts/client/fixture.exe"},
+            {"collect_files", {"output/result.json"}},
+        }}},
+    };
+    const std::filesystem::path plan_path = root / L"strict-task-input.json";
+    const auto expect_plan_rejected = [&plan_path](
+        const nlohmann::json& invalid,
+        const std::string& message) {
+        satsuma::write_json_atomic(plan_path, invalid);
+        expect_error(
+            [&plan_path] { static_cast<void>(satsuma::load_task_plan(plan_path)); },
+            message);
+    };
+
+    nlohmann::json invalid = plan;
+    invalid["unexpected"] = true;
+    expect_plan_rejected(invalid, "task plan accepted an unknown top-level field");
+    invalid = plan;
+    invalid["artifacts"][0]["digest"] = "unused";
+    expect_plan_rejected(invalid, "task artifact accepted an unknown field");
+    invalid = plan;
+    invalid["steps"][0]["run_ass"] = "interactive_user";
+    expect_plan_rejected(invalid, "execute step accepted a misspelled run_as field");
+    invalid = plan;
+    invalid["steps"][0]["collect_files"] = {
+        "output/result.json",
+        "OUTPUT\\RESULT.JSON",
+    };
+    expect_plan_rejected(invalid, "execute step accepted duplicate Windows result paths");
+
+    invalid = plan;
+    invalid["lifecycle"] = {
+        {"vms", {{
+            {"vm", "client"},
+            {"on_success", {{"action", "leave_running"}}},
+            {"on_failure", {{"action", "stop"}, {"snapshpt", "clean"}}},
+        }}},
+    };
+    expect_plan_rejected(invalid, "lifecycle cleanup policy accepted an unknown field");
+}
+
 // 验证生命周期迁移图、原子持久化和恢复失败终态。
 void test_run_lifecycle(const std::filesystem::path& root) {
     const std::filesystem::path state_path = root / L"lifecycle" / L"state.json";
@@ -792,11 +918,13 @@ int main() {
     try {
         test_file_primitives(root);
         test_snapshot_configuration(root);
+        test_absolute_configuration_paths(root);
         test_ai_snapshot_plan();
         test_ai_snapshot_deletion();
         test_protocol_round_trip();
         test_task_run_as_protocol(root);
         test_task_lifecycle_policy(root);
+        test_task_input_validation(root);
         test_run_lifecycle(root);
         test_claim_recovery_decision(root);
         test_rpc_protocol_validation();

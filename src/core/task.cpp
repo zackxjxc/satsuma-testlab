@@ -3,6 +3,8 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cwctype>
+#include <initializer_list>
 #include <set>
 #include <string_view>
 
@@ -22,6 +24,33 @@ enum class StepParseMode {
     RunManifestV1,
     RunManifestV2,
 };
+
+// 拒绝用户任务对象中的未知字段，避免拼写错误静默回落为默认行为。
+void reject_unknown_fields(
+    const nlohmann::json& value,
+    const std::initializer_list<std::string_view> allowed_fields,
+    const std::string_view context) {
+    if (!value.is_object()) {
+        throw Error(std::string(context) + " must be an object");
+    }
+    for (auto field = value.cbegin(); field != value.cend(); ++field) {
+        const std::string_view name = field.key();
+        if (std::find(allowed_fields.begin(), allowed_fields.end(), name) == allowed_fields.end()) {
+            throw Error("Unknown field in " + std::string(context) + ": " + std::string(name));
+        }
+    }
+}
+
+// 生成 Windows 等价相对路径的大小写无关比较键。
+[[nodiscard]] std::wstring windows_path_key(std::filesystem::path value) {
+    value = value.lexically_normal();
+    value.make_preferred();
+    std::wstring key = value.native();
+    std::transform(key.begin(), key.end(), key.begin(), [](const wchar_t character) {
+        return static_cast<wchar_t>(std::towlower(character));
+    });
+    return key;
+}
 
 // 读取非空必需字符串字段。
 [[nodiscard]] std::string required_string(const nlohmann::json& value, const char* field) {
@@ -60,12 +89,28 @@ void validate_sha256(const std::string& hash) {
 
 // 按任务计划或指定文件协议解析并验证一个步骤。
 [[nodiscard]] TaskStep parse_step(const nlohmann::json& value, const StepParseMode mode) {
+    const std::string type = required_string(value, "type");
+    if (mode == StepParseMode::TaskPlan) {
+        if (type == "execute") {
+            reject_unknown_fields(
+                value,
+                {"id", "vm", "type", "program", "arguments", "run_as", "timeout_seconds",
+                 "retry_safe", "collect_files"},
+                "execute step");
+        } else if (type == "echo") {
+            reject_unknown_fields(
+                value,
+                {"id", "vm", "type", "message", "timeout_seconds", "retry_safe"},
+                "echo step");
+        }
+    }
+
     TaskStep step;
     step.id = required_string(value, "id");
     step.vm = required_string(value, "vm");
     validate_identifier(step.id, "step id");
     validate_identifier(step.vm, "step VM id");
-    step.type = required_string(value, "type");
+    step.type = type;
     step.timeout_seconds = value.value("timeout_seconds", 120);
     if (step.timeout_seconds < 1 || step.timeout_seconds > 86'400) {
         throw Error("timeout_seconds must be between 1 and 86400 for step " + step.id);
@@ -76,9 +121,13 @@ void validate_sha256(const std::string& hash) {
         step.arguments = value.at("arguments").get<std::vector<std::string>>();
     }
     if (value.contains("collect_files")) {
+        std::set<std::wstring> collect_paths; // Windows 等价的结果文件目标
         for (const std::string& file : value.at("collect_files").get<std::vector<std::string>>()) {
             std::filesystem::path relative = path_from_utf8(file);
             validate_relative_path(relative);
+            if (!collect_paths.insert(windows_path_key(relative)).second) {
+                throw Error("Duplicate collect_files path for step " + step.id + ": " + file);
+            }
             step.collect_files.push_back(std::move(relative));
         }
     }
@@ -119,9 +168,7 @@ void validate_snapshot_name(const std::string& snapshot, const std::string_view 
 [[nodiscard]] VmCleanupPolicy parse_cleanup_policy(
     const nlohmann::json& value,
     const std::string_view field) {
-    if (!value.is_object()) {
-        throw Error(std::string(field) + " must be an object");
-    }
+    reject_unknown_fields(value, {"action", "snapshot"}, field);
     VmCleanupPolicy policy;
     const std::string action = required_string(value, "action");
     if (action == "leave_running") {
@@ -149,9 +196,7 @@ void validate_snapshot_name(const std::string& snapshot, const std::string_view 
 
 // 解析 Host 编排器专用的任务生命周期策略。
 [[nodiscard]] TaskLifecyclePolicy parse_lifecycle_policy(const nlohmann::json& value) {
-    if (!value.is_object()) {
-        throw Error("lifecycle must be an object");
-    }
+    reject_unknown_fields(value, {"vms", "finally"}, "lifecycle");
     TaskLifecyclePolicy lifecycle;
     if (!value.contains("vms") || !value.at("vms").is_array() || value.at("vms").empty()) {
         throw Error("lifecycle.vms must contain at least one VM policy");
@@ -159,9 +204,10 @@ void validate_snapshot_name(const std::string& snapshot, const std::string_view 
 
     std::set<std::string> vm_ids;
     for (const auto& vm_value : value.at("vms")) {
-        if (!vm_value.is_object()) {
-            throw Error("lifecycle.vms entries must be objects");
-        }
+        reject_unknown_fields(
+            vm_value,
+            {"vm", "restore_before", "on_success", "on_failure"},
+            "lifecycle VM policy");
         VmLifecyclePolicy policy;
         policy.vm = required_string(vm_value, "vm");
         validate_identifier(policy.vm, "lifecycle VM id");
@@ -273,6 +319,10 @@ void validate_execution_identity(const ExecutionResult& result) {
 
 TaskPlan load_task_plan(const std::filesystem::path& path) {
     const nlohmann::json value = load_json(path);
+    reject_unknown_fields(
+        value,
+        {"$schema", "schema_version", "name", "run_id", "artifacts", "steps", "lifecycle"},
+        "task plan");
     if (value.value("schema_version", 0) != 1) {
         throw Error("Task plan requires schema_version 1");
     }
@@ -289,6 +339,10 @@ TaskPlan load_task_plan(const std::filesystem::path& path) {
             throw Error("artifacts must be an array");
         }
         for (const auto& artifact_value : value.at("artifacts")) {
+            reject_unknown_fields(
+                artifact_value,
+                {"source", "vm", "shared_destination", "sha256"},
+                "task artifact");
             ArtifactInput artifact;
             artifact.source = path_from_utf8(required_string(artifact_value, "source"));
             artifact.vm = required_string(artifact_value, "vm");
