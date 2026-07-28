@@ -44,8 +44,9 @@ Satsuma 面向可信、单用户 Windows Host 上的可丢弃 VMware VM，以及
 
 Guest 已能访问 Shared Folder 时，只要求用户执行一次 `scripts/install-agent.ps1` 并确认 Windows UAC。
 脚本只接受本地固定磁盘中的专用 `Satsuma` 安装根，完成 ACL 收紧、暂存哈希校验、Service 所有权预检、
-旧实例停止、失败回滚、LocalSystem Windows Service 注册和持续 presence 验证。AI 不应要求用户保持
-前台终端、每次开机手工启动 Agent，或绕过安装脚本直接使用 `sc.exe` 接管同名 Service。
+旧实例停止、失败回滚和 LocalSystem Windows Service 注册。脚本成功只表示 SCM 已进入 `RUNNING` 并返回
+有效 PID；共享目录 presence 和真实任务通道仍必须由后续 `check` 验证。AI 不应要求用户保持前台终端、
+每次开机手工启动 Agent，或绕过安装脚本直接使用 `sc.exe` 接管同名 Service。
 
 `--watch` 文件循环和生产 `--service` 只使用共享文件通道，不启动、不调用也不等待 RPC。`--rpc-once` 仅用于
 显式诊断；不要把 `SatsumaHost serve` 或 TCP 37100 当作业务任务的前置条件。
@@ -65,16 +66,19 @@ Guest 已能访问 Shared Folder 时，只要求用户执行一次 `scripts/inst
 | `vms[].snapshots.base` | 无 | 必须是用户手工创建的只读基础快照 |
 
 JSON 中 Windows 反斜杠需要转义。不得把密码、Token、源码目录、用户目录或凭据写入共享目录和任务。
+所有 Host 命令都必须显式提供 `--config`。`vmrun`、Host 共享/归档根目录、VMX、Agent Shared Folder 和
+本地工作根目录必须使用绝对路径，不能依赖当前目录。
 
 ## 4. 主动检测是业务任务的前置门禁
 
 确认目标 VM 已启动后执行；安装完成的 Agent 会由 Windows Service 自动运行：
 
 ```text
-SatsumaHost.exe check --config lab.local.json --vm <vm-id> --timeout-seconds 30
+SatsumaHost.exe check --config lab.local.json --vm <vm-id> --timeout-seconds 180
 ```
 
-需要全部 VM 时省略 `--vm`。必须同时读取进程退出码和 stdout JSON：
+需要全部 VM 时省略 `--vm`。冷启动后的首次检测使用 180–240 秒；只有 Agent 已上线时才可缩短到 30 秒。
+必须同时读取进程退出码和 stdout JSON：
 
 | 退出码 | 顶层状态 | AI 行为 |
 |---|---|---|
@@ -107,7 +111,8 @@ VM 的生命周期计划可以使用 `lifecycle.vms[].restore_before`、`on_succ
 - `shared_destination` 必须是 `artifacts/` 下的相对路径。
 - `execute.program` 必须与同一 VM 已登记 Artifact 的 `shared_destination` 完全对应。
 - `arguments` 的每个元素保持独立，不拼接 shell 命令。
-- `collect_files` 只使用 VM 本地运行根目录下的相对路径。
+- `collect_files` 只使用 VM 本地运行根目录下的相对路径，同一步骤不得声明 Windows 等价的重复路径。
+- 只生成 Schema 声明的字段；Host 会拒绝未知字段，不得依赖拼写错误回落为默认值。
 - 每个步骤设置有限的 `timeout_seconds`，通常不超过 300 秒；超出可信前台小任务范围的程序不得下发。
 - `echo` 默认可安全重试；`execute` 默认不可重试，只有确认幂等时才设置 `retry_safe: true`。
 - 被测程序优先输出明确退出码、UTF-8 日志和 JSON 总结，不把关键结果只留在 GUI。
@@ -132,8 +137,9 @@ VM 的生命周期计划可以使用 `lifecycle.vms[].restore_before`、`on_succ
 SatsumaHost.exe orchestrate --config lab.local.json --plan <task.json> --timeout-seconds <1-86400>
 ```
 
-计划必须提前固定唯一 `run_id`。Host 恢复时必须复用同一文件的原始字节和相同的有序生命周期 VM 集合，
-不能重新格式化或重建语义相同的 JSON；计划 SHA-256 或 VM 顺序变化都会拒绝复用归档。
+计划必须提前固定唯一 `run_id`。只有 Host 进程对已有生命周期归档断点续跑时，才复用同一文件的原始
+字节、`run_id` 和相同的有序 VM 集合；计划 SHA-256 或 VM 顺序变化都会拒绝复用归档。VM 重启或快照
+恢复后的业务重试属于新运行，必须生成新 `run_id`。
 
 退出码 0 表示 `COMPLETED`，退出码 1 表示业务或执行 `FAILED`，退出码 4 表示 `RECOVERY_FAILED`，
 退出码 5 表示 `MANUAL_INTERVENTION_REQUIRED`。
@@ -143,8 +149,9 @@ SatsumaHost.exe orchestrate --config lab.local.json --plan <task.json> --timeout
 `execution.json` 或最终日志；需要重试时生成新运行。
 
 普通运行可使用 `report --wait-seconds <1-86400>` 有限等待。退出码 0 表示报告完整，3 表示等待超时，
-5 表示过期危险 claim 需要人工处理；未指定时保持即时汇总行为。退出码 0 不表示业务步骤成功，AI 仍须
-检查 `failed_steps` 和 `executions[]`。
+5 表示过期危险 claim 需要人工处理；未指定时保持即时汇总行为。顶层 `status` 为 `pending`、
+`succeeded`、`failed` 或 `manual_intervention_required`。退出码 0 不表示业务步骤成功，AI 仍须检查
+`status`、`failed_steps` 和 `executions[]`。
 
 ## 7. VMware 与恢复边界
 
@@ -169,7 +176,9 @@ SatsumaHost.exe orchestrate --config lab.local.json --plan <task.json> --timeout
   `ctest` 不得改变 runtime Shared Folder 状态。
 - 配置或任务格式错误由 AI 修正输入；程序非零退出和超时保留为任务结果。
 - 其他 Host、VMware、Shared Folder、Agent 或 Guest 异常统一视为未知平台错误，但保留底层错误和证据。
-- AI 可对授权 VM 硬重启或恢复配置中的快照，等待 `check` 为 `ready` 后以新 `run_id` 重试一次。
+- 硬重启按 `vm stop --mode hard` → `vm start` → `check --timeout-seconds 180` 执行。
+- 快照恢复按 `vm stop --mode hard` → `vm restore` → `vm start` → `check --timeout-seconds 180` 执行。
+- 环境重新为 `ready` 后以新 `run_id` 重试业务任务一次；非幂等任务无法确认干净状态时不重试。
 - 重试或 VM 恢复仍失败时停止并等待用户，不无限重试，也不自动修复 Host 系统。
 - 被测程序只能在隔离 VM 中执行；Host 只运行 Satsuma 自身程序、构建和自动化测试。
 

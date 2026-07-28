@@ -22,7 +22,7 @@ Host 不安装或修改系统服务、驱动、防火墙、网络、注册表和
 - `SatsumaHost.exe run`：校验任务和 VM ID，计算 Artifact SHA-256，并原子发布运行目录。
 - `SatsumaVM.exe --watch`：仅通过共享文件轮询任务、独占领取步骤，并将 Artifact 复制到 VM 本地目录。
 - Windows Job Object 进程树管理、超时终止、stdout/stderr 持续落盘和结果文件收集。
-- `SatsumaHost.exe report`：汇总当前运行的机器可读结果。
+- `SatsumaHost.exe report`：汇总机器可读结果，并给出 `pending`、`succeeded`、`failed` 或人工门禁状态。
 - `SatsumaHost.exe orchestrate`：按一台或多台 VM 的生命周期策略恢复、启动、检测、执行、归档并清理。
 - claim schema v3 主动续租：只自动回收显式 `retry_safe` 的过期步骤，其他步骤保留人工门禁。
 - `SatsumaHost.exe check`：检查 Host/VMware 环境，发送无害任务并确认 Agent 执行通道。
@@ -126,14 +126,17 @@ cmake --build --preset windows-release --target SatsumaRealVmwareFaultRecovery
 ## 环境准备
 
 1. 安装 VMware Workstation 和 VMware Tools。
-2. 普通测试可直接使用 NAT 和 DHCP；危险网络测试再配置独立的 Host-only/LAN Segment。
+2. 普通测试直接使用 NAT 和 DHCP；当前范围不要求新增 Host-only、LAN Segment 或固定 IP。
 3. 只共享专用的 `vm-share`，不要共享源码根目录、个人目录或凭据。
 4. 复制根目录模板为 `lab.local.json`，再填写本机路径。
 5. 为每台 VM 复制并填写一份 `agent.json`，然后运行 `install-agent.ps1` 并确认 UAC。
-6. 清理 VM 中的遗留进程和网络状态，保存名为 `clean` 的用户基础快照。
+6. 确认 VM 处于可重复使用的干净状态，保存名为 `clean` 的用户基础快照。
 
 以下路径和 IP 只是示例。仓库跟踪 `lab.json` 模板，本机真实值写入已忽略的 `lab.local.json`，不要把
 VMX、快照、盘符或当前 DHCP 地址提交到仓库。
+
+所有 `SatsumaHost.exe` 业务命令都必须显式提供 `--config`，不会隐式读取当前目录的 `lab.json`。配置中的
+`provider.vmrun`、Host 共享/归档根目录、VMX、Agent Shared Folder 和本地工作根目录必须使用绝对路径。
 
 ### 1. 准备 Host 目录和程序
 
@@ -294,6 +297,9 @@ PowerShell 可以关闭，不需要保留前台窗口。
 Agent 就绪后会在共享目录发布 `agents/<vm-id>.json`。被测 Artifact 始终复制到 Guest 本地工作目录执行，
 不直接从 UNC 路径运行。
 
+任务计划只接受 Schema 声明的字段，未知字段会被拒绝，避免拼写错误静默回落为默认行为。`collect_files`
+必须使用 Guest 本地运行根目录下的相对路径，同一步骤不能声明 Windows 等价的重复路径。
+
 #### 任务运行身份
 
 任务计划中的 `execute.run_as` 可省略；Host 会将省略值解释为 `system`，并在发布的文件协议 v2
@@ -387,8 +393,10 @@ Service 会继续轮询文件通道。
 
    ```powershell
    & 'build/windows-default/bin/Release/SatsumaHost.exe' report `
-       --config 'lab.local.json' --run '<run-id>'
+       --config 'lab.local.json' --run '<run-id>' --wait-seconds 300
    ```
+
+   退出码为 0 且顶层 `status` 为 `succeeded` 才表示普通任务全部成功；随后仍应读取逐步骤证据。
 
 ### 8. 运行独立示例软件
 
@@ -437,7 +445,7 @@ Shared Folder 检查失败时无法安全发布 echo。此时 `check` 仍返回�
 | `checks/shared_folder` | Host 共享目录不存在或不可写 | 核对 `host_root`、目录权限和磁盘状态 |
 | `checks/archive` | Host 归档目录不存在或不可写 | 创建目录并核对 `archive_root` |
 | `checks/vmrun` | `vmrun.exe` 路径错误 | 核对 VMware 安装目录和 `provider.vmrun` |
-| `checks/vmware_control` | VMware 控制命令失败或超时 | 启动 VMware 服务，手工确认 `vmrun list` 可用 |
+| `checks/vmware_control` | VMware 控制命令失败或超时 | 停止自动操作，保留错误并由用户确认 VMware 状态 |
 | `checks/vmx` | VMX 路径错误或文件已移动 | 在 VMware 中找到实际 `.vmx` 并更新配置 |
 | `checks/snapshots` | 基础快照不存在 | 手工创建快照或修正 `snapshots.base` |
 | `checks/vmware_tools` | VM 未运行、Tools 未启动或 Guest 响应异常 | 启动 VM 并确认 `vmrun checkToolsState` 返回 `running` |
@@ -494,7 +502,8 @@ SatsumaHost.exe report --config lab.local.json --run <run-id> --wait-seconds 300
 ```
 
 有限等待在完成时返回 0，等待超时返回 3，人工门禁返回 5；不带 `--wait-seconds` 时仍为即时只读汇总。
-退出码 0 只表示预期结果已经完整返回，不表示业务步骤全部成功；调用方必须继续检查 `failed_steps` 和
+普通报告顶层 `status` 为 `pending`、`succeeded`、`failed` 或 `manual_intervention_required`。退出码 0
+只表示预期结果已经完整返回，不表示业务步骤全部成功；调用方必须检查 `status`、`failed_steps` 和
 `executions[]`。`orchestrate --timeout-seconds` 是每个等待阶段的上限，不是整条多 VM 命令的总耗时。
 
 Host 使用本机配置执行 VM 和快照操作：
@@ -507,6 +516,11 @@ SatsumaHost.exe snapshot list --vm client --config lab.local.json
 SatsumaHost.exe snapshot create-ai --vm client --name network-ready --config lab.local.json
 SatsumaHost.exe snapshot delete-ai --vm client --snapshot <snapshot-name> --config lab.local.json
 ```
+
+未知平台错误需要硬重启时，依次执行 `vm stop --mode hard`、`vm start` 和
+`check --timeout-seconds 180`。需要恢复快照时，在硬关机后执行 `vm restore`，再启动并检测。环境重新为
+`ready` 后必须为业务重试生成新 `run_id`；只有 Host 进程对同一生命周期归档断点续跑时，才复用原计划
+字节和原 `run_id`。
 
 基础快照是只读所有权，`delete-ai` 只接受配置中 AI 前缀开头且确实存在的快照。创建和删除记录保存在
 `host.archive_root/snapshots/<vm-id>/`。如果 `vmrun` 创建或删除命令返回错误，Host 会重新列举快照：目标

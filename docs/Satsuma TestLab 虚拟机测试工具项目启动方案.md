@@ -1,5 +1,11 @@
 # Satsuma TestLab 虚拟机测试工具项目启动方案
 
+> [!IMPORTANT]
+> 本文是立项阶段的历史设计记录，仅用于解释早期决策，不是当前操作指南或未完成工作清单。文中的旧命令、
+> RPC 主通道、网络方案和任务结构不得作为当前使用或后续开发依据。当前行为以
+> [SatsumaReadme.md](SatsumaReadme.md)、[SatsumaSkill.md](SatsumaSkill.md) 和
+> [项目当前状态与后续计划.md](项目当前状态与后续计划.md) 为准。
+
 已有远程库地址https://gitee.com/zackxjxc/satsuma-testlab.git
 
 

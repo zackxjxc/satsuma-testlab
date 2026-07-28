@@ -20,7 +20,7 @@ vmrun 输出，并控制配置中已授权的 VM。
 
 最短使用流程：
 
-1. 使用 `SatsumaHost check` 确认目标 VM 的文件任务通道为 `ready`。
-2. 使用 `SatsumaHost run` 下发有限超时的前台 `echo` 或 `execute` 任务。
-3. 使用 `SatsumaHost report --wait-seconds` 等待并读取完整结果。
+1. 使用 `SatsumaHost check --config lab.local.json --timeout-seconds 180` 确认目标 VM 为 `ready`。
+2. 使用 `SatsumaHost run --config lab.local.json` 下发有限超时的前台 `echo` 或 `execute` 任务。
+3. 使用 `SatsumaHost report --config lab.local.json --wait-seconds 300` 等待结果，并检查顶层 `status`。
 4. 遇到未知平台错误时，可对授权 VM 重启或恢复快照一次；仍失败则停止并人工排查。
