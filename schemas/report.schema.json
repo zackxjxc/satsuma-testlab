@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://satsuma.local/schemas/report.schema.json",
+  "title": "Satsuma run report",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "run_id", "name", "status", "expected_steps", "reported_steps",
+    "successful_steps", "failed_steps", "complete", "manual_intervention_required",
+    "blocked_steps", "executions"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "run_id": {"type": "string", "minLength": 1},
+    "name": {"type": "string", "minLength": 1},
+    "status": {"enum": ["pending", "succeeded", "failed", "manual_intervention_required"]},
+    "expected_steps": {"type": "integer", "minimum": 0},
+    "reported_steps": {"type": "integer", "minimum": 0},
+    "successful_steps": {"type": "integer", "minimum": 0},
+    "failed_steps": {"type": "integer", "minimum": 0},
+    "complete": {"type": "boolean"},
+    "manual_intervention_required": {"type": "boolean"},
+    "blocked_steps": {"type": "array"},
+    "executions": {"type": "array", "items": {"$ref": "result.schema.json"}},
+    "wait_status": {"enum": ["completed", "timeout", "manual_intervention_required"]},
+    "waited_ms": {"type": "integer", "minimum": 0}
+  }
+}

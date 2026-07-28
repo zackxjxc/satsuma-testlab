@@ -2,19 +2,35 @@
 #include "satsuma/core/config.hpp"
 
 #include <algorithm>
+#include <initializer_list>
 #include <set>
 #include <string_view>
 
 #include <nlohmann/json.hpp>
 
 #include "satsuma/core/errors.hpp"
-#include "satsuma/core/endpoint.hpp"
 #include "satsuma/core/id.hpp"
 #include "satsuma/core/json_io.hpp"
 #include "satsuma/core/path.hpp"
 
 namespace satsuma {
 namespace {
+
+// 拒绝配置中的未知字段，避免拼写错误或废弃选项被静默忽略。
+void reject_unknown_fields(
+    const nlohmann::json& value,
+    const std::initializer_list<std::string_view> allowed_fields,
+    const std::string_view context) {
+    if (!value.is_object()) {
+        throw Error(std::string(context) + " must be an object");
+    }
+    for (auto field = value.cbegin(); field != value.cend(); ++field) {
+        const std::string_view name = field.key();
+        if (std::find(allowed_fields.begin(), allowed_fields.end(), name) == allowed_fields.end()) {
+            throw Error("Unknown field in " + std::string(context) + ": " + std::string(name));
+        }
+    }
+}
 
 // 读取必需字符串字段并统一空值错误。
 [[nodiscard]] std::string required_string(const nlohmann::json& value, const char* field) {
@@ -69,6 +85,10 @@ void validate_schema_version(const nlohmann::json& value, const char* source) {
 
 LabConfig load_lab_config(const std::filesystem::path& path) {
     const nlohmann::json value = load_json(path);
+    reject_unknown_fields(
+        value,
+        {"$schema", "schema_version", "lab_id", "provider", "host", "shared_folder", "vms"},
+        "lab configuration");
     validate_schema_version(value, "lab.json");
 
     LabConfig config;
@@ -77,6 +97,7 @@ LabConfig load_lab_config(const std::filesystem::path& path) {
     validate_identifier(config.lab_id, "lab_id");
 
     const auto& provider = value.at("provider");
+    reject_unknown_fields(provider, {"type", "vmrun"}, "provider configuration");
     config.provider.type = required_string(provider, "type");
     config.provider.vmrun = path_from_utf8(required_string(provider, "vmrun"));
     require_absolute_path(config.provider.vmrun, "provider.vmrun");
@@ -85,13 +106,13 @@ LabConfig load_lab_config(const std::filesystem::path& path) {
     }
 
     const auto& host = value.at("host");
-    config.host.listen = required_string(host, "listen");
+    reject_unknown_fields(host, {"archive_root"}, "host configuration");
     config.host.archive_root = path_from_utf8(required_string(host, "archive_root"));
     require_absolute_path(config.host.archive_root, "host.archive_root");
 
     const auto& shared_folder = value.at("shared_folder");
+    reject_unknown_fields(shared_folder, {"host_root"}, "shared folder configuration");
     config.shared_folder.host_root = path_from_utf8(required_string(shared_folder, "host_root"));
-    config.shared_folder.guest_root = required_string(shared_folder, "guest_root");
     require_absolute_path(config.shared_folder.host_root, "shared_folder.host_root");
 
     if (!value.contains("vms") || !value.at("vms").is_array() || value.at("vms").empty()) {
@@ -100,10 +121,13 @@ LabConfig load_lab_config(const std::filesystem::path& path) {
 
     std::set<std::string> vm_ids;
     for (const auto& vm_value : value.at("vms")) {
+        reject_unknown_fields(
+            vm_value,
+            {"id", "vmx", "agent_version", "snapshots"},
+            "VM configuration");
         VmConfig vm;
         vm.id = required_string(vm_value, "id");
         validate_identifier(vm.id, "VM id");
-        vm.role = vm_value.value("role", vm.id);
         vm.vmx = path_from_utf8(required_string(vm_value, "vmx"));
         require_absolute_path(vm.vmx, "vms[].vmx for " + vm.id);
         vm.agent_version = required_string(vm_value, "agent_version");
@@ -111,13 +135,14 @@ LabConfig load_lab_config(const std::filesystem::path& path) {
             throw Error("Missing or invalid snapshots object for VM: " + vm.id);
         }
         const auto& snapshots = vm_value.at("snapshots");
+        reject_unknown_fields(
+            snapshots,
+            {"base", "ai_prefix", "max_ai_snapshots"},
+            "snapshot configuration");
         vm.snapshots.base = required_string(snapshots, "base");
         vm.snapshots.ai_prefix = required_string(snapshots, "ai_prefix");
         vm.snapshots.max_ai_snapshots = required_integer(snapshots, "max_ai_snapshots");
         validate_snapshot_config(vm.snapshots);
-        if (vm_value.contains("management_ip")) {
-            vm.management_ip = required_string(vm_value, "management_ip");
-        }
         if (!vm_ids.insert(vm.id).second) {
             throw Error("Duplicate VM id in lab.json: " + vm.id);
         }
@@ -128,6 +153,12 @@ LabConfig load_lab_config(const std::filesystem::path& path) {
 
 AgentConfig load_agent_config(const std::filesystem::path& path) {
     const nlohmann::json value = load_json(path);
+    reject_unknown_fields(
+        value,
+        {"$schema", "schema_version", "protocol_version", "lab_id", "vm_id",
+         "agent_version", "last_update_id", "shared_root", "local_work_root",
+         "poll_interval_ms", "reconnect_interval_ms"},
+        "Agent configuration");
     validate_schema_version(value, "agent.json");
 
     AgentConfig config;
@@ -137,7 +168,6 @@ AgentConfig load_agent_config(const std::filesystem::path& path) {
     config.vm_id = required_string(value, "vm_id");
     config.agent_version = required_string(value, "agent_version");
     config.last_update_id = value.value("last_update_id", std::string{});
-    config.host = required_string(value, "host");
     validate_identifier(config.lab_id, "lab_id");
     validate_identifier(config.vm_id, "vm_id");
     config.shared_root = path_from_utf8(required_string(value, "shared_root"));
@@ -146,7 +176,6 @@ AgentConfig load_agent_config(const std::filesystem::path& path) {
     require_absolute_path(config.local_work_root, "local_work_root");
     config.poll_interval_ms = value.value("poll_interval_ms", 1000);
     config.reconnect_interval_ms = value.value("reconnect_interval_ms", 1000);
-    config.rpc_timeout_ms = value.value("rpc_timeout_ms", 5000);
 
     if (config.protocol_version != kLegacyRunManifestProtocolVersion &&
         config.protocol_version != kRunManifestProtocolVersion) {
@@ -161,12 +190,8 @@ AgentConfig load_agent_config(const std::filesystem::path& path) {
     if (!config.last_update_id.empty()) {
         validate_identifier(config.last_update_id, "last_update_id");
     }
-    static_cast<void>(parse_tcp_endpoint(config.host));
     if (config.reconnect_interval_ms < 100 || config.reconnect_interval_ms > 60'000) {
         throw Error("reconnect_interval_ms must be between 100 and 60000");
-    }
-    if (config.rpc_timeout_ms < 100 || config.rpc_timeout_ms > 300'000) {
-        throw Error("rpc_timeout_ms must be between 100 and 300000");
     }
     return config;
 }

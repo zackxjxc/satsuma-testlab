@@ -7,17 +7,14 @@
     "vmrun": "C:\\Program Files (x86)\\VMware\\VMware Workstation\\vmrun.exe"
   },
   "host": {
-    "listen": "192.168.250.1:37100",
     "archive_root": "D:\\Satsuma\\archive"
   },
   "shared_folder": {
-    "host_root": "D:\\vm-share",
-    "guest_root": "\\\\vmware-host\\Shared Folders\\vm-share"
+    "host_root": "D:\\vm-share"
   },
   "vms": [
     {
       "id": "client",
-      "role": "client",
       "vmx": "D:\\VM\\Client\\Client.vmx",
       "agent_version": "0.1.0",
       "snapshots": {

@@ -21,19 +21,17 @@
     "host": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["listen", "archive_root"],
+      "required": ["archive_root"],
       "properties": {
-        "listen": {"type": "string", "minLength": 1},
         "archive_root": {"type": "string", "minLength": 1}
       }
     },
     "shared_folder": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["host_root", "guest_root"],
+      "required": ["host_root"],
       "properties": {
-        "host_root": {"type": "string", "minLength": 1},
-        "guest_root": {"type": "string", "minLength": 1}
+        "host_root": {"type": "string", "minLength": 1}
       }
     },
     "vms": {
@@ -41,11 +39,10 @@
       "minItems": 1,
       "items": {
         "type": "object",
-        "additionalProperties": true,
+        "additionalProperties": false,
         "required": ["id", "vmx", "agent_version", "snapshots"],
         "properties": {
           "id": {"$ref": "#/$defs/identifier"},
-          "role": {"type": "string", "minLength": 1},
           "vmx": {"type": "string", "minLength": 1},
           "agent_version": {"type": "string", "minLength": 1},
           "snapshots": {
@@ -57,8 +54,7 @@
               "ai_prefix": {"$ref": "#/$defs/identifier"},
               "max_ai_snapshots": {"type": "integer", "minimum": 1, "maximum": 64}
             }
-          },
-          "management_ip": {"type": "string", "minLength": 1}
+          }
         }
       }
     }

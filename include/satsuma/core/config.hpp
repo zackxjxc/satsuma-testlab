@@ -18,14 +18,12 @@ struct ProviderConfig {
 
 // Host 监听和归档配置。
 struct HostConfig {
-    std::string listen;                 // Host 管理地址
     std::filesystem::path archive_root; // Guest 不可见的归档根目录
 };
 
 // Host 和 Guest 的共享目录映射。
 struct SharedFolderConfig {
     std::filesystem::path host_root; // Host 共享根目录
-    std::string guest_root;          // Guest 共享根目录 UTF-8 表示
 };
 
 // 单台 VM 的快照所有权和配额策略。
@@ -38,11 +36,9 @@ struct SnapshotConfig {
 // 单台虚拟机的稳定配置。
 struct VmConfig {
     std::string id;              // 虚拟机稳定 ID
-    std::string role;            // 业务展示角色
     std::filesystem::path vmx;   // VMX 文件路径
     std::string agent_version;   // 快照中的 Agent 版本
     SnapshotConfig snapshots;    // 快照保护策略
-    std::optional<std::string> management_ip; // 可选管理网络地址
 };
 
 // Host 使用的实验室配置。
@@ -63,12 +59,10 @@ struct AgentConfig {
     std::string vm_id;                      // 当前虚拟机稳定 ID
     std::string agent_version;              // 当前 Agent 语义版本
     std::string last_update_id;              // 最近成功应用的更新 ID
-    std::string host;                       // Host RPC address:port
     std::filesystem::path shared_root;      // Guest 共享根目录
     std::filesystem::path local_work_root;  // Guest 本地执行根目录
     int poll_interval_ms{1000};             // 无任务时的轮询间隔
     int reconnect_interval_ms{1000};        // Shared Folder 异常后的重试间隔
-    int rpc_timeout_ms{5000};               // 单次 RPC 超时
 };
 
 // 读取并验证 Host 实验室配置。

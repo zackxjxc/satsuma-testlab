@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://satsuma.local/schemas/lifecycle.schema.json",
+  "title": "Satsuma orchestration lifecycle state",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "run_id", "phase", "sequence", "updated_at", "transitions"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "run_id": {"type": "string", "minLength": 1},
+    "phase": {"$ref": "#/$defs/phase"},
+    "sequence": {"type": "integer", "minimum": 0},
+    "updated_at": {"type": "string", "format": "date-time"},
+    "transitions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["sequence", "from", "to", "occurred_at", "message"],
+        "properties": {
+          "sequence": {"type": "integer", "minimum": 1},
+          "from": {"$ref": "#/$defs/phase"},
+          "to": {"$ref": "#/$defs/phase"},
+          "occurred_at": {"type": "string", "format": "date-time"},
+          "message": {"type": "string"}
+        }
+      }
+    }
+  },
+  "$defs": {
+    "phase": {
+      "enum": [
+        "preparing", "restoring_before", "starting_vm", "waiting_agent", "deploying",
+        "executing", "collecting_evidence", "running_finally", "recovering", "completed",
+        "failed", "recovery_failed", "manual_intervention_required"
+      ]
+    }
+  }
+}

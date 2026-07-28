@@ -10,7 +10,6 @@
     "lab_id",
     "vm_id",
     "agent_version",
-    "host",
     "shared_root",
     "local_work_root"
   ],
@@ -22,15 +21,10 @@
     "vm_id": {"$ref": "#/$defs/identifier"},
     "agent_version": {"type": "string", "minLength": 1, "maxLength": 64},
     "last_update_id": {"$ref": "#/$defs/identifier"},
-    "host": {
-      "type": "string",
-      "pattern": "^(?:[^:\\[\\]]+|\\[[^\\]]+\\]):[0-9]{1,5}$"
-    },
     "shared_root": {"type": "string", "minLength": 1},
     "local_work_root": {"type": "string", "minLength": 1},
     "poll_interval_ms": {"type": "integer", "minimum": 100, "maximum": 60000},
-    "reconnect_interval_ms": {"type": "integer", "minimum": 100, "maximum": 60000},
-    "rpc_timeout_ms": {"type": "integer", "minimum": 100, "maximum": 300000}
+    "reconnect_interval_ms": {"type": "integer", "minimum": 100, "maximum": 60000}
   },
   "$defs": {
     "identifier": {

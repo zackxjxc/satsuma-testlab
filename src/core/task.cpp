@@ -119,6 +119,9 @@ void validate_sha256(const std::string& hash) {
 
     if (value.contains("arguments")) {
         step.arguments = value.at("arguments").get<std::vector<std::string>>();
+        if (step.arguments.size() > kMaxArgumentsPerStep) {
+            throw Error("Task step exceeds the argument count limit: " + step.id);
+        }
     }
     if (value.contains("collect_files")) {
         std::set<std::wstring> collect_paths; // Windows 等价的结果文件目标
@@ -129,6 +132,9 @@ void validate_sha256(const std::string& hash) {
                 throw Error("Duplicate collect_files path for step " + step.id + ": " + file);
             }
             step.collect_files.push_back(std::move(relative));
+        }
+        if (step.collect_files.size() > kMaxCollectedFilesPerStep) {
+            throw Error("Task step exceeds the collected file count limit: " + step.id);
         }
     }
 
@@ -229,6 +235,9 @@ void validate_snapshot_name(const std::string& snapshot, const std::string_view 
     if (value.contains("finally")) {
         if (!value.at("finally").is_array()) {
             throw Error("lifecycle.finally must be an array");
+        }
+        if (value.at("finally").size() > kMaxStepsPerRun) {
+            throw Error("lifecycle.finally exceeds the step count limit");
         }
         for (const auto& step_value : value.at("finally")) {
             lifecycle.finally_steps.push_back(parse_step(step_value, StepParseMode::TaskPlan));
@@ -338,6 +347,9 @@ TaskPlan load_task_plan(const std::filesystem::path& path) {
         if (!value.at("artifacts").is_array()) {
             throw Error("artifacts must be an array");
         }
+        if (value.at("artifacts").size() > kMaxArtifactsPerRun) {
+            throw Error("Task plan exceeds the Artifact count limit");
+        }
         for (const auto& artifact_value : value.at("artifacts")) {
             reject_unknown_fields(
                 artifact_value,
@@ -362,6 +374,9 @@ TaskPlan load_task_plan(const std::filesystem::path& path) {
 
     if (!value.contains("steps") || !value.at("steps").is_array() || value.at("steps").empty()) {
         throw Error("Task plan must contain at least one step");
+    }
+    if (value.at("steps").size() > kMaxStepsPerRun) {
+        throw Error("Task plan exceeds the step count limit");
     }
     for (const auto& step_value : value.at("steps")) {
         plan.steps.push_back(parse_step(step_value, StepParseMode::TaskPlan));

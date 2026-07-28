@@ -1,0 +1,48 @@
+{
+  "$schema": "../schemas/task.schema.json",
+  "schema_version": 1,
+  "name": "two VM lifecycle smoke",
+  "run_id": "replace_with_unique_run_id",
+  "artifacts": [],
+  "lifecycle": {
+    "vms": [
+      {
+        "vm": "gateway",
+        "restore_before": "clean",
+        "on_success": {"action": "stop"},
+        "on_failure": {"action": "restore", "snapshot": "clean"}
+      },
+      {
+        "vm": "client",
+        "restore_before": "clean",
+        "on_success": {"action": "stop"},
+        "on_failure": {"action": "restore", "snapshot": "clean"}
+      }
+    ],
+    "finally": [
+      {
+        "id": "final_probe",
+        "vm": "gateway",
+        "type": "echo",
+        "message": "lifecycle cleanup probe",
+        "timeout_seconds": 10
+      }
+    ]
+  },
+  "steps": [
+    {
+      "id": "gateway_ready",
+      "vm": "gateway",
+      "type": "echo",
+      "message": "gateway ready",
+      "timeout_seconds": 10
+    },
+    {
+      "id": "client_ready",
+      "vm": "client",
+      "type": "echo",
+      "message": "client ready",
+      "timeout_seconds": 10
+    }
+  ]
+}

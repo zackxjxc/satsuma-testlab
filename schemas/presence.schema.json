@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://satsuma.local/schemas/presence.schema.json",
+  "title": "Satsuma Agent presence",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "protocol_version", "lab_id", "vm_id", "agent_version",
+    "update_id", "session_id", "boot_id", "process_id", "status", "updated_at"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "protocol_version": {"const": 2},
+    "lab_id": {"type": "string", "pattern": "^[A-Za-z0-9_-]{1,128}$"},
+    "vm_id": {"type": "string", "pattern": "^[A-Za-z0-9_-]{1,128}$"},
+    "agent_version": {"type": "string", "minLength": 1, "maxLength": 64},
+    "update_id": {"type": "string", "maxLength": 128},
+    "session_id": {"type": "string", "minLength": 1},
+    "boot_id": {"type": "string", "minLength": 1},
+    "process_id": {"type": "integer", "minimum": 0},
+    "status": {"enum": ["idle", "running"]},
+    "updated_at": {"type": "string", "format": "date-time"}
+  }
+}
