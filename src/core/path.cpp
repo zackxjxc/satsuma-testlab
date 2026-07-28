@@ -2,7 +2,9 @@
 #include "satsuma/core/path.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cwctype>
+#include <thread>
 #include <vector>
 
 #include <windows.h>
@@ -11,6 +13,16 @@
 
 namespace satsuma {
 namespace {
+
+constexpr std::chrono::seconds kPathRenameTimeout{2}; // 共享层瞬时占用最长等待时间
+constexpr std::chrono::milliseconds kPathRenameRetryDelay{10}; // 路径改名重试间隔
+
+// 判断路径改名错误是否来自可恢复的 Windows 瞬时占用。
+[[nodiscard]] bool is_transient_rename_error(const DWORD error) noexcept {
+    return error == ERROR_ACCESS_DENIED ||
+        error == ERROR_SHARING_VIOLATION ||
+        error == ERROR_LOCK_VIOLATION;
+}
 
 // 比较 Windows 路径组件时忽略大小写。
 [[nodiscard]] bool component_equal(const std::filesystem::path& left, const std::filesystem::path& right) {
@@ -93,6 +105,27 @@ std::string path_to_utf8(const std::filesystem::path& value) {
         throw Error("Failed to convert a path to UTF-8");
     }
     return utf8;
+}
+
+void rename_path_with_retry(
+    const std::filesystem::path& source,
+    const std::filesystem::path& destination) {
+    const auto deadline = std::chrono::steady_clock::now() + kPathRenameTimeout;
+    DWORD rename_error = ERROR_SUCCESS; // 最后一次 MoveFileExW 错误
+    for (;;) {
+        if (MoveFileExW(source.c_str(), destination.c_str(), MOVEFILE_WRITE_THROUGH)) {
+            return;
+        }
+        rename_error = GetLastError();
+        if (!is_transient_rename_error(rename_error) ||
+            std::chrono::steady_clock::now() >= deadline) {
+            break;
+        }
+        std::this_thread::sleep_for(kPathRenameRetryDelay);
+    }
+    throw Error(
+        "Cannot rename path to " + path_to_utf8(destination) +
+        ": Win32 error " + std::to_string(rename_error));
 }
 
 void validate_relative_path(const std::filesystem::path& relative) {

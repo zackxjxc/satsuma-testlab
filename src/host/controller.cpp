@@ -113,7 +113,7 @@ RunManifest Controller::create_run(const TaskPlan& plan) const {
         }
 
         write_json_atomic(staging_directory / L"task.json", manifest);
-        std::filesystem::rename(staging_directory, final_directory);
+        rename_path_with_retry(staging_directory, final_directory);
     } catch (...) {
         std::error_code cleanup_error;
         std::filesystem::remove_all(staging_directory, cleanup_error);
@@ -193,7 +193,7 @@ AgentUpdateManifest Controller::publish_agent_update(
         manifest.sha256 = sha256_file(staged_binary);
         manifest = nlohmann::json(manifest).get<AgentUpdateManifest>();
         write_json_atomic(staging_directory / L"update.json", manifest);
-        std::filesystem::rename(staging_directory, final_directory);
+        rename_path_with_retry(staging_directory, final_directory);
     } catch (...) {
         std::error_code cleanup_error;
         std::filesystem::remove_all(staging_directory, cleanup_error);

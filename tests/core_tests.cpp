@@ -102,6 +102,37 @@ void test_file_primitives(const std::filesystem::path& root) {
     expect(!std::filesystem::exists(removed_parent),
         "existing-parent JSON write recreated a removed directory");
 
+    const std::filesystem::path rename_source = root / L"rename-source";
+    const std::filesystem::path rename_destination = root / L"rename-destination";
+    std::filesystem::create_directories(rename_source);
+    {
+        std::ofstream evidence(rename_source / L"evidence.txt", std::ios::binary);
+        evidence << "evidence\n";
+        expect(static_cast<bool>(evidence), "path rename test could not create its evidence");
+    }
+    HANDLE blocking_directory = CreateFileW( // 模拟安全软件短暂占用待发布目录
+        rename_source.c_str(),
+        GENERIC_READ,
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
+        nullptr,
+        OPEN_EXISTING,
+        FILE_FLAG_BACKUP_SEMANTICS,
+        nullptr);
+    expect(blocking_directory != INVALID_HANDLE_VALUE, "path rename test could not open its directory");
+    std::jthread release_directory([blocking_directory] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        CloseHandle(blocking_directory);
+    });
+    const auto rename_started = std::chrono::steady_clock::now(); // 验证改名等待占用释放
+    satsuma::rename_path_with_retry(rename_source, rename_destination);
+    const auto rename_elapsed = std::chrono::steady_clock::now() - rename_started;
+    release_directory.join();
+    expect(rename_elapsed >= std::chrono::milliseconds(100), "path rename skipped its retry wait");
+    expect(!std::filesystem::exists(rename_source), "path rename retry retained its source directory");
+    expect(
+        std::filesystem::is_regular_file(rename_destination / L"evidence.txt"),
+        "path rename retry omitted directory contents");
+
     const std::filesystem::path hash_path = root / L"abc.txt";
     std::ofstream output(hash_path, std::ios::binary);
     output << "abc";

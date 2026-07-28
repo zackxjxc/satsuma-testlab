@@ -13,6 +13,11 @@ namespace satsuma {
 // 将文件系统路径转换为 UTF-8 字符串。
 [[nodiscard]] std::string path_to_utf8(const std::filesystem::path& value);
 
+// 在有限时间内重试 Windows 瞬时占用导致的同卷路径改名。
+void rename_path_with_retry(
+    const std::filesystem::path& source,
+    const std::filesystem::path& destination);
+
 // 验证任务路径是非空、安全的相对路径。
 void validate_relative_path(const std::filesystem::path& relative);
 
