@@ -66,45 +66,25 @@ endif()
 
 include(FetchContent)
 
-# 优先复用包管理器提供的依赖；未提供时下载固定版本。
-find_package(nlohmann_json 3.11 CONFIG QUIET)
+# 优先复用精确版本的包管理器依赖；未提供时下载固定提交。
+find_package(nlohmann_json 3.12.0 EXACT CONFIG QUIET)
 if(NOT nlohmann_json_FOUND)
     FetchContent_Declare(
         nlohmann_json
         GIT_REPOSITORY https://github.com/nlohmann/json.git
-        GIT_TAG v3.12.0
+        GIT_TAG 55f93686c01528224f448c19128836e7df245f72
         GIT_SHALLOW TRUE
     )
     FetchContent_MakeAvailable(nlohmann_json)
 endif()
 
-# coro_rpc 和 struct_pack 固定使用 yalantinglibs 0.6.1 正式版本。
-find_package(yalantinglibs CONFIG QUIET)
-if(yalantinglibs_FOUND)
-    set(SATSUMA_YLT_TARGET yalantinglibs::yalantinglibs)
-else()
-    set(YLT_ENABLE_DL OFF CACHE BOOL "Disable dynamic loader integration" FORCE)
-    set(YLT_ENABLE_SSL OFF CACHE BOOL "Disable TLS until authentication is implemented" FORCE)
-    FetchContent_Declare(
-        satsuma_yalantinglibs
-        GIT_REPOSITORY https://github.com/alibaba/yalantinglibs.git
-        GIT_TAG 0.6.1
-        GIT_SHALLOW TRUE
-        GIT_PROGRESS TRUE
-    )
-    FetchContent_MakeAvailable(satsuma_yalantinglibs)
-    set(SATSUMA_YLT_TARGET yalantinglibs)
-endif()
-
 add_library(SatsumaCore STATIC
     src/core/claim.cpp
     src/core/config.cpp
-    src/core/endpoint.cpp
     src/core/id.cpp
     src/core/json_io.cpp
     src/core/lifecycle.cpp
     src/core/path.cpp
-    src/core/rpc_protocol.cpp
     src/core/sha256.cpp
     src/core/snapshot.cpp
     src/core/task.cpp
@@ -127,45 +107,40 @@ target_compile_definitions(
 )
 target_link_libraries(SatsumaCore PUBLIC nlohmann_json::nlohmann_json PRIVATE bcrypt)
 
-add_executable(SatsumaHost
+add_library(SatsumaHostLib STATIC
     src/host/controller.cpp
     src/host/diagnostics.cpp
-    src/host/main.cpp
     src/host/orchestrator.cpp
-    src/host/rpc_server.cpp
-    src/host/rpc_service.cpp
     src/vmware/vmrun_provider.cpp
 )
-target_include_directories(SatsumaHost PRIVATE src/host src/vmware)
-target_link_libraries(SatsumaHost PRIVATE SatsumaCore ${SATSUMA_YLT_TARGET})
+target_include_directories(SatsumaHostLib PUBLIC src/host src/vmware)
+target_link_libraries(SatsumaHostLib PUBLIC SatsumaCore)
 
-add_executable(SatsumaVM
+add_executable(SatsumaHost src/host/main.cpp)
+target_link_libraries(SatsumaHost PRIVATE SatsumaHostLib)
+
+add_library(SatsumaVmLib STATIC
     src/vm/agent.cpp
-    src/vm/autostart.cpp
     src/vm/claim_renewal.cpp
     src/vm/claim_store.cpp
     src/vm/interactive_process.cpp
-    src/vm/main.cpp
     src/vm/process_runner.cpp
-    src/vm/rpc_client.cpp
     src/vm/service.cpp
     src/vm/update.cpp
 )
-target_include_directories(SatsumaVM PRIVATE src/vm)
+target_include_directories(SatsumaVmLib PUBLIC src/vm)
 target_link_libraries(
-    SatsumaVM
-    PRIVATE
+    SatsumaVmLib
+    PUBLIC
         SatsumaCore
-        ${SATSUMA_YLT_TARGET}
         advapi32
-        ole32
-        oleaut32
         shell32
-        taskschd
         userenv
-        ws2_32
         wtsapi32
 )
+
+add_executable(SatsumaVM src/vm/main.cpp)
+target_link_libraries(SatsumaVM PRIVATE SatsumaVmLib)
 
 set_target_properties(SatsumaHost SatsumaVM PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
@@ -223,11 +198,11 @@ file(GENERATE
 )
 
 if(MSVC)
-    foreach(target SatsumaCore SatsumaHost SatsumaVM SatsumaDemoApp)
+    foreach(target SatsumaCore SatsumaHostLib SatsumaHost SatsumaVmLib SatsumaVM SatsumaDemoApp)
         target_compile_options(${target} PRIVATE /W4 /permissive- /utf-8 /EHsc)
     endforeach()
-    target_compile_options(SatsumaHost PRIVATE /external:anglebrackets /external:W0)
-    target_compile_options(SatsumaVM PRIVATE /external:anglebrackets /external:W0)
+    target_compile_options(SatsumaHostLib PRIVATE /external:anglebrackets /external:W0)
+    target_compile_options(SatsumaVmLib PRIVATE /external:anglebrackets /external:W0)
 endif()
 
 if(SATSUMA_BUILD_TESTS)
