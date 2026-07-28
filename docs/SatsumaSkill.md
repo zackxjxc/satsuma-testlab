@@ -84,7 +84,8 @@ SatsumaHost.exe check --config lab.local.json --vm <vm-id> --timeout-seconds 30
 `check` 会报告共享/归档容量和 VMware Tools 状态，并写入无害 `echo` 任务，但不会启动 VM、启动 Agent、
 改动网络或恢复快照。Shared Folder 检查失败时不会发布任务，`run_id` 为 `null`，目标 Agent 状态为
 `skipped`。不得因为 VMX、`vmrun` 或共享目录存在就自行宣称环境可用；只有本轮报告为 `ready` 才能通过
-门禁。
+门禁。Agent 探针成功且唯一失败项为 VMware Tools 时，Host 会最多再复检 30 秒；AI 应读取
+`initial_environment` 和 `environment_recheck_attempts`，不得把初始 `installed` 隐藏为无条件成功。
 
 ## 5. 生成任务文件
 

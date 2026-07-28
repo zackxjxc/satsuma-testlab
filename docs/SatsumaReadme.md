@@ -421,7 +421,8 @@ SatsumaHost.exe check --config lab.local.json --vm client --timeout-seconds 180
 状态，然后发布唯一的 `echo` 任务并等待 Agent 返回结果。它不会启动、关闭、恢复虚拟机或改动快照。
 未指定 `--vm` 时会检查配置中的全部 VM；`--timeout-seconds` 接受 1–300 秒，默认 30 秒。Agent 已上线时
 默认值通常足够；VM 冷启动后首次检查建议使用 180–240 秒，以覆盖 Windows 延迟自动启动和 VMware
-Tools 就绪时间。
+Tools 就绪时间。Agent 探针成功后，如果唯一失败项仍是 VMware Tools，Host 会每秒复检环境、最多等待
+30 秒，并在报告中保留 `initial_environment` 和 `environment_recheck_attempts`；其他环境错误不会因此延迟。
 
 报告为机器可读 JSON，调用方必须同时检查退出码和顶层 `status`：
 
