@@ -1,4 +1,4 @@
-// Host 单 VM 生命周期编排接口。
+// Host 多 VM 生命周期编排接口。
 #pragma once
 
 #include <chrono>
@@ -10,7 +10,7 @@
 
 namespace satsuma::host {
 
-// 按任务生命周期策略执行并归档一次单 VM 运行。
+// 按任务生命周期策略执行并归档一次运行。
 class Orchestrator {
 public:
     // 保存一份已验证的实验室配置。

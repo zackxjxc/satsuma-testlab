@@ -301,6 +301,12 @@ set_target_properties(SatsumaFakeVmrun PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
 )
 
+add_executable(SatsumaMultiVmFakeVmrun multi_vm_fake_vmrun.cpp)
+target_compile_features(SatsumaMultiVmFakeVmrun PRIVATE cxx_std_20)
+set_target_properties(SatsumaMultiVmFakeVmrun PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
+)
+
 add_executable(
     SatsumaVmrunProviderTests
     vmrun_provider_tests.cpp
@@ -310,6 +316,7 @@ target_include_directories(SatsumaVmrunProviderTests PRIVATE ../src/vmware)
 target_link_libraries(SatsumaVmrunProviderTests PRIVATE SatsumaCore)
 if(MSVC)
     target_compile_options(SatsumaFakeVmrun PRIVATE /W4 /permissive- /utf-8 /EHsc)
+    target_compile_options(SatsumaMultiVmFakeVmrun PRIVATE /W4 /permissive- /utf-8 /EHsc)
     target_compile_options(SatsumaVmrunProviderTests PRIVATE /W4 /permissive- /utf-8 /EHsc)
 endif()
 add_test(
@@ -356,6 +363,18 @@ add_test(
         "-DTEST_ROOT=${CMAKE_CURRENT_BINARY_DIR}/host-vm-flow"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/host_vm_flow.cmake"
 )
+
+add_test(
+    NAME SatsumaHostMultiVmLifecycleFlow
+    COMMAND "${CMAKE_COMMAND}"
+        "-DHOST_EXE=$<TARGET_FILE:SatsumaHost>"
+        "-DVM_EXE=$<TARGET_FILE:SatsumaVM>"
+        "-DFIXTURE_EXE=$<TARGET_FILE:SatsumaTestFixture>"
+        "-DVMRUN_EXE=$<TARGET_FILE:SatsumaMultiVmFakeVmrun>"
+        "-DTEST_ROOT=${CMAKE_CURRENT_BINARY_DIR}/multi-vm-lifecycle-flow"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/multi_vm_lifecycle_flow.cmake"
+)
+set_tests_properties(SatsumaHostMultiVmLifecycleFlow PROPERTIES TIMEOUT 120)
 
 if(SATSUMA_ENABLE_REAL_VMWARE_SMOKE)
     add_custom_target(

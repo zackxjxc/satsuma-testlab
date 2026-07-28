@@ -1,4 +1,4 @@
-// Host 单 VM 生命周期编排和不可变证据归档实现。
+// Host 多 VM 生命周期编排和不可变证据归档实现。
 #include "orchestrator.hpp"
 
 #include <algorithm>
@@ -7,7 +7,9 @@
 #include <optional>
 #include <string>
 #include <thread>
+#include <unordered_set>
 #include <utility>
+#include <vector>
 
 #include <windows.h>
 
@@ -29,7 +31,7 @@ namespace {
 struct OrchestrationIdentity {
     int schema_version{1}; // 编排身份 schema 版本
     std::string run_id; // 生命周期运行 ID
-    std::string vm_id; // 唯一生命周期 VM
+    std::vector<std::string> vm_ids; // 按准备顺序冻结的生命周期 VM
     std::string main_run_id; // Agent 主任务运行 ID
     std::string finally_run_id; // Agent finally 任务运行 ID
     std::string plan_sha256; // 原始计划文件哈希
@@ -57,30 +59,41 @@ struct OrchestrationArchive {
 // 创建不依赖 VMware 当前状态的编排输出公共字段。
 [[nodiscard]] nlohmann::json make_orchestration_output(
     const OrchestrationArchive& archive) {
-    return {
+    nlohmann::json output = {
         {"schema_version", 1},
         {"run_id", archive.identity.run_id},
-        {"vm_id", archive.identity.vm_id},
         {"lifecycle_path", path_to_utf8(archive.state_path)},
         {"resumed", archive.resumed},
     };
+    if (archive.identity.vm_ids.size() == 1) {
+        output["vm_id"] = archive.identity.vm_ids.front();
+    } else {
+        output["vm_ids"] = archive.identity.vm_ids;
+    }
+    return output;
 }
 
-// 返回单 VM 编排所需的唯一生命周期策略。
-[[nodiscard]] const VmLifecyclePolicy& require_single_vm_policy(const TaskPlan& plan) {
+// 返回编排计划声明的生命周期策略。
+[[nodiscard]] const std::vector<VmLifecyclePolicy>& require_lifecycle_policies(
+    const TaskPlan& plan) {
     if (!plan.lifecycle.has_value()) {
         throw Error("Host orchestrate requires a lifecycle policy");
     }
-    if (plan.lifecycle->vms.size() != 1) {
-        throw Error("Host orchestrate currently requires exactly one lifecycle VM policy");
-    }
-    return plan.lifecycle->vms.front();
+    return plan.lifecycle->vms;
 }
 
-// 验证任务涉及的全部 VM 都由当前单 VM 策略覆盖。
-void validate_plan_scope(const TaskPlan& plan, const std::string& vm_id) {
-    const auto require_vm = [&vm_id](const std::string& referenced_vm, const std::string& field) {
-        if (referenced_vm != vm_id) {
+// 验证任务涉及的全部 VM 都由当前生命周期策略覆盖。
+void validate_plan_scope(
+    const TaskPlan& plan,
+    const std::vector<VmLifecyclePolicy>& policies) {
+    std::unordered_set<std::string> vm_ids;
+    for (const VmLifecyclePolicy& policy : policies) {
+        vm_ids.insert(policy.vm);
+    }
+    const auto require_vm = [&vm_ids](
+                                const std::string& referenced_vm,
+                                const std::string& field) {
+        if (!vm_ids.contains(referenced_vm)) {
             throw Error(field + " is outside the lifecycle VM scope: " + referenced_vm);
         }
     };
@@ -98,14 +111,19 @@ void validate_plan_scope(const TaskPlan& plan, const std::string& vm_id) {
 // 序列化不可变编排身份。
 [[nodiscard]] nlohmann::json orchestration_identity_json(
     const OrchestrationIdentity& identity) {
-    return {
+    nlohmann::json value = {
         {"schema_version", identity.schema_version},
         {"run_id", identity.run_id},
-        {"vm_id", identity.vm_id},
         {"main_run_id", identity.main_run_id},
         {"finally_run_id", identity.finally_run_id},
         {"plan_sha256", identity.plan_sha256},
     };
+    if (identity.schema_version == 1) {
+        value["vm_id"] = identity.vm_ids.front();
+    } else {
+        value["vm_ids"] = identity.vm_ids;
+    }
+    return value;
 }
 
 // 读取并验证 Host 重启所需的不可变编排身份。
@@ -116,15 +134,27 @@ void validate_plan_scope(const TaskPlan& plan, const std::string& vm_id) {
         OrchestrationIdentity identity;
         identity.schema_version = value.value("schema_version", 0);
         identity.run_id = value.at("run_id").get<std::string>();
-        identity.vm_id = value.at("vm_id").get<std::string>();
+        if (identity.schema_version == 1) {
+            identity.vm_ids.push_back(value.at("vm_id").get<std::string>());
+        } else if (identity.schema_version == 2) {
+            identity.vm_ids = value.at("vm_ids").get<std::vector<std::string>>();
+        } else {
+            throw Error("Orchestration identity requires schema_version 1 or 2");
+        }
         identity.main_run_id = value.at("main_run_id").get<std::string>();
         identity.finally_run_id = value.at("finally_run_id").get<std::string>();
         identity.plan_sha256 = value.at("plan_sha256").get<std::string>();
-        if (identity.schema_version != 1) {
-            throw Error("Orchestration identity requires schema_version 1");
-        }
         validate_identifier(identity.run_id, "orchestration identity run_id");
-        validate_identifier(identity.vm_id, "orchestration identity vm_id");
+        if (identity.vm_ids.empty()) {
+            throw Error("Orchestration identity requires at least one VM");
+        }
+        std::unordered_set<std::string> unique_vm_ids;
+        for (const std::string& vm_id : identity.vm_ids) {
+            validate_identifier(vm_id, "orchestration identity VM id");
+            if (!unique_vm_ids.insert(vm_id).second) {
+                throw Error("Orchestration identity contains a duplicate VM: " + vm_id);
+            }
+        }
         validate_identifier(identity.main_run_id, "orchestration identity main_run_id");
         validate_identifier(identity.finally_run_id, "orchestration identity finally_run_id");
         if (identity.plan_sha256.size() != 64) {
@@ -141,7 +171,7 @@ void validate_plan_scope(const TaskPlan& plan, const std::string& vm_id) {
     const LabConfig& config,
     const std::filesystem::path& plan_path,
     const std::string& run_id,
-    const std::string& vm_id) {
+    const std::vector<std::string>& vm_ids) {
     const std::filesystem::path runs_root = resolve_under_root(
         config.host.archive_root,
         L"runs");
@@ -158,7 +188,7 @@ void validate_plan_scope(const TaskPlan& plan, const std::string& vm_id) {
             throw Error("Existing orchestration archive is incomplete: " + path_to_utf8(root));
         }
         OrchestrationIdentity identity = load_orchestration_identity(identity_path);
-        if (identity.run_id != run_id || identity.vm_id != vm_id ||
+        if (identity.run_id != run_id || identity.vm_ids != vm_ids ||
             identity.main_run_id != run_id || identity.plan_sha256 != plan_sha256 ||
             sha256_file(archived_plan_path) != plan_sha256) {
             throw Error("Existing orchestration archive does not match the requested plan");
@@ -175,9 +205,9 @@ void validate_plan_scope(const TaskPlan& plan, const std::string& vm_id) {
         runs_root,
         path_from_utf8(".preparing-" + run_id + "-" + make_id("orchestration")));
     OrchestrationIdentity identity{
-        1,
+        vm_ids.size() == 1 ? 1 : 2,
         run_id,
-        vm_id,
+        vm_ids,
         run_id,
         make_id("finally"),
         plan_sha256,
@@ -356,15 +386,14 @@ void apply_main_report(
 void apply_terminal_state_output(
     nlohmann::json& output,
     const RunLifecycleState& state,
-    const VmLifecyclePolicy& policy) {
+    const std::vector<VmLifecyclePolicy>& policies) {
+    const bool business_success = state.phase == RunPhase::Completed;
     switch (state.phase) {
     case RunPhase::Completed:
         output["status"] = "COMPLETED";
-        output["cleanup_action"] = vm_cleanup_action_name(policy.on_success.action);
         break;
     case RunPhase::Failed:
         output["status"] = "FAILED";
-        output["cleanup_action"] = vm_cleanup_action_name(policy.on_failure.action);
         break;
     case RunPhase::RecoveryFailed:
         output["status"] = "RECOVERY_FAILED";
@@ -374,6 +403,25 @@ void apply_terminal_state_output(
         break;
     default:
         throw Error("Cannot return a non-terminal orchestration state");
+    }
+    if (state.phase == RunPhase::Completed || state.phase == RunPhase::Failed) {
+        if (policies.size() == 1) {
+            const VmCleanupPolicy& cleanup = business_success
+                ? policies.front().on_success
+                : policies.front().on_failure;
+            output["cleanup_action"] = vm_cleanup_action_name(cleanup.action);
+        } else {
+            output["cleanup_actions"] = nlohmann::json::array();
+            for (const VmLifecyclePolicy& policy : policies) {
+                const VmCleanupPolicy& cleanup = business_success
+                    ? policy.on_success
+                    : policy.on_failure;
+                output["cleanup_actions"].push_back({
+                    {"vm_id", policy.vm},
+                    {"action", vm_cleanup_action_name(cleanup.action)},
+                });
+            }
+        }
     }
     if (!state.transitions.empty() && state.phase != RunPhase::Completed) {
         output["error"] = state.transitions.back().message;
@@ -414,16 +462,25 @@ nlohmann::json Orchestrator::execute(
     }
 
     TaskPlan plan = load_task_plan(plan_path);
-    const VmLifecyclePolicy& policy = require_single_vm_policy(plan);
-    validate_plan_scope(plan, policy.vm);
+    const std::vector<VmLifecyclePolicy>& policies = require_lifecycle_policies(plan);
+    validate_plan_scope(plan, policies);
     if (!plan.run_id.has_value()) {
         throw Error("Host orchestrate requires an explicit plan run_id for crash recovery");
     }
     const std::string& run_id = *plan.run_id;
     validate_identifier(run_id, "orchestration run_id");
-    const VmConfig* vm = find_vm(config_, policy.vm);
-    if (vm == nullptr) {
-        throw Error("Lifecycle policy references an unknown VM: " + policy.vm);
+
+    std::vector<std::string> vm_ids; // 按生命周期声明顺序冻结的 VM 身份
+    std::vector<const VmConfig*> vms; // 与策略下标一一对应的实验室配置
+    vm_ids.reserve(policies.size());
+    vms.reserve(policies.size());
+    for (const VmLifecyclePolicy& policy : policies) {
+        const VmConfig* vm = find_vm(config_, policy.vm);
+        if (vm == nullptr) {
+            throw Error("Lifecycle policy references an unknown VM: " + policy.vm);
+        }
+        vm_ids.push_back(policy.vm);
+        vms.push_back(vm);
     }
 
     std::optional<OrchestrationArchive> archive;
@@ -432,33 +489,39 @@ nlohmann::json Orchestrator::execute(
             config_,
             plan_path,
             run_id,
-            vm->id);
+            vm_ids);
         if (is_terminal_run_phase(archive->state.phase)) {
             nlohmann::json output = make_orchestration_output(*archive);
-            apply_terminal_state_output(output, archive->state, policy);
+            apply_terminal_state_output(output, archive->state, policies);
             return output;
         }
     }
 
     vmware::VmrunProvider provider(config_.provider.vmrun);
-    const std::vector<std::string> snapshots = provider.list_snapshots(vm->vmx);
-    if (policy.restore_before.has_value()) {
-        validate_managed_snapshot(*vm, snapshots, *policy.restore_before);
+    std::vector<bool> initially_running; // 外部操作前逐台采样的运行状态
+    initially_running.reserve(vms.size());
+    for (std::size_t index = 0; index < vms.size(); ++index) {
+        const VmConfig& vm = *vms[index];
+        const VmLifecyclePolicy& policy = policies[index];
+        const std::vector<std::string> snapshots = provider.list_snapshots(vm.vmx);
+        if (policy.restore_before.has_value()) {
+            validate_managed_snapshot(vm, snapshots, *policy.restore_before);
+        }
+        if (policy.on_success.action == VmCleanupAction::Restore) {
+            validate_managed_snapshot(vm, snapshots, *policy.on_success.snapshot);
+        }
+        if (policy.on_failure.action == VmCleanupAction::Restore) {
+            validate_managed_snapshot(vm, snapshots, *policy.on_failure.snapshot);
+        }
+        initially_running.push_back(is_vm_running(provider, vm.vmx));
     }
-    if (policy.on_success.action == VmCleanupAction::Restore) {
-        validate_managed_snapshot(*vm, snapshots, *policy.on_success.snapshot);
-    }
-    if (policy.on_failure.action == VmCleanupAction::Restore) {
-        validate_managed_snapshot(*vm, snapshots, *policy.on_failure.snapshot);
-    }
-    const bool initially_running = is_vm_running(provider, vm->vmx);
 
     if (!archive.has_value()) {
         archive = prepare_or_load_archive(
             config_,
             plan_path,
             run_id,
-            vm->id);
+            vm_ids);
     }
     OrchestrationArchive& active_archive = *archive;
     RunLifecycleState& state = active_archive.state;
@@ -481,7 +544,7 @@ nlohmann::json Orchestrator::execute(
     }
 
     Controller controller(config_);
-    bool assumed_running = initially_running;
+    std::vector<bool> assumed_running = initially_running; // 编排期间逐台维护的预期状态
     bool agent_ready = active_archive.resumed;
     bool main_published = active_archive.resumed;
     bool business_success = false;
@@ -508,18 +571,31 @@ nlohmann::json Orchestrator::execute(
         }
     } else {
         try {
-            if (policy.restore_before.has_value()) {
+            const bool requires_restore = std::any_of( // 是否需要进入统一恢复阶段
+                policies.begin(),
+                policies.end(),
+                [](const VmLifecyclePolicy& policy) {
+                    return policy.restore_before.has_value();
+                });
+            if (requires_restore) {
                 persist_run_transition(
                     state_path,
                     state,
                     RunPhase::RestoringBefore,
                     utc_timestamp(),
-                    "restore before execution");
-                if (assumed_running) {
-                    provider.stop(vm->vmx, vmware::VmStopMode::Hard);
-                    assumed_running = false;
+                    "restore target VMs before execution");
+                for (std::size_t index = 0; index < vms.size(); ++index) {
+                    const VmLifecyclePolicy& policy = policies[index];
+                    if (!policy.restore_before.has_value()) {
+                        continue;
+                    }
+                    const VmConfig& vm = *vms[index];
+                    if (assumed_running[index]) {
+                        provider.stop(vm.vmx, vmware::VmStopMode::Hard);
+                        assumed_running[index] = false;
+                    }
+                    provider.revert_to_snapshot(vm.vmx, *policy.restore_before);
                 }
-                provider.revert_to_snapshot(vm->vmx, *policy.restore_before);
             }
 
             persist_run_transition(
@@ -527,27 +603,39 @@ nlohmann::json Orchestrator::execute(
                 state,
                 RunPhase::StartingVm,
                 utc_timestamp(),
-                "start target VM");
-            if (!assumed_running) {
-                provider.start(vm->vmx);
-                assumed_running = true;
+                "start target VMs in lifecycle order");
+            for (std::size_t index = 0; index < vms.size(); ++index) {
+                if (!assumed_running[index]) {
+                    provider.start(vms[index]->vmx);
+                    assumed_running[index] = true;
+                }
             }
             persist_run_transition(
                 state_path,
                 state,
                 RunPhase::WaitingAgent,
                 utc_timestamp(),
-                "wait for Agent diagnostic echo");
+                "wait for Agents in lifecycle order");
             Diagnostics diagnostics(config_);
             const std::chrono::seconds diagnostic_timeout = std::min(
                 timeout,
                 std::chrono::seconds(300)); // 编排总等待可超过独立诊断上限
-            const nlohmann::json diagnostic = diagnostics.run_probe(
-                vm->id,
-                diagnostic_timeout);
-            output["diagnostic"] = diagnostic;
-            if (diagnostic.at("status") != "ready") {
-                throw Error("Agent diagnostic did not return ready");
+            if (vms.size() > 1) {
+                output["diagnostics"] = nlohmann::json::array();
+            }
+            for (const VmConfig* vm : vms) {
+                nlohmann::json diagnostic = diagnostics.run_probe(vm->id, diagnostic_timeout);
+                if (vms.size() == 1) {
+                    output["diagnostic"] = diagnostic;
+                } else {
+                    output["diagnostics"].push_back({
+                        {"vm_id", vm->id},
+                        {"result", diagnostic},
+                    });
+                }
+                if (diagnostic.at("status") != "ready") {
+                    throw Error("Agent diagnostic did not return ready for VM: " + vm->id);
+                }
             }
             agent_ready = true;
 
@@ -669,11 +757,28 @@ nlohmann::json Orchestrator::execute(
         utc_timestamp(),
         business_success ? "apply success cleanup policy" : "apply failure cleanup policy");
 
-    const VmCleanupPolicy& cleanup = business_success ? policy.on_success : policy.on_failure;
-    try {
-        assumed_running = apply_cleanup_policy(provider, *vm, cleanup, assumed_running);
-    } catch (const std::exception& error) {
-        append_error(business_error, error.what());
+    bool cleanup_failed = false; // 任一 VM 清理失败后仍继续处理其余 VM
+    for (std::size_t reverse_index = policies.size(); reverse_index > 0; --reverse_index) {
+        const std::size_t index = reverse_index - 1;
+        const VmLifecyclePolicy& policy = policies[index];
+        const VmCleanupPolicy& cleanup = business_success
+            ? policy.on_success
+            : policy.on_failure;
+        try {
+            assumed_running[index] = apply_cleanup_policy(
+                provider,
+                *vms[index],
+                cleanup,
+                assumed_running[index]);
+        } catch (const std::exception& error) {
+            cleanup_failed = true;
+            append_error(
+                business_error,
+                "Cleanup failed for VM " + policy.vm + ": " + error.what());
+        }
+    }
+
+    if (cleanup_failed) {
         persist_run_transition(
             state_path,
             state,
@@ -685,6 +790,24 @@ nlohmann::json Orchestrator::execute(
         return output;
     }
 
+    if (policies.size() == 1) {
+        const VmCleanupPolicy& cleanup = business_success
+            ? policies.front().on_success
+            : policies.front().on_failure;
+        output["cleanup_action"] = vm_cleanup_action_name(cleanup.action);
+    } else {
+        output["cleanup_actions"] = nlohmann::json::array();
+        for (const VmLifecyclePolicy& policy : policies) {
+            const VmCleanupPolicy& cleanup = business_success
+                ? policy.on_success
+                : policy.on_failure;
+            output["cleanup_actions"].push_back({
+                {"vm_id", policy.vm},
+                {"action", vm_cleanup_action_name(cleanup.action)},
+            });
+        }
+    }
+
     persist_run_transition(
         state_path,
         state,
@@ -692,7 +815,6 @@ nlohmann::json Orchestrator::execute(
         utc_timestamp(),
         business_success ? "orchestration completed" : business_error);
     output["status"] = business_success ? "COMPLETED" : "FAILED";
-    output["cleanup_action"] = vm_cleanup_action_name(cleanup.action);
     if (!business_error.empty()) {
         output["error"] = business_error;
     }
