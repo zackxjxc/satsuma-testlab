@@ -35,10 +35,11 @@ struct SnapshotConfig {
 
 // 单台虚拟机的稳定配置。
 struct VmConfig {
-    std::string id;              // 虚拟机稳定 ID
-    std::filesystem::path vmx;   // VMX 文件路径
-    std::string agent_version;   // 快照中的 Agent 版本
-    SnapshotConfig snapshots;    // 快照保护策略
+    std::string id;               // 虚拟机稳定 ID
+    std::string hardware_id;      // 可选 SMBIOS UUID 绑定
+    std::filesystem::path vmx;    // VMX 文件路径
+    std::string agent_version;    // 快照中的 Agent 版本
+    SnapshotConfig snapshots;     // 快照保护策略
 };
 
 // Host 使用的实验室配置。
@@ -56,7 +57,12 @@ struct AgentConfig {
     int schema_version{1};                  // 配置 schema 版本
     int protocol_version{kRunManifestProtocolVersion}; // 文件协议版本
     std::string lab_id;                     // 实验室稳定 ID
-    std::string vm_id;                      // 当前虚拟机稳定 ID
+    std::string vm_id;                      // 当前虚拟机业务 ID，未绑定时暂用硬件 ID
+    std::string hardware_id;                // 当前 SMBIOS UUID
+    std::string previous_hardware_id;       // 变更前的 SMBIOS UUID
+    std::string previous_vm_id;             // 变更前缓存的业务 ID
+    bool vm_id_configured{false};            // agent.json 是否显式声明旧版 vm_id
+    bool identity_unbound{false};            // 当前硬件尚未绑定业务 ID
     std::string agent_version;              // 当前 Agent 语义版本
     std::string last_update_id;              // 最近成功应用的更新 ID
     std::filesystem::path shared_root;      // Guest 共享根目录

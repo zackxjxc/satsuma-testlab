@@ -15,6 +15,7 @@ Artifact 原子发布到 VMware Shared Folder；每台 Guest 中的 Windows Serv
 - 步骤 claim、租约续期、结果 fencing、崩溃恢复和人工介入门禁。
 - 文件取消、运行列表与安全保留策略；失败运行不会阻塞其他运行。
 - Agent Windows Service 安装、自更新和 VM 身份迁移。
+- SMBIOS UUID 自动发现、Host 业务角色绑定和克隆身份冲突检测。
 - Artifact、日志和结果文件容量上限，防止测试耗尽共享盘。
 - Windows Debug/Release CI、JSON Schema、便携发行目录和 UTF-8 ZIP 发布包。
 
@@ -33,12 +34,14 @@ cmake --build --preset windows-release --target SatsumaPackage
 ```
 
 发布目标会在根目录 `output` 同时生成可直接使用的版本目录和同名 ZIP，不会向系统安装文件。进入版本目录后，
-将 [`lab.template.json`](config/lab.template.json) 复制为 `config/lab.local.json`，并为每台 VM 将
-[`agent.template.json`](config/agent.template.json) 复制为 `config/<vm-id>.agent.json`。配置完成后，把该 VM
-的 Agent 配置改名为 `agent.json`，与 `bin/SatsumaVM.exe`、`scripts/install-agent.ps1` 一起放入共享目录的
-`satsuma-bootstrap`，再在 Guest 管理员 PowerShell 中运行安装脚本。
+将 [`lab.template.json`](config/lab.template.json) 复制为 `config/lab.local.json`，并把通用的
+[`agent.template.json`](config/agent.template.json) 填写为 `agent.json`。将它与 `bin/SatsumaVM.exe`、
+`scripts/install-agent.ps1` 一起放入共享目录的 `satsuma-bootstrap`，再在每台 Guest 的管理员 PowerShell 中
+运行安装脚本。Agent 使用 SMBIOS UUID 自动声明硬件身份，不需要为每台 VM 准备不同配置文件。
 
 ```powershell
+bin\SatsumaHost.exe discover --config config\lab.local.json
+bin\SatsumaHost.exe agent rebind --config config\lab.local.json --vm client --hardware-id <uuid>
 bin\SatsumaHost.exe check --config config\lab.local.json --timeout-seconds 180
 bin\SatsumaHost.exe run --config config\lab.local.json --plan examples\hello-vm-task.json
 bin\SatsumaHost.exe report --config config\lab.local.json --run <run-id> --wait-seconds 300

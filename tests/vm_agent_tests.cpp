@@ -13,6 +13,7 @@
 #include <nlohmann/json.hpp>
 
 #include "agent.hpp"
+#include "hardware_identity.hpp"
 #include "interactive_process.hpp"
 #include "process_runner.hpp"
 #include "satsuma/core/errors.hpp"
@@ -509,6 +510,62 @@ void test_agent_rejects_legacy_file_protocol(const std::filesystem::path& root) 
     expect(rejected, "production Agent accepted a legacy v1 file protocol config");
 }
 
+// 验证首次发现、Host 绑定和硬件变化迁移记录。
+void test_agent_hardware_identity(const std::filesystem::path& root) {
+    constexpr char first_hardware[] = "564d1234-abcd-4321-9876-001122334455";
+    constexpr char second_hardware[] = "564d5678-abcd-4321-9876-001122334455";
+    satsuma::AgentConfig config;
+    config.lab_id = "vm_agent_test";
+    config.agent_version = "0.1.0";
+    config.shared_root = root / L"share";
+    config.local_work_root = root / L"work";
+    satsuma::vm::prepare_agent_hardware_identity(config, first_hardware);
+    expect(
+        config.identity_unbound && config.vm_id == first_hardware &&
+            config.hardware_id == first_hardware,
+        "new hardware did not enter unbound discovery mode");
+
+    satsuma::write_json_atomic(
+        config.shared_root / L"agents" / L"564d1234-abcd-4321-9876-001122334455.binding.json",
+        {
+            {"schema_version", 1},
+            {"lab_id", config.lab_id},
+            {"hardware_id", first_hardware},
+            {"vm_id", "client"},
+        });
+    expect(
+        satsuma::vm::refresh_agent_binding(config) &&
+            !config.identity_unbound && config.vm_id == "client",
+        "Host hardware binding was not applied without rewriting agent.json");
+
+    satsuma::AgentConfig migrated;
+    migrated.lab_id = config.lab_id;
+    migrated.agent_version = config.agent_version;
+    migrated.shared_root = config.shared_root;
+    migrated.local_work_root = config.local_work_root;
+    satsuma::vm::prepare_agent_hardware_identity(migrated, second_hardware);
+    expect(
+        migrated.identity_unbound && migrated.previous_hardware_id == first_hardware &&
+            migrated.previous_vm_id == "client",
+        "hardware change did not preserve the previous identity evidence");
+    satsuma::vm::write_hardware_migration_marker(migrated);
+    expect(
+        std::filesystem::is_regular_file(
+            migrated.shared_root / L"agents" /
+                L"564d1234-abcd-4321-9876-001122334455.migrated.json"),
+        "hardware change did not publish its migration marker");
+
+    satsuma::AgentConfig legacy = migrated;
+    legacy.vm_id = "gateway";
+    legacy.vm_id_configured = true;
+    satsuma::vm::prepare_agent_hardware_identity(
+        legacy,
+        "564d9999-abcd-4321-9876-001122334455");
+    expect(
+        !legacy.identity_unbound && legacy.vm_id == "gateway",
+        "legacy configured vm_id did not retain priority");
+}
+
 }  // namespace
 
 // 运行文件通道和取消测试并清理专用临时目录。
@@ -537,6 +594,7 @@ int main(const int argc, char* argv[]) {
             helper);
         test_invalid_run_is_isolated(root / L"invalid-run-isolation");
         test_agent_rejects_legacy_file_protocol(root / L"legacy-protocol");
+        test_agent_hardware_identity(root / L"hardware-identity");
         std::filesystem::remove_all(root);
         std::cout << "SatsumaVmAgentTests passed\n";
         return 0;

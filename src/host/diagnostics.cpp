@@ -20,6 +20,7 @@
 #include "satsuma/core/path.hpp"
 #include "satsuma/core/task.hpp"
 #include "controller.hpp"
+#include "identity.hpp"
 #include "vmrun_provider.hpp"
 
 namespace satsuma::host {
@@ -322,6 +323,32 @@ nlohmann::json Diagnostics::run_probe(
             if (reported.contains(vm->id)) {
                 continue;
             }
+            const std::filesystem::path presence_path = vm_presence_path(config_, *vm);
+            std::error_code presence_error;
+            if (std::filesystem::is_regular_file(presence_path, presence_error)) {
+                try {
+                    const nlohmann::json presence = load_vm_presence(config_, *vm);
+                    validation_errors.erase(vm->id);
+                    static_cast<void>(presence);
+                } catch (const std::exception& error) {
+                    agents.push_back({
+                        {"vm_id", vm->id},
+                        {"hardware_id", vm->hardware_id.empty()
+                            ? nlohmann::json(nullptr)
+                            : nlohmann::json(vm->hardware_id)},
+                        {"status", "failed"},
+                        {"message", "Agent identity validation failed"},
+                        {"error", error.what()},
+                    });
+                    reported.insert(vm->id);
+                    continue;
+                }
+            } else if (presence_error &&
+                       presence_error != std::errc::no_such_file_or_directory) {
+                validation_errors[vm->id] =
+                    "Cannot inspect Agent presence: " + presence_error.message();
+                continue;
+            }
             const std::filesystem::path result_path = resolve_under_root(
                 run_directory,
                 std::filesystem::path(L"results") /
@@ -343,6 +370,9 @@ nlohmann::json Diagnostics::run_probe(
 
             nlohmann::json agent = {
                 {"vm_id", vm->id},
+                {"hardware_id", vm->hardware_id.empty()
+                    ? nlohmann::json(nullptr)
+                    : nlohmann::json(vm->hardware_id)},
                 {"status", "failed"},
             };
             try {
@@ -382,6 +412,7 @@ nlohmann::json Diagnostics::run_probe(
         }
     }
 
+    const nlohmann::json discovery = discover_agents(config_);
     for (const VmConfig* vm : targets) {
         if (!reported.contains(vm->id)) {
             const auto validation_error = validation_errors.find(vm->id);
@@ -393,11 +424,28 @@ nlohmann::json Diagnostics::run_probe(
                     {"error", validation_error->second},
                 });
             } else {
-                agents.push_back({
+                nlohmann::json unbound_hardware_ids = nlohmann::json::array();
+                if (vm->hardware_id.empty()) {
+                    for (const auto& discovered : discovery.at("agents")) {
+                        if (discovered.at("status") == "unbound") {
+                            unbound_hardware_ids.push_back(discovered.at("hardware_id"));
+                        }
+                    }
+                }
+                nlohmann::json agent = {
                     {"vm_id", vm->id},
-                    {"status", "timeout"},
-                    {"message", "Agent did not return the diagnostic task before the deadline"},
-                });
+                    {"hardware_id", vm->hardware_id.empty()
+                        ? nlohmann::json(nullptr)
+                        : nlohmann::json(vm->hardware_id)},
+                    {"status", unbound_hardware_ids.empty() ? "timeout" : "failed"},
+                    {"message", unbound_hardware_ids.empty()
+                        ? "Agent did not return the diagnostic task before the deadline"
+                        : "Unbound Agents detected; run agent rebind with one discovered hardware_id"},
+                };
+                if (!unbound_hardware_ids.empty()) {
+                    agent["unbound_hardware_ids"] = std::move(unbound_hardware_ids);
+                }
+                agents.push_back(std::move(agent));
             }
         }
     }

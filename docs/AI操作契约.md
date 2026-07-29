@@ -24,7 +24,7 @@ claim、结果或生命周期状态。
 自动化助手必须先做只读发现，不得猜测 VMX、快照名、Guest 共享路径或 VM 身份。确认后生成：
 
 - 一份 `config/lab.local.json`；
-- 每台 VM 一份 `config/<vm-id>.agent.json`；
+- 一份可供所有 VM 使用的 `config/agent.json`；
 - 仍需用户进入 VMware GUI、Guest 或 UAC 完成的操作清单。
 
 生成配置后先执行 Schema 校验和 `SatsumaHost check`。环境未达到 `ready` 前，不发布业务任务，不自行扩大

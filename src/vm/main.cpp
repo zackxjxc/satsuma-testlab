@@ -8,6 +8,7 @@
 #include <nlohmann/json.hpp>
 
 #include "agent.hpp"
+#include "hardware_identity.hpp"
 #include "interactive_process.hpp"
 #include "service.hpp"
 #include "update.hpp"
@@ -133,10 +134,13 @@ int wmain(const int argc, wchar_t* argv[]) {
         satsuma::AgentConfig config = satsuma::load_agent_config(config_path);
         require_current_file_protocol(config);
         if (mode == L"--validate-config") {
-            std::cout << nlohmann::json({
+            nlohmann::json output = {
                 {"status", "valid"},
-                {"vm_id", config.vm_id},
-            }).dump() << '\n';
+            };
+            output["vm_id"] = config.vm_id_configured
+                ? nlohmann::json(config.vm_id)
+                : nlohmann::json(nullptr);
+            std::cout << output.dump() << '\n';
             return 0;
         }
         if (mode == L"--install-service") {
@@ -150,6 +154,7 @@ int wmain(const int argc, wchar_t* argv[]) {
             }).dump() << '\n';
             return 0;
         }
+        satsuma::vm::prepare_agent_hardware_identity(config);
         satsuma::vm::Agent agent(std::move(config));
         if (mode == L"--once") {
             const int executed = agent.run_once();

@@ -3,7 +3,6 @@
   "schema_version": 1,
   "protocol_version": 2,
   "lab_id": "replace_with_lab_id",
-  "vm_id": "replace_with_vm_id",
   "agent_version": "0.1.0",
   "shared_root": "\\\\vmware-host\\Shared Folders\\REQUIRED_SHARE_NAME",
   "local_work_root": "C:\\Satsuma\\work",

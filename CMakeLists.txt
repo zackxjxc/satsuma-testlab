@@ -83,6 +83,7 @@ endif()
 add_library(SatsumaCore STATIC
     src/core/claim.cpp
     src/core/config.cpp
+    src/core/hardware_identity.cpp
     src/core/id.cpp
     src/core/json_io.cpp
     src/core/lifecycle.cpp
@@ -112,6 +113,7 @@ target_link_libraries(SatsumaCore PUBLIC nlohmann_json::nlohmann_json PRIVATE bc
 add_library(SatsumaHostLib STATIC
     src/host/controller.cpp
     src/host/diagnostics.cpp
+    src/host/identity.cpp
     src/host/orchestrator.cpp
     src/vmware/vmrun_provider.cpp
 )
@@ -125,6 +127,7 @@ add_library(SatsumaVmLib STATIC
     src/vm/agent.cpp
     src/vm/claim_renewal.cpp
     src/vm/claim_store.cpp
+    src/vm/hardware_identity.cpp
     src/vm/interactive_process.cpp
     src/vm/process_runner.cpp
     src/vm/service.cpp

@@ -21,6 +21,7 @@
 #include "satsuma/core/json_io.hpp"
 #include "satsuma/core/path.hpp"
 #include "claim_store.hpp"
+#include "hardware_identity.hpp"
 #include "satsuma/core/sha256.hpp"
 #include "interactive_process.hpp"
 #include "update.hpp"
@@ -198,7 +199,7 @@ Agent::Agent(
 }
 
 int Agent::run_once(const std::stop_token stop_token) {
-    if (stop_token.stop_requested()) {
+    if (stop_token.stop_requested() || config_.identity_unbound) {
         return 0;
     }
     const std::filesystem::path runs_root = config_.shared_root / L"runs";
@@ -348,11 +349,15 @@ void Agent::run_watch(const std::stop_token stop_token) {
     while (!stop_token.stop_requested()) {
         bool file_channel_available = false;
         try {
+            static_cast<void>(refresh_agent_binding(config_));
             write_presence();
-            if (process_pending_agent_update(config_, stop_token)) {
+            if (!config_.identity_unbound &&
+                process_pending_agent_update(config_, stop_token)) {
                 break;
             }
-            static_cast<void>(run_once(stop_token));
+            if (!config_.identity_unbound) {
+                static_cast<void>(run_once(stop_token));
+            }
             file_channel_available = true;
         } catch (const std::exception& error) {
             if (stop_token.stop_requested()) {
@@ -375,17 +380,37 @@ void Agent::write_presence() const {
         {"protocol_version", config_.protocol_version},
         {"lab_id", config_.lab_id},
         {"vm_id", config_.vm_id},
+        {"hardware_id", config_.hardware_id},
+        {"identity_source", "smbios_system_uuid"},
         {"agent_version", config_.agent_version},
         {"update_id", config_.last_update_id},
         {"session_id", session_id_},
         {"boot_id", boot_id_},
         {"process_id", GetCurrentProcessId()},
-        {"status", "idle"},
+        {"status", config_.identity_unbound ? "unbound" : "idle"},
         {"updated_at", utc_timestamp()},
     };
-    write_json_atomic(
-        config_.shared_root / L"agents" / path_from_utf8(config_.vm_id + ".json"),
-        presence);
+    nlohmann::json published = presence;
+    if (!config_.previous_hardware_id.empty()) {
+        published["previous_hardware_id"] = config_.previous_hardware_id;
+    }
+    if (!config_.previous_vm_id.empty()) {
+        published["previous_vm_id"] = config_.previous_vm_id;
+    }
+    write_json_atomic(hardware_presence_path(config_), published);
+    if (!config_.hardware_id.empty()) {
+        write_json_atomic(
+            config_.shared_root / L"agents" / L"sessions" /
+                path_from_utf8(config_.hardware_id) /
+                path_from_utf8(session_id_ + ".json"),
+            published);
+    }
+    if (config_.vm_id_configured && config_.vm_id != config_.hardware_id) {
+        write_json_atomic(
+            config_.shared_root / L"agents" / path_from_utf8(config_.vm_id + ".json"),
+            published);
+    }
+    write_hardware_migration_marker(config_);
 }
 
 void Agent::deploy_artifacts(

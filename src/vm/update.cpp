@@ -17,6 +17,7 @@
 #include <nlohmann/json.hpp>
 
 #include "service.hpp"
+#include "hardware_identity.hpp"
 #include "satsuma/core/errors.hpp"
 #include "satsuma/core/id.hpp"
 #include "satsuma/core/json_io.hpp"
@@ -217,6 +218,8 @@ void remove_update_file_best_effort(const std::filesystem::path& path) noexcept 
                presence.value("protocol_version", 0) == config.protocol_version &&
                presence.value("lab_id", std::string{}) == config.lab_id &&
                presence.value("vm_id", std::string{}) == config.vm_id &&
+               (config.hardware_id.empty() ||
+                presence.value("hardware_id", std::string{}) == config.hardware_id) &&
                presence.value("agent_version", std::string{}) == version &&
                presence.value("update_id", std::string{}) == update_id &&
                presence.value("process_id", std::uint32_t{}) == process_id &&
@@ -235,8 +238,7 @@ void wait_for_presence(
     const std::uint32_t process_id,
     const std::string& version,
     const std::string& update_id) {
-    const std::filesystem::path presence_path =
-        config.shared_root / L"agents" / path_from_utf8(config.vm_id + ".json");
+    const std::filesystem::path presence_path = hardware_presence_path(config);
     const auto deadline = std::chrono::steady_clock::now() + kPresenceTimeout;
     while (std::chrono::steady_clock::now() < deadline) {
         if (presence_matches(
@@ -256,7 +258,7 @@ void wait_for_presence(
 [[nodiscard]] AgentConfig validate_update_source(
     const UpdatePaths& paths,
     const AgentUpdateManifest& manifest) {
-    const AgentConfig config = load_agent_config(paths.config);
+    const AgentConfig config = load_runtime_agent_config(paths.config);
     if (config.lab_id != manifest.lab_id || config.vm_id != manifest.vm_id) {
         throw Error("Agent update config does not match the manifest source identity");
     }
@@ -303,12 +305,11 @@ void remove_rebind_presence_best_effort(
         return;
     }
     try {
-        const AgentConfig config = load_agent_config(paths.config);
+        const AgentConfig config = load_runtime_agent_config(paths.config);
         if (config.vm_id != *manifest.next_vm_id) {
             return;
         }
-        const std::filesystem::path presence_path =
-            config.shared_root / L"agents" / path_from_utf8(config.vm_id + ".json");
+        const std::filesystem::path presence_path = hardware_presence_path(config);
         if (presence_matches(
                 presence_path,
                 config,
@@ -316,6 +317,18 @@ void remove_rebind_presence_best_effort(
                 manifest.version,
                 manifest.update_id)) {
             remove_update_file_best_effort(presence_path);
+        }
+        const std::filesystem::path legacy_presence_path =
+            config.shared_root / L"agents" / path_from_utf8(config.vm_id + ".json");
+        AgentConfig legacy_config = config;
+        legacy_config.hardware_id.clear();
+        if (legacy_presence_path != presence_path && presence_matches(
+                legacy_presence_path,
+                legacy_config,
+                process_id,
+                manifest.version,
+                manifest.update_id)) {
+            remove_update_file_best_effort(legacy_presence_path);
         }
     } catch (...) {
     }
@@ -581,7 +594,7 @@ void cleanup_committed_update(const UpdatePaths& paths) {
             config_updated = false;
         }
 
-        const AgentConfig old_config = load_agent_config(paths.config);
+        const AgentConfig old_config = load_runtime_agent_config(paths.config);
         const std::uint32_t old_process_id = operations.start_service();
         operations.wait_presence(
             old_process_id,
@@ -793,7 +806,7 @@ int apply_agent_update_helper(
     const std::filesystem::path& config_path,
     const std::filesystem::path& manifest_path) {
     try {
-        const AgentConfig config = load_agent_config(config_path);
+        const AgentConfig config = load_runtime_agent_config(config_path);
         const AgentUpdateManifest manifest =
             load_agent_update_manifest(manifest_path);
         if (manifest.lab_id != config.lab_id || manifest.vm_id != config.vm_id) {
@@ -832,7 +845,7 @@ int apply_agent_update_helper(
                 const std::uint32_t process_id,
                 const std::string& version,
                 const std::string& update_id) {
-                const AgentConfig current_config = load_agent_config(paths.config);
+                const AgentConfig current_config = load_runtime_agent_config(paths.config);
                 wait_for_presence(
                     current_config,
                     process_id,
@@ -850,7 +863,7 @@ int apply_agent_update_helper(
         try {
             const AgentUpdateManifest manifest =
                 load_agent_update_manifest(manifest_path);
-            const AgentConfig config = load_agent_config(config_path);
+            const AgentConfig config = load_runtime_agent_config(config_path);
             const std::string effective_vm_id =
                 manifest.next_vm_id.value_or(manifest.vm_id);
             if (config.lab_id != manifest.lab_id ||

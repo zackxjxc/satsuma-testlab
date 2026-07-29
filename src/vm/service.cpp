@@ -15,6 +15,7 @@
 #include <windows.h>
 
 #include "agent.hpp"
+#include "hardware_identity.hpp"
 #include "satsuma/core/config.hpp"
 #include "satsuma/core/errors.hpp"
 #include "satsuma/core/path.hpp"
@@ -697,7 +698,7 @@ struct ServiceRunResult {
             ensure_win32(
                 SetCurrentDirectoryW(executable.parent_path().c_str()),
                 "SetCurrentDirectoryW");
-            AgentConfig config = load_agent_config(context.config_path);
+            AgentConfig config = load_runtime_agent_config(context.config_path);
             Agent agent(std::move(config));
             static_cast<void>(report_service_status(context, SERVICE_RUNNING));
             agent.run_watch(context.stop_source.get_token());

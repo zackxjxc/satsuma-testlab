@@ -15,6 +15,7 @@
 
 #include "controller.hpp"
 #include "diagnostics.hpp"
+#include "identity.hpp"
 #include "orchestrator.hpp"
 #include "satsuma/core/config.hpp"
 #include "satsuma/core/errors.hpp"
@@ -69,7 +70,7 @@ void validate_options(
 [[nodiscard]] bool is_supported_command(
     const std::wstring_view command,
     const std::wstring_view subcommand) {
-    if (command == L"check" || command == L"run" ||
+    if (command == L"check" || command == L"discover" || command == L"run" ||
         command == L"orchestrate" || command == L"report") {
         return subcommand.empty();
     }
@@ -95,6 +96,8 @@ void validate_command_options(
     const std::map<std::wstring, std::wstring>& options) {
     if (command == L"check") {
         validate_options(options, {L"config", L"vm", L"timeout-seconds"});
+    } else if (command == L"discover") {
+        validate_options(options, {L"config"});
     } else if (command == L"run") {
         validate_options(options, {L"config", L"plan"});
     } else if (command == L"orchestrate") {
@@ -118,7 +121,8 @@ void validate_command_options(
     } else if (command == L"agent" && subcommand == L"rebind") {
         validate_options(
             options,
-            {L"config", L"vm", L"next-vm", L"binary", L"version", L"timeout-seconds"});
+            {L"config", L"vm", L"hardware-id", L"next-vm", L"binary", L"version",
+             L"timeout-seconds"});
     } else if (command == L"runs" && subcommand == L"list") {
         validate_options(options, {L"config"});
     } else if (command == L"runs" && subcommand == L"cancel") {
@@ -253,6 +257,7 @@ void print_usage() {
         << "  SatsumaHost --help\n"
         << "  SatsumaHost --version\n"
         << "  SatsumaHost check --config lab.local.json [--vm <vm-id>] [--timeout-seconds <1-300>]\n"
+        << "  SatsumaHost discover --config lab.local.json\n"
         << "  SatsumaHost vm start --config lab.local.json --id <vm-id>\n"
         << "  SatsumaHost vm stop --config lab.local.json --id <vm-id> [--mode soft|hard]\n"
         << "  SatsumaHost vm restore --config lab.local.json --id <vm-id> --snapshot <name>\n"
@@ -264,6 +269,8 @@ void print_usage() {
         << "  SatsumaHost agent rebind --vm <current-id> --next-vm <new-id> "
            "--binary SatsumaVM.exe --version <version> "
            "[--timeout-seconds <1-3600>] --config lab.local.json\n"
+        << "  SatsumaHost agent rebind --vm <vm-id> --hardware-id <uuid> "
+           "--config lab.local.json\n"
         << "  SatsumaHost run --config lab.local.json --plan task.json\n"
         << "  SatsumaHost orchestrate --config lab.local.json --plan task.json "
            "[--timeout-seconds <1-86400>]\n"
@@ -317,6 +324,11 @@ int wmain(const int argc, wchar_t* argv[]) {
         const std::filesystem::path config_path = require_option(options, L"config");
         satsuma::LabConfig config = satsuma::load_lab_config(config_path);
 
+        if (command == L"discover") {
+            std::cout << satsuma::host::discover_agents(config).dump(2) << '\n';
+            return 0;
+        }
+
         if (command == L"runs") {
             satsuma::host::Controller controller(std::move(config));
             if (subcommand == L"list") {
@@ -360,6 +372,20 @@ int wmain(const int argc, wchar_t* argv[]) {
             }
             const std::string vm_id = satsuma::path_to_utf8(
                 require_option(options, L"vm"));
+            const auto hardware_option = options.find(L"hardware-id");
+            if (subcommand == L"rebind" && hardware_option != options.end()) {
+                if (options.contains(L"next-vm") || options.contains(L"binary") ||
+                    options.contains(L"version") || options.contains(L"timeout-seconds")) {
+                    throw satsuma::Error(
+                        "Hardware rebind cannot be combined with update rebind options");
+                }
+                std::cout << satsuma::host::bind_agent_hardware(
+                    config_path,
+                    config,
+                    vm_id,
+                    satsuma::path_to_utf8(hardware_option->second)).dump(2) << '\n';
+                return 0;
+            }
             const std::filesystem::path binary = require_option(options, L"binary");
             const std::string version = satsuma::path_to_utf8(
                 require_option(options, L"version"));

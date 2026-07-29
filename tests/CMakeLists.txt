@@ -5,6 +5,7 @@ add_library(
     ../src/vm/agent.cpp
     ../src/vm/claim_renewal.cpp
     ../src/vm/claim_store.cpp
+    ../src/vm/hardware_identity.cpp
     ../src/vm/interactive_process.cpp
     ../src/vm/process_runner.cpp
     ../src/vm/service.cpp

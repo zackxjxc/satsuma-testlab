@@ -5,7 +5,7 @@
   "type": "object",
   "additionalProperties": false,
   "required": [
-    "schema_version", "protocol_version", "lab_id", "vm_id", "agent_version",
+    "schema_version", "protocol_version", "lab_id", "vm_id", "hardware_id", "agent_version",
     "update_id", "session_id", "boot_id", "process_id", "status", "updated_at"
   ],
   "properties": {
@@ -13,12 +13,22 @@
     "protocol_version": {"const": 2},
     "lab_id": {"type": "string", "pattern": "^[A-Za-z0-9_-]{1,128}$"},
     "vm_id": {"type": "string", "pattern": "^[A-Za-z0-9_-]{1,128}$"},
+    "hardware_id": {"$ref": "#/$defs/hardware_id"},
+    "identity_source": {"const": "smbios_system_uuid"},
+    "previous_hardware_id": {"$ref": "#/$defs/hardware_id"},
+    "previous_vm_id": {"type": "string", "pattern": "^[A-Za-z0-9_-]{1,128}$"},
     "agent_version": {"type": "string", "minLength": 1, "maxLength": 64},
     "update_id": {"type": "string", "maxLength": 128},
     "session_id": {"type": "string", "minLength": 1},
     "boot_id": {"type": "string", "minLength": 1},
     "process_id": {"type": "integer", "minimum": 0},
-    "status": {"enum": ["idle", "running"]},
+    "status": {"enum": ["idle", "running", "unbound"]},
     "updated_at": {"type": "string", "format": "date-time"}
+  },
+  "$defs": {
+    "hardware_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    }
   }
 }

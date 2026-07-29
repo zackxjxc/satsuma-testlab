@@ -43,6 +43,7 @@
         "required": ["id", "vmx", "agent_version", "snapshots"],
         "properties": {
           "id": {"$ref": "#/$defs/identifier"},
+          "hardware_id": {"$ref": "#/$defs/hardware_id"},
           "vmx": {"type": "string", "minLength": 1},
           "agent_version": {"type": "string", "minLength": 1},
           "snapshots": {
@@ -63,6 +64,10 @@
     "identifier": {
       "type": "string",
       "pattern": "^[A-Za-z0-9_-]{1,128}$"
+    },
+    "hardware_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
     }
   }
 }

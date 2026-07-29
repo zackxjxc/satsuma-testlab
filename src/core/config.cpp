@@ -9,6 +9,7 @@
 #include <nlohmann/json.hpp>
 
 #include "satsuma/core/errors.hpp"
+#include "satsuma/core/hardware_identity.hpp"
 #include "satsuma/core/id.hpp"
 #include "satsuma/core/json_io.hpp"
 #include "satsuma/core/path.hpp"
@@ -120,14 +121,22 @@ LabConfig load_lab_config(const std::filesystem::path& path) {
     }
 
     std::set<std::string> vm_ids;
+    std::set<std::string> hardware_ids;
     for (const auto& vm_value : value.at("vms")) {
         reject_unknown_fields(
             vm_value,
-            {"id", "vmx", "agent_version", "snapshots"},
+            {"id", "hardware_id", "vmx", "agent_version", "snapshots"},
             "VM configuration");
         VmConfig vm;
         vm.id = required_string(vm_value, "id");
         validate_identifier(vm.id, "VM id");
+        if (vm_value.contains("hardware_id")) {
+            if (!vm_value.at("hardware_id").is_string()) {
+                throw Error("Invalid string field: hardware_id");
+            }
+            vm.hardware_id = normalize_hardware_id(
+                vm_value.at("hardware_id").get<std::string>());
+        }
         vm.vmx = path_from_utf8(required_string(vm_value, "vmx"));
         require_absolute_path(vm.vmx, "vms[].vmx for " + vm.id);
         vm.agent_version = required_string(vm_value, "agent_version");
@@ -145,6 +154,9 @@ LabConfig load_lab_config(const std::filesystem::path& path) {
         validate_snapshot_config(vm.snapshots);
         if (!vm_ids.insert(vm.id).second) {
             throw Error("Duplicate VM id in lab.json: " + vm.id);
+        }
+        if (!vm.hardware_id.empty() && !hardware_ids.insert(vm.hardware_id).second) {
+            throw Error("Duplicate hardware_id in lab.json: " + vm.hardware_id);
         }
         config.vms.push_back(std::move(vm));
     }
@@ -165,11 +177,16 @@ AgentConfig load_agent_config(const std::filesystem::path& path) {
     config.schema_version = 1;
     config.protocol_version = value.value("protocol_version", 0);
     config.lab_id = required_string(value, "lab_id");
-    config.vm_id = required_string(value, "vm_id");
+    config.vm_id_configured = value.contains("vm_id");
+    if (config.vm_id_configured) {
+        config.vm_id = required_string(value, "vm_id");
+    }
     config.agent_version = required_string(value, "agent_version");
     config.last_update_id = value.value("last_update_id", std::string{});
     validate_identifier(config.lab_id, "lab_id");
-    validate_identifier(config.vm_id, "vm_id");
+    if (config.vm_id_configured) {
+        validate_identifier(config.vm_id, "vm_id");
+    }
     config.shared_root = path_from_utf8(required_string(value, "shared_root"));
     config.local_work_root = path_from_utf8(required_string(value, "local_work_root"));
     require_absolute_path(config.shared_root, "shared_root");

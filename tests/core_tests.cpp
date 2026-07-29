@@ -15,6 +15,7 @@
 #include "satsuma/core/config.hpp"
 #include "satsuma/core/claim.hpp"
 #include "satsuma/core/errors.hpp"
+#include "satsuma/core/hardware_identity.hpp"
 #include "satsuma/core/id.hpp"
 #include "satsuma/core/json_io.hpp"
 #include "satsuma/core/lifecycle.hpp"
@@ -246,6 +247,38 @@ void test_absolute_configuration_paths(const std::filesystem::path& root) {
     invalid_agent = agent;
     invalid_agent["host"] = "127.0.0.1:37100";
     expect_agent_rejected(invalid_agent, "removed Agent network configuration was accepted");
+}
+
+// 验证硬件 UUID 规范化以及新旧身份配置兼容读取。
+void test_hardware_identity_configuration(const std::filesystem::path& root) {
+    expect(
+        satsuma::normalize_hardware_id("564D1234-ABCD-4321-9876-001122334455") ==
+            "564d1234-abcd-4321-9876-001122334455",
+        "hardware UUID was not normalized");
+    expect_error(
+        [] { static_cast<void>(satsuma::normalize_hardware_id("not-a-uuid")); },
+        "invalid hardware UUID was accepted");
+
+    const std::filesystem::path agent_path = root / L"hardware-agent.json";
+    nlohmann::json agent = {
+        {"schema_version", 1},
+        {"protocol_version", 2},
+        {"lab_id", "hardware_test"},
+        {"agent_version", "0.1.0"},
+        {"shared_root", satsuma::path_to_utf8(root / L"share")},
+        {"local_work_root", satsuma::path_to_utf8(root / L"work")},
+    };
+    satsuma::write_json_atomic(agent_path, agent);
+    satsuma::AgentConfig config = satsuma::load_agent_config(agent_path);
+    expect(
+        !config.vm_id_configured && config.vm_id.empty(),
+        "Agent config without vm_id was not accepted as unbound");
+    agent["vm_id"] = "client";
+    satsuma::write_json_atomic(agent_path, agent);
+    config = satsuma::load_agent_config(agent_path);
+    expect(
+        config.vm_id_configured && config.vm_id == "client",
+        "legacy Agent vm_id was not preserved");
 }
 
 // 验证 AI 快照命名、重名检查和数量配额。
@@ -875,6 +908,7 @@ int main() {
         test_file_primitives(root);
         test_snapshot_configuration(root);
         test_absolute_configuration_paths(root);
+        test_hardware_identity_configuration(root);
         test_ai_snapshot_plan();
         test_ai_snapshot_deletion();
         test_protocol_round_trip();

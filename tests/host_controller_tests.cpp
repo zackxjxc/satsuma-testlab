@@ -5,6 +5,7 @@
 #include <string>
 
 #include "controller.hpp"
+#include "identity.hpp"
 #include "satsuma/core/config.hpp"
 #include "satsuma/core/errors.hpp"
 #include "satsuma/core/id.hpp"
@@ -227,6 +228,118 @@ void test_run_management(const std::filesystem::path& root) {
         "run pruning removed a pending run or retained a completed run");
 }
 
+// 验证硬件发现、Host 配置写回和共享绑定发布。
+void test_agent_hardware_discovery_and_binding(const std::filesystem::path& root) {
+    constexpr char hardware_id[] = "564d1234-abcd-4321-9876-001122334455";
+    const std::filesystem::path shared_root = root / L"share";
+    const std::filesystem::path config_path = root / L"lab.json";
+    satsuma::write_json_atomic(config_path, {
+        {"schema_version", 1},
+        {"lab_id", "host_identity_test"},
+        {"provider", {
+            {"type", "vmware_workstation"},
+            {"vmrun", satsuma::path_to_utf8(root / L"vmrun.exe")},
+        }},
+        {"host", {{"archive_root", satsuma::path_to_utf8(root / L"archive")}}},
+        {"shared_folder", {{"host_root", satsuma::path_to_utf8(shared_root)}}},
+        {"vms", nlohmann::json::array({{
+            {"id", "client"},
+            {"vmx", satsuma::path_to_utf8(root / L"client.vmx")},
+            {"agent_version", "0.1.0"},
+            {"snapshots", {
+                {"base", "clean"},
+                {"ai_prefix", "satsuma-ai-"},
+                {"max_ai_snapshots", 4},
+            }},
+        }})},
+    });
+    satsuma::write_json_atomic(
+        shared_root / L"agents" / L"564d1234-abcd-4321-9876-001122334455.json",
+        {
+            {"schema_version", 1},
+            {"protocol_version", 2},
+            {"lab_id", "host_identity_test"},
+            {"vm_id", hardware_id},
+            {"hardware_id", hardware_id},
+            {"agent_version", "0.1.0"},
+            {"status", "unbound"},
+            {"updated_at", "2026-07-29T00:00:00.000Z"},
+        });
+
+    const satsuma::LabConfig config = satsuma::load_lab_config(config_path);
+    const nlohmann::json discovered = satsuma::host::discover_agents(config);
+    expect(
+        discovered.at("count") == 1 &&
+            discovered.at("agents").at(0).at("hardware_id") == hardware_id &&
+            discovered.at("agents").at(0).at("configured_vm_id").is_null(),
+        "Host discovery did not expose the unbound hardware presence");
+
+    satsuma::write_json_atomic(
+        shared_root / L"agents" / L"gateway.json",
+        {
+            {"schema_version", 1},
+            {"protocol_version", 2},
+            {"lab_id", "host_identity_test"},
+            {"vm_id", "gateway"},
+            {"hardware_id", hardware_id},
+            {"status", "idle"},
+        });
+    const nlohmann::json conflicted = satsuma::host::discover_agents(config);
+    expect(
+        conflicted.at("status") == "identity_conflict" &&
+            conflicted.at("collisions").size() == 1,
+        "Host discovery did not reject a duplicated SMBIOS UUID");
+    bool conflict_rejected = false;
+    try {
+        static_cast<void>(satsuma::host::bind_agent_hardware(
+            config_path,
+            config,
+            "client",
+            hardware_id));
+    } catch (const satsuma::Error&) {
+        conflict_rejected = true;
+    }
+    expect(conflict_rejected, "Host binding accepted a duplicated SMBIOS UUID");
+    std::filesystem::remove(shared_root / L"agents" / L"gateway.json");
+
+    const std::filesystem::path sessions =
+        shared_root / L"agents" / L"sessions" /
+            L"564d1234-abcd-4321-9876-001122334455";
+    for (const std::string& session_id : {"session-one", "session-two"}) {
+        satsuma::write_json_atomic(
+            sessions / satsuma::path_from_utf8(session_id + ".json"),
+            {
+                {"schema_version", 1},
+                {"protocol_version", 2},
+                {"lab_id", "host_identity_test"},
+                {"vm_id", hardware_id},
+                {"hardware_id", hardware_id},
+                {"session_id", session_id},
+                {"status", "unbound"},
+            });
+    }
+    const nlohmann::json session_conflict = satsuma::host::discover_agents(config);
+    expect(
+        session_conflict.at("status") == "identity_conflict" &&
+            session_conflict.at("collisions").at(0).at("active_session_ids").size() == 2,
+        "Host discovery did not detect duplicate unbound Agent sessions");
+    std::filesystem::remove_all(sessions);
+
+    const nlohmann::json bound = satsuma::host::bind_agent_hardware(
+        config_path,
+        config,
+        "client",
+        hardware_id);
+    expect(bound.at("status") == "bound", "Host hardware binding did not succeed");
+    const satsuma::LabConfig updated = satsuma::load_lab_config(config_path);
+    expect(
+        updated.vms.at(0).hardware_id == hardware_id &&
+            std::filesystem::is_regular_file(
+                shared_root / L"agents" /
+                    L"564d1234-abcd-4321-9876-001122334455.binding.json"),
+        "Host hardware binding did not persist both sides of the mapping");
+}
+
 }  // namespace
 
 // 运行 Host Controller 测试并清理专用临时目录。
@@ -239,6 +352,7 @@ int main() {
         test_report_exposes_manual_intervention(root / L"manual");
         test_report_rejects_mismatched_identity(root / L"identity");
         test_run_management(root / L"run-management");
+        test_agent_hardware_discovery_and_binding(root / L"hardware-binding");
         std::filesystem::remove_all(root);
         std::cout << "SatsumaHostControllerTests passed\n";
         return 0;

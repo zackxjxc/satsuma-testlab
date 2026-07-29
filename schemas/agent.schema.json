@@ -8,7 +8,6 @@
     "schema_version",
     "protocol_version",
     "lab_id",
-    "vm_id",
     "agent_version",
     "shared_root",
     "local_work_root"
