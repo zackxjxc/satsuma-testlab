@@ -294,6 +294,44 @@ nlohmann::json Diagnostics::run_probe(
         return report;
     }
 
+    nlohmann::json inventories = nlohmann::json::array();
+    for (const VmConfig* vm : targets) {
+        try {
+            nlohmann::json inventory;
+            bool refreshed = false;
+            try {
+                inventory = load_vm_inventory(config_, *vm);
+            } catch (...) {
+                inventory = refresh_vm_inventory(config_, *vm, timeout);
+                refreshed = true;
+            }
+            inventories.push_back({
+                {"vm_id", vm->id},
+                {"status", "passed"},
+                {"observed_at", inventory.at("observed_at")},
+                {"refreshed", refreshed},
+            });
+        } catch (const std::exception& error) {
+            inventories.push_back({
+                {"vm_id", vm->id},
+                {"status", "failed"},
+                {"error", error.what()},
+            });
+        }
+    }
+    report["inventories"] = inventories;
+    if (std::any_of(inventories.begin(), inventories.end(), [](const nlohmann::json& inventory) {
+            return inventory.at("status") != "passed";
+        })) {
+        report["mode"] = "full";
+        report["environment_status"] = environment_status;
+        report["status"] = "failed";
+        report["run_id"] = nullptr;
+        report["finished_at"] = utc_timestamp();
+        report["agents"] = nlohmann::json::array();
+        return report;
+    }
+
     TaskPlan plan;
     plan.name = "satsuma-automation-diagnostic";
     plan.run_id = make_id("check");

@@ -2,6 +2,7 @@
 #pragma once
 
 #include <filesystem>
+#include <chrono>
 #include <string>
 
 #include <nlohmann/json.hpp>
@@ -29,5 +30,16 @@ namespace satsuma::host {
 [[nodiscard]] nlohmann::json load_vm_presence(
     const LabConfig& config,
     const VmConfig& vm);
+
+// 读取并验证指定 VM 的环境清单及 presence 摘要引用。
+[[nodiscard]] nlohmann::json load_vm_inventory(
+    const LabConfig& config,
+    const VmConfig& vm);
+
+// 发布显式刷新请求并有限等待对应的新清单。
+[[nodiscard]] nlohmann::json refresh_vm_inventory(
+    const LabConfig& config,
+    const VmConfig& vm,
+    std::chrono::seconds timeout);
 
 }  // namespace satsuma::host

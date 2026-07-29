@@ -10,7 +10,7 @@
   ],
   "properties": {
     "schema_version": {"const": 1},
-    "protocol_version": {"enum": [1, 2]},
+    "protocol_version": {"enum": [1, 2, 3]},
     "lab_id": {"$ref": "#/$defs/identifier"},
     "run_id": {"$ref": "#/$defs/identifier"},
     "request_id": {"$ref": "#/$defs/identifier"},
@@ -44,15 +44,22 @@
         }
       },
       "else": {
-        "properties": {
-          "steps": {
-            "type": "array",
-            "items": {
-              "oneOf": [
-                {"$ref": "#/$defs/echo_step"},
-                {"$ref": "#/$defs/execute_step_v2"}
-              ]
-            }
+        "if": {"properties": {"protocol_version": {"const": 2}}},
+        "then": {
+          "properties": {
+            "steps": {"type": "array", "items": {"oneOf": [
+              {"$ref": "#/$defs/echo_step"},
+              {"$ref": "#/$defs/execute_step_v2"}
+            ]}}
+          }
+        },
+        "else": {
+          "properties": {
+            "steps": {"type": "array", "items": {"oneOf": [
+              {"$ref": "#/$defs/echo_step"},
+              {"$ref": "#/$defs/execute_step_v2"},
+              {"$ref": "#/$defs/script_step_v3"}
+            ]}}
           }
         }
       }
@@ -134,6 +141,31 @@
         }
       ],
       "unevaluatedProperties": false
+    },
+    "script_step_v3": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id", "vm", "type", "timeout_seconds", "retry_safe", "engine", "script",
+        "arguments", "run_as", "collect_files"
+      ],
+      "properties": {
+        "id": {"$ref": "#/$defs/identifier"},
+        "vm": {"$ref": "#/$defs/identifier"},
+        "type": {"const": "script"},
+        "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 86400},
+        "retry_safe": {"type": "boolean"},
+        "engine": {"enum": ["cmd", "windows_powershell", "pwsh"]},
+        "script": {"type": "string", "pattern": "^artifacts[/\\\\].+"},
+        "arguments": {"type": "array", "maxItems": 256, "items": {"type": "string"}},
+        "run_as": {"enum": ["system", "interactive_user"]},
+        "collect_files": {
+          "type": "array",
+          "maxItems": 128,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        }
+      }
     }
   }
 }

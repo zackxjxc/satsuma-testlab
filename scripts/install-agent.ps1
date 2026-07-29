@@ -1,7 +1,7 @@
 ﻿# Satsuma VM Agent 安装与启动脚本
 param(
     [string]$SharedRoot = '\\vmware-host\Shared Folders\vm-share',
-    [string]$InstallRoot = 'C:\Satsuma',
+    [string]$InstallRoot = '',
     [string]$AgentFileName = 'SatsumaVM.exe',
     [string]$ConfigFileName = 'agent.json'
 )
@@ -45,6 +45,75 @@ function Test-Administrator {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
     $principal = New-Object Security.Principal.WindowsPrincipal($identity)
     return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+# 验证候选目录位于可写固定盘且保留至少 2 GiB 空间
+function Test-StorageRootCandidate {
+    param([string]$Path)
+
+    try {
+        $fullPath = [IO.Path]::GetFullPath($Path)
+        $driveRoot = [IO.Path]::GetPathRoot($fullPath)
+        if ([string]::IsNullOrWhiteSpace($driveRoot)) {
+            return $false
+        }
+        $drive = New-Object IO.DriveInfo($driveRoot)
+        if (-not $drive.IsReady -or $drive.DriveType -ne [IO.DriveType]::Fixed) {
+            return $false
+        }
+        if ($drive.AvailableFreeSpace -lt 2GB) {
+            return $false
+        }
+        New-Item -ItemType Directory -Force -Path $fullPath | Out-Null
+        $probe = Join-Path $fullPath ('.write-probe-' + [Guid]::NewGuid().ToString('N'))
+        [IO.File]::WriteAllText($probe, 'probe', (New-Object Text.UTF8Encoding($false)))
+        Remove-Item -Force -LiteralPath $probe
+        return $true
+    } catch {
+        return $false
+    }
+}
+
+# 自动选择统一本地存储根，显式参数仅用于旧目录迁移
+function Resolve-SatsumaStorageRoot {
+    param([string]$RequestedRoot)
+
+    if (-not [string]::IsNullOrWhiteSpace($RequestedRoot)) {
+        if (-not (Test-StorageRootCandidate $RequestedRoot)) {
+            throw 'InstallRoot 必须位于可写且空间充足的本机固定磁盘。'
+        }
+        return [IO.Path]::GetFullPath($RequestedRoot)
+    }
+    $preferred = 'D:\SatsumaTestLab'
+    if (Test-StorageRootCandidate $preferred) {
+        return $preferred
+    }
+    $fallback = Join-Path $env:ProgramData 'SatsumaTestLab'
+    if (-not (Test-StorageRootCandidate $fallback)) {
+        throw 'D 盘和 ProgramData 回退目录均不满足 Satsuma 本地存储要求。'
+    }
+    return [IO.Path]::GetFullPath($fallback)
+}
+
+# 保护 Agent 和工作根，普通 Users 不获得全局写权限
+function Set-SatsumaProtectedAcl {
+    param([string]$Path)
+
+    $acl = New-Object Security.AccessControl.DirectorySecurity
+    $inheritance = [Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit'
+    $propagation = [Security.AccessControl.PropagationFlags]::None
+    $allow = [Security.AccessControl.AccessControlType]::Allow
+    foreach ($identity in @('SYSTEM', 'BUILTIN\Administrators')) {
+        $rule = New-Object Security.AccessControl.FileSystemAccessRule(
+            $identity,
+            [Security.AccessControl.FileSystemRights]::FullControl,
+            $inheritance,
+            $propagation,
+            $allow)
+        [void]$acl.AddAccessRule($rule)
+    }
+    $acl.SetAccessRuleProtection($true, $false)
+    Set-Acl -LiteralPath $Path -AclObject $acl
 }
 
 # 等待固定 Service 进入目标状态
@@ -154,26 +223,18 @@ foreach ($sourceFile in @($sourceAgent, $sourceConfig)) {
     }
 }
 
-# 固定本机安装布局
-$InstallRoot = [IO.Path]::GetFullPath($InstallRoot)
-$installDriveRoot = [IO.Path]::GetPathRoot($InstallRoot)
-if ([string]::IsNullOrWhiteSpace($installDriveRoot)) {
-    throw 'InstallRoot 必须位于本机固定磁盘。'
-}
-$installDrive = New-Object IO.DriveInfo($installDriveRoot)
-if ($installDrive.DriveType -ne [IO.DriveType]::Fixed) {
-    throw 'InstallRoot 必须位于本机固定磁盘，不能直接使用 VMware 共享目录。'
-}
-
-$binRoot = Join-Path $InstallRoot 'bin'
+# 统一本机安装布局
+$InstallRoot = Resolve-SatsumaStorageRoot $InstallRoot
+$agentRoot = Join-Path $InstallRoot 'agent'
+$binRoot = Join-Path $agentRoot 'bin'
 $workRoot = Join-Path $InstallRoot 'work'
 $targetAgent = Join-Path $binRoot 'SatsumaVM.exe'
 $newAgent = Join-Path $binRoot 'SatsumaVM.new.exe'
 $backupAgent = Join-Path $binRoot 'SatsumaVM.bak.exe'
-$targetConfig = Join-Path $InstallRoot 'agent.json'
-$newConfig = Join-Path $InstallRoot 'agent.json.new'
-$backupConfig = Join-Path $InstallRoot 'agent.json.bak'
-$targetScript = Join-Path $InstallRoot 'install-agent.ps1'
+$targetConfig = Join-Path $agentRoot 'agent.json'
+$newConfig = Join-Path $agentRoot 'agent.json.new'
+$backupConfig = Join-Path $agentRoot 'agent.json.bak'
+$targetScript = Join-Path $agentRoot 'install-agent.ps1'
 
 # 防止两个管理员安装流程同时替换 Agent
 $installMutex = New-Object Threading.Mutex($false, 'Global\SatsumaVM-Install')
@@ -191,14 +252,24 @@ try {
         throw '另一个 SatsumaVM 安装正在运行。'
     }
 
-    New-Item -ItemType Directory -Force -Path $InstallRoot, $binRoot, $workRoot | Out-Null
+    New-Item -ItemType Directory -Force -Path $InstallRoot, $agentRoot, $binRoot, $workRoot | Out-Null
+    Set-SatsumaProtectedAcl $agentRoot
+    Set-SatsumaProtectedAcl $workRoot
     Remove-Item -Force -LiteralPath `
         $newAgent, $backupAgent, $newConfig, $backupConfig `
         -ErrorAction SilentlyContinue
 
     # 在停止当前 Agent 前复制、校验并解析完整候选
     Copy-Item -Force -LiteralPath $sourceAgent -Destination $newAgent
-    Copy-Item -Force -LiteralPath $sourceConfig -Destination $newConfig
+    $candidateConfig = Get-Content -Raw -Encoding UTF8 -LiteralPath $sourceConfig | ConvertFrom-Json
+    if ($candidateConfig.PSObject.Properties.Name -contains 'storage_root') {
+        $candidateConfig.storage_root = $InstallRoot
+    } else {
+        $candidateConfig | Add-Member -NotePropertyName storage_root -NotePropertyValue $InstallRoot
+    }
+    $candidateConfig.local_work_root = $workRoot
+    $configText = $candidateConfig | ConvertTo-Json -Depth 20
+    [IO.File]::WriteAllText($newConfig, $configText + "`n", (New-Object Text.UTF8Encoding($false)))
     $sourceHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $sourceAgent).Hash
     $candidateHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $newAgent).Hash
     if ($sourceHash -cne $candidateHash) {

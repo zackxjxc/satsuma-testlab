@@ -114,6 +114,7 @@ add_library(SatsumaHostLib STATIC
     src/host/controller.cpp
     src/host/diagnostics.cpp
     src/host/identity.cpp
+    src/host/lab_lease.cpp
     src/host/orchestrator.cpp
     src/vmware/vmrun_provider.cpp
 )
@@ -128,8 +129,10 @@ add_library(SatsumaVmLib STATIC
     src/vm/claim_renewal.cpp
     src/vm/claim_store.cpp
     src/vm/hardware_identity.cpp
+    src/vm/inventory.cpp
     src/vm/interactive_process.cpp
     src/vm/process_runner.cpp
+    src/vm/process_environment.cpp
     src/vm/service.cpp
     src/vm/update.cpp
 )
@@ -141,6 +144,7 @@ target_link_libraries(
         advapi32
         shell32
         userenv
+        version
         wtsapi32
 )
 
@@ -226,6 +230,7 @@ install(
     FILES
         examples/hello-vm-task.json
         examples/multi-vm-task.json
+        examples/windows-script-task.json
     DESTINATION examples
 )
 install(FILES scripts/install-agent.ps1 DESTINATION scripts)

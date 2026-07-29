@@ -16,4 +16,9 @@ namespace satsuma {
     const std::filesystem::path& program,
     const std::vector<std::string>& arguments);
 
+// 拼接已经由内部适配器完成解释器转义的参数，不接受用户直接控制。
+[[nodiscard]] std::vector<wchar_t> build_windows_command_line_verbatim(
+    const std::filesystem::path& program,
+    const std::vector<std::string>& arguments);
+
 }  // namespace satsuma

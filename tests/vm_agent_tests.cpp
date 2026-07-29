@@ -14,6 +14,7 @@
 
 #include "agent.hpp"
 #include "hardware_identity.hpp"
+#include "inventory.hpp"
 #include "interactive_process.hpp"
 #include "process_runner.hpp"
 #include "satsuma/core/errors.hpp"
@@ -170,6 +171,86 @@ void write_interactive_run(
         nlohmann::json(manifest));
 }
 
+// 创建一个 Windows PowerShell Artifact 脚本任务。
+void write_powershell_run(const std::filesystem::path& shared_root) {
+    const std::filesystem::path run_directory =
+        shared_root / L"runs" / L"run_powershell_script";
+    const std::filesystem::path artifact =
+        run_directory / L"artifacts" / L"client" / L"script.ps1";
+    std::filesystem::create_directories(artifact.parent_path());
+    std::ofstream script(artifact, std::ios::binary);
+    script
+        << "param([Parameter(ValueFromRemainingArguments=$true)][string[]]$Values)\r\n"
+        << "$ErrorActionPreference = 'Stop'\r\n"
+        << "New-Item -ItemType Directory -Force -Path results | Out-Null\r\n"
+        << "$encoding = New-Object System.Text.UTF8Encoding($false)\r\n"
+        << "[IO.File]::WriteAllLines((Join-Path $PWD 'results\\script.txt'), $Values, $encoding)\r\n"
+        << "$Values | ForEach-Object { Write-Output $_ }\r\n"
+        << "[Console]::Error.WriteLine('script-stderr')\r\n"
+        << "exit 7\r\n";
+    script.close();
+
+    satsuma::RunManifest manifest;
+    manifest.lab_id = "vm_agent_test";
+    manifest.run_id = "run_powershell_script";
+    manifest.request_id = "request_powershell_script";
+    manifest.name = "powershell-script";
+    manifest.created_at = satsuma::utc_timestamp();
+    manifest.artifacts.push_back({
+        "client",
+        satsuma::path_from_utf8("artifacts/client/script.ps1"),
+        satsuma::sha256_file(artifact),
+    });
+    satsuma::TaskStep step;
+    step.id = "powershell";
+    step.vm = "client";
+    step.type = "script";
+    step.engine = satsuma::ScriptEngine::WindowsPowerShell;
+    step.script = satsuma::path_from_utf8("artifacts/client/script.ps1");
+    step.arguments = {"", "argument with spaces", "中文", "quote\"value", "C:\\tail\\"};
+    step.collect_files = {satsuma::path_from_utf8("results/script.txt")};
+    manifest.steps.push_back(std::move(step));
+    satsuma::write_json_atomic(run_directory / L"task.json", nlohmann::json(manifest));
+}
+
+// 创建一个 CMD Artifact 脚本任务，覆盖 CMD 元字符参数。
+void write_cmd_run(const std::filesystem::path& shared_root) {
+    const std::filesystem::path run_directory = shared_root / L"runs" / L"run_cmd_script";
+    const std::filesystem::path artifact =
+        run_directory / L"artifacts" / L"client" / L"script.cmd";
+    std::filesystem::create_directories(artifact.parent_path());
+    std::ofstream script(artifact, std::ios::binary);
+    script
+        << "@echo off\r\n"
+        << "setlocal DisableDelayedExpansion\r\n"
+        << "if not exist results mkdir results\r\n"
+        << ">results\\cmd.txt <nul set /p \"=%~1\"\r\n"
+        << "exit /b 9\r\n";
+    script.close();
+
+    satsuma::RunManifest manifest;
+    manifest.lab_id = "vm_agent_test";
+    manifest.run_id = "run_cmd_script";
+    manifest.request_id = "request_cmd_script";
+    manifest.name = "cmd-script";
+    manifest.created_at = satsuma::utc_timestamp();
+    manifest.artifacts.push_back({
+        "client",
+        satsuma::path_from_utf8("artifacts/client/script.cmd"),
+        satsuma::sha256_file(artifact),
+    });
+    satsuma::TaskStep step;
+    step.id = "cmd";
+    step.vm = "client";
+    step.type = "script";
+    step.engine = satsuma::ScriptEngine::Cmd;
+    step.script = satsuma::path_from_utf8("artifacts/client/script.cmd");
+    step.arguments = {"percent%PATH% bang! amp& pipe| caret^"};
+    step.collect_files = {satsuma::path_from_utf8("results/cmd.txt")};
+    manifest.steps.push_back(std::move(step));
+    satsuma::write_json_atomic(run_directory / L"task.json", nlohmann::json(manifest));
+}
+
 // 验证停止信号通过 Win32 事件立即终止 Job Object。
 void test_process_runner_cancellation(
     const std::filesystem::path& root,
@@ -269,7 +350,8 @@ void test_file_watch_and_agent_stop(
         shared_root / L"runs" / L"run_file_success" / L"results" / L"client" /
         L"echo_success" / L"execution.json";
     const std::filesystem::path execute_ready =
-        root / L"work" / L"run_stop_execution" / L"ready.marker";
+        root / L"work" / L"vm_agent_test" / L"run_stop_execution" / L"client" /
+        L"ready.marker";
     const bool echo_completed = wait_for_file(echo_result, 5s);
     const bool execute_started = wait_for_file(execute_ready, 5s);
     const auto stop_started = std::chrono::steady_clock::now();
@@ -290,8 +372,12 @@ void test_file_watch_and_agent_stop(
         shared_root / L"agents" / L"client.json");
     expect(
         presence.value("agent_version", std::string{}) == "0.1.0" &&
-            presence.value("update_id", std::string{}).empty(),
+            presence.value("update_id", std::string{}).empty() &&
+            presence.at("inventory").value("sha256", std::string{}).size() == 64,
         "Agent presence did not publish its version and update identity");
+    expect(
+        std::filesystem::is_regular_file(shared_root / L"agents" / L"client.inventory.json"),
+        "Agent did not publish its environment inventory");
 
     const satsuma::ExecutionResult echo =
         satsuma::load_json(echo_result).get<satsuma::ExecutionResult>();
@@ -308,6 +394,118 @@ void test_file_watch_and_agent_stop(
         "default execute step did not retain the SYSTEM identity");
     expect(!stopped.timed_out, "Agent stop was incorrectly recorded as a timeout");
     expect(stopped.error == "Agent stop requested", "Agent stop did not preserve the stable error text");
+}
+
+// 验证清单在会话内缓存、自愈，并只响应显式刷新重新采集。
+void test_inventory_cache_and_refresh(const std::filesystem::path& root) {
+    satsuma::AgentConfig config;
+    config.lab_id = "vm_agent_test";
+    config.vm_id = "client";
+    config.shared_root = root / L"inventory-share";
+    satsuma::vm::InventoryPublisher publisher(config, "boot_inventory_test");
+    publisher.synchronize();
+
+    const std::filesystem::path inventory_path =
+        config.shared_root / L"agents" / L"client.inventory.json";
+    const nlohmann::json original = satsuma::load_json(inventory_path);
+    const std::string original_digest = publisher.digest();
+    satsuma::write_json_atomic(inventory_path, {{"tampered", true}});
+    publisher.synchronize();
+    expect(
+        satsuma::load_json(inventory_path) == original && publisher.digest() == original_digest,
+        "Agent inventory cache did not restore the original snapshot");
+
+    satsuma::write_json_atomic(
+        config.shared_root / L"agents" / L"client.inventory-refresh.json",
+        {
+            {"schema_version", 1},
+            {"lab_id", config.lab_id},
+            {"vm_id", config.vm_id},
+            {"hardware_id", config.vm_id},
+            {"request_id", "inventory_refresh_test"},
+        });
+    publisher.synchronize();
+    const nlohmann::json refreshed = satsuma::load_json(inventory_path);
+    expect(
+        refreshed.value("refresh_request_id", std::string{}) == "inventory_refresh_test",
+        "Agent ignored an explicit inventory refresh request");
+}
+
+// 验证 script 复用进程树、日志、退出码和精确文件收集。
+void test_powershell_script_execution(const std::filesystem::path& root) {
+    const std::filesystem::path shared_root = root / L"share";
+    write_powershell_run(shared_root);
+    satsuma::AgentConfig config;
+    config.lab_id = "vm_agent_test";
+    config.vm_id = "client";
+    config.shared_root = shared_root;
+    config.local_work_root = root / L"work";
+    satsuma::vm::Agent agent(std::move(config));
+    expect(agent.run_once() == 1, "Agent did not execute the PowerShell script step");
+
+    const std::filesystem::path result_root = shared_root / L"runs" /
+        L"run_powershell_script" / L"results" / L"client" / L"powershell";
+    const satsuma::ExecutionResult result =
+        satsuma::load_json(result_root / L"execution.json").get<satsuma::ExecutionResult>();
+    expect(
+        result.status == "exited" && result.exit_code == 7 && result.files.size() == 1,
+        "PowerShell script did not preserve its exit code or collected file");
+    expect(
+        read_text(result_root / L"files" / L"results" / L"script.txt") ==
+            "\r\nargument with spaces\r\n中文\r\nquote\"value\r\nC:\\tail\\\r\n",
+        "PowerShell script argument changed during execution");
+
+    const std::filesystem::path local_run_directory =
+        root / L"work" / L"vm_agent_test" / L"run_powershell_script" / L"client";
+    expect(std::filesystem::is_directory(local_run_directory),
+        "Agent deleted Guest work before an explicit cleanup request");
+    const std::filesystem::path state_directory =
+        shared_root / L"runs" / L"run_powershell_script" / L"state";
+    satsuma::write_json_atomic(state_directory / L"client-cleanup-request.json", {
+        {"schema_version", 1},
+        {"lab_id", "vm_agent_test"},
+        {"run_id", "run_powershell_script"},
+        {"vm_id", "client"},
+        {"request_id", "cleanup_test"},
+        {"target", "guest_work"},
+        {"requested_at", "2026-07-29T00:00:00.000Z"},
+    });
+    expect(agent.run_once() == 0, "Agent re-executed a completed step during Guest cleanup");
+    expect(!std::filesystem::exists(local_run_directory),
+        "Agent did not delete Guest work after the cleanup request");
+    const nlohmann::json cleanup = satsuma::load_json(state_directory / L"client-cleanup.json");
+    expect(
+        cleanup.at("status") == "deleted" && cleanup.at("request_id") == "cleanup_test" &&
+            cleanup.at("failed_path_count") == 0,
+        "Agent Guest cleanup result is incomplete");
+}
+
+// 验证 CMD 固定启动模板不会解释任务参数中的元字符。
+void test_cmd_script_execution(const std::filesystem::path& root) {
+    const std::filesystem::path shared_root = root / L"share";
+    write_cmd_run(shared_root);
+    satsuma::AgentConfig config;
+    config.lab_id = "vm_agent_test";
+    config.vm_id = "client";
+    config.shared_root = shared_root;
+    config.local_work_root = root / L"work";
+    satsuma::vm::Agent agent(std::move(config));
+    expect(agent.run_once() == 1, "Agent did not execute the CMD script step");
+
+    const std::filesystem::path result_root = shared_root / L"runs" / L"run_cmd_script" /
+        L"results" / L"client" / L"cmd";
+    const satsuma::ExecutionResult result =
+        satsuma::load_json(result_root / L"execution.json").get<satsuma::ExecutionResult>();
+    expect(
+        result.status == "exited" && result.exit_code == 9 && result.files.size() == 1,
+        "CMD script did not preserve its exit code or collected file: status=" + result.status +
+            ", error=" + result.error + ", stdout=" + read_text(result_root / L"stdout.log") +
+            ", stderr=" + read_text(result_root / L"stderr.log"));
+    const std::string actual = read_text(
+        result_root / L"files" / L"results" / L"cmd.txt");
+    expect(
+        actual == "percent%PATH% bang! amp& pipe| caret^",
+        "CMD script argument metacharacters were interpreted: " + actual);
 }
 
 // 验证 Host 文件取消请求会终止当前 Job Object 并生成稳定结果。
@@ -329,7 +527,8 @@ void test_file_cancellation(
     std::stop_source stop_source;
     std::thread worker([&] { agent.run_watch(stop_source.get_token()); });
     const std::filesystem::path ready =
-        root / L"work" / L"run_stop_execution" / L"ready.marker";
+        root / L"work" / L"vm_agent_test" / L"run_stop_execution" / L"client" /
+        L"ready.marker";
     expect(wait_for_file(ready, 5s), "cancellable task did not start");
     const std::filesystem::path run_directory =
         shared_root / L"runs" / L"run_stop_execution";
@@ -505,7 +704,7 @@ void test_agent_rejects_legacy_file_protocol(const std::filesystem::path& root) 
         satsuma::vm::Agent agent(std::move(config));
     } catch (const satsuma::Error& error) {
         rejected = std::string(error.what()) ==
-            "Agent execution requires file protocol version 2";
+            "Agent execution requires the current file protocol version";
     }
     expect(rejected, "production Agent accepted a legacy v1 file protocol config");
 }
@@ -583,6 +782,9 @@ int main(const int argc, char* argv[]) {
         test_process_runner_cancellation(root / L"process-runner", fixture);
         test_process_runner_output_limit(root / L"process-output-limit", fixture);
         test_file_watch_and_agent_stop(root / L"agent-watch", fixture);
+        test_inventory_cache_and_refresh(root / L"inventory");
+        test_powershell_script_execution(root / L"powershell-script");
+        test_cmd_script_execution(root / L"cmd-script");
         test_file_cancellation(root / L"file-cancellation", fixture);
         test_agent_interactive_execution(
             root / L"interactive-agent",

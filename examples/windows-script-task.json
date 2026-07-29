@@ -1,0 +1,26 @@
+{
+  "$schema": "../schemas/task.schema.json",
+  "schema_version": 2,
+  "name": "Windows PowerShell configuration",
+  "artifacts": [
+    {
+      "source": "C:\\SatsumaTasks\\configure-client.ps1",
+      "vm": "client",
+      "shared_destination": "artifacts/client/configure-client.ps1"
+    }
+  ],
+  "steps": [
+    {
+      "id": "configure_client",
+      "vm": "client",
+      "type": "script",
+      "engine": "windows_powershell",
+      "script": "artifacts/client/configure-client.ps1",
+      "arguments": ["argument with spaces"],
+      "run_as": "system",
+      "timeout_seconds": 300,
+      "retry_safe": false,
+      "collect_files": ["results/configuration.json"]
+    }
+  ]
+}

@@ -35,12 +35,22 @@ enum class TaskRunAs {
     InteractiveUser,
 };
 
+// script 步骤允许使用的固定解释器。
+enum class ScriptEngine {
+    None,
+    Cmd,
+    WindowsPowerShell,
+    Pwsh,
+};
+
 // 单个 VM 执行步骤。
 struct TaskStep {
     std::string id;                         // 运行内唯一步骤 ID
     std::string vm;                         // 目标虚拟机 ID
-    std::string type;                       // echo 或 execute
+    std::string type;                       // echo、execute 或 script
     std::filesystem::path program;          // Artifact 相对路径
+    ScriptEngine engine{ScriptEngine::None};// script 固定解释器
+    std::filesystem::path script;           // script Artifact 相对路径
     std::vector<std::string> arguments;     // 原样传递的进程参数
     std::string message;                    // echo 步骤内容
     TaskRunAs run_as{TaskRunAs::System};    // 被测进程运行身份
@@ -76,6 +86,26 @@ struct TaskLifecyclePolicy {
     std::vector<TaskStep> finally_steps; // 无论业务结果如何都需要执行的步骤
 };
 
+// Guest 统一工作目录的清理动作。
+enum class GuestWorkCleanupAction {
+    Delete,
+    Retain,
+};
+
+// Shared Folder 运行目录的清理动作。
+enum class SharedRunCleanupAction {
+    Retain,
+    ArchiveThenDelete,
+};
+
+// 任务结束后对本地工作目录和共享证据执行的策略。
+struct TaskCleanupPolicy {
+    GuestWorkCleanupAction guest_work_on_success{GuestWorkCleanupAction::Delete};
+    GuestWorkCleanupAction guest_work_on_failure{GuestWorkCleanupAction::Retain};
+    SharedRunCleanupAction shared_run_on_success{SharedRunCleanupAction::Retain};
+    SharedRunCleanupAction shared_run_on_failure{SharedRunCleanupAction::Retain};
+};
+
 // AI 或用户提供的任务计划。
 struct TaskPlan {
     int schema_version{1};                 // 输入 schema 版本
@@ -84,6 +114,7 @@ struct TaskPlan {
     std::vector<ArtifactInput> artifacts;  // 待部署文件
     std::vector<TaskStep> steps;           // 有序步骤列表
     std::optional<TaskLifecyclePolicy> lifecycle; // 可选的 Host 生命周期策略
+    TaskCleanupPolicy cleanup;             // Guest 和共享运行目录清理策略
 };
 
 // Host 物化后供 VM 领取的不可变任务清单。
@@ -135,8 +166,17 @@ struct ExecutionResult {
 // 返回任务运行身份的稳定协议名称。
 [[nodiscard]] std::string_view task_run_as_name(TaskRunAs run_as);
 
+// 返回脚本解释器的稳定协议名称。
+[[nodiscard]] std::string_view script_engine_name(ScriptEngine engine);
+
 // 返回 VM 清理动作的稳定协议名称。
 [[nodiscard]] std::string_view vm_cleanup_action_name(VmCleanupAction action);
+
+// 返回 Guest 工作目录清理动作的稳定协议名称。
+[[nodiscard]] std::string_view guest_work_cleanup_action_name(GuestWorkCleanupAction action);
+
+// 返回共享运行目录清理动作的稳定协议名称。
+[[nodiscard]] std::string_view shared_run_cleanup_action_name(SharedRunCleanupAction action);
 
 // 将运行清单转换为 JSON。
 void to_json(nlohmann::json& value, const RunManifest& manifest);

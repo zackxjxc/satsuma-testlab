@@ -11,6 +11,7 @@
 #include "satsuma/core/errors.hpp"
 #include "satsuma/core/path.hpp"
 #include "satsuma/core/windows_command_line.hpp"
+#include "process_environment.hpp"
 
 namespace satsuma::vm {
 namespace {
@@ -192,7 +193,12 @@ ProcessResult ProcessRunner::run(const ProcessRequest& request) const {
     startup.hStdError = standard_error.get();
 
     PROCESS_INFORMATION process_info{};
-    std::vector<wchar_t> command_line = build_windows_command_line(request.program, request.arguments);
+    std::vector<wchar_t> command_line = request.verbatim_arguments
+        ? build_windows_command_line_verbatim(request.program, request.arguments)
+        : build_windows_command_line(request.program, request.arguments);
+    std::vector<wchar_t> environment = request.environment_overrides.empty()
+        ? std::vector<wchar_t>{}
+        : build_process_environment(request.environment_overrides);
     const auto start_time = std::chrono::steady_clock::now();
     ensure_win32(
         CreateProcessW(
@@ -202,7 +208,7 @@ ProcessResult ProcessRunner::run(const ProcessRequest& request) const {
             nullptr,
             TRUE,
             CREATE_SUSPENDED | CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT,
-            nullptr,
+            environment.empty() ? nullptr : environment.data(),
             request.working_directory.c_str(),
             &startup,
             &process_info),

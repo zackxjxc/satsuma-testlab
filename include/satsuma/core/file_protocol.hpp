@@ -7,7 +7,8 @@
 namespace satsuma {
 
 inline constexpr int kLegacyRunManifestProtocolVersion = 1;  // 仅支持隐式 SYSTEM
-inline constexpr int kRunManifestProtocolVersion = 2;        // 支持显式任务运行身份
+inline constexpr int kIdentityRunManifestProtocolVersion = 2;// 支持显式任务运行身份
+inline constexpr int kRunManifestProtocolVersion = 3;        // 支持受控脚本步骤
 inline constexpr std::size_t kMaxArtifactsPerRun = 256;      // 单次运行 Artifact 数量上限
 inline constexpr std::size_t kMaxStepsPerRun = 256;          // 主步骤或 finally 步骤数量上限
 inline constexpr std::size_t kMaxArgumentsPerStep = 256;     // 单步骤参数数量上限

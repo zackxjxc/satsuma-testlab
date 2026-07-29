@@ -16,6 +16,7 @@
 #include "satsuma/core/path.hpp"
 #include "satsuma/core/sha256.hpp"
 #include "satsuma/core/update.hpp"
+#include "identity.hpp"
 
 namespace satsuma::host {
 namespace {
@@ -27,20 +28,50 @@ void validate_vm_references(const LabConfig& config, const TaskPlan& plan) {
             throw Error("Artifact references an unknown VM: " + artifact.vm);
         }
     }
-    for (const auto& step : plan.steps) {
+    const auto validate_step = [&config, &plan](const TaskStep& step) {
         if (find_vm(config, step.vm) == nullptr) {
             throw Error("Step references an unknown VM: " + step.vm);
         }
-        if (step.type == "execute") {
+        if (step.type == "execute" || step.type == "script") {
+            const std::filesystem::path& executable = step.type == "script"
+                ? step.script
+                : step.program;
             const auto artifact = std::find_if(
                 plan.artifacts.begin(),
                 plan.artifacts.end(),
-                [&step](const ArtifactInput& input) {
-                    return input.vm == step.vm && input.destination == step.program;
+                [&step, &executable](const ArtifactInput& input) {
+                    return input.vm == step.vm && input.destination == executable;
                 });
             if (artifact == plan.artifacts.end()) {
-                throw Error("Execute program is not a registered Artifact: " + path_to_utf8(step.program));
+                throw Error("Executable file is not a registered Artifact: " + path_to_utf8(executable));
             }
+        }
+        if (step.type == "script") {
+            const VmConfig& vm = *find_vm(config, step.vm);
+            const nlohmann::json presence = load_vm_presence(config, vm);
+            if (presence.value("protocol_version", 0) != kRunManifestProtocolVersion) {
+                throw Error("Script step requires Agent file protocol version 3 for VM " + step.vm);
+            }
+            const nlohmann::json inventory = load_vm_inventory(config, vm);
+            const std::string engine = std::string(script_engine_name(step.engine));
+            const bool available = std::any_of(
+                inventory.at("script_engines").begin(),
+                inventory.at("script_engines").end(),
+                [&engine](const nlohmann::json& capability) {
+                    return capability.value("engine", std::string{}) == engine &&
+                        capability.value("available", false);
+                });
+            if (!available) {
+                throw Error("Script engine is unavailable for VM " + step.vm + ": " + engine);
+            }
+        }
+    };
+    for (const auto& step : plan.steps) {
+        validate_step(step);
+    }
+    if (plan.lifecycle.has_value()) {
+        for (const auto& step : plan.lifecycle->finally_steps) {
+            validate_step(step);
         }
     }
 }

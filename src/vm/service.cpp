@@ -480,11 +480,14 @@ void wait_for_service_absent(const SC_HANDLE manager) {
 void validate_local_work_root(
     const AgentServiceSpec& spec,
     const std::filesystem::path& local_work_root) {
-    const std::filesystem::path expected =
+    const std::filesystem::path legacy_expected =
         std::filesystem::absolute(spec.config.parent_path() / L"work").lexically_normal();
+    const std::filesystem::path unified_expected =
+        std::filesystem::absolute(spec.config.parent_path().parent_path() / L"work").lexically_normal();
     const std::filesystem::path actual =
         std::filesystem::absolute(local_work_root).lexically_normal();
-    if (_wcsicmp(expected.c_str(), actual.c_str()) != 0 ||
+    if ((_wcsicmp(legacy_expected.c_str(), actual.c_str()) != 0 &&
+         _wcsicmp(unified_expected.c_str(), actual.c_str()) != 0) ||
         !std::filesystem::is_directory(actual)) {
         throw Error("Agent local_work_root must use the fixed install work directory");
     }

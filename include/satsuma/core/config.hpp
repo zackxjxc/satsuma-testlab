@@ -66,7 +66,9 @@ struct AgentConfig {
     std::string agent_version;              // 当前 Agent 语义版本
     std::string last_update_id;              // 最近成功应用的更新 ID
     std::filesystem::path shared_root;      // Guest 共享根目录
+    std::filesystem::path storage_root;     // 安装器选定的统一本地存储根
     std::filesystem::path local_work_root;  // Guest 本地执行根目录
+    bool legacy_storage_layout{false};       // 旧配置尚未声明 storage_root
     int poll_interval_ms{1000};             // 无任务时的轮询间隔
     int reconnect_interval_ms{1000};        // Shared Folder 异常后的重试间隔
 };

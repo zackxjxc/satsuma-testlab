@@ -277,7 +277,8 @@ void test_renewal_failure_and_recovery(
     std::this_thread::sleep_for(1100ms);
     expect(
         !std::filesystem::exists(
-            local_work_root / satsuma::path_from_utf8(run_id) / L"child-survived.marker"),
+            local_work_root / L"vm_agent_claim_test" / satsuma::path_from_utf8(run_id) /
+                L"client" / L"child-survived.marker"),
         "renewal cancellation left a child process outside the Job Object kill boundary");
 }
 

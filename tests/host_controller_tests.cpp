@@ -6,6 +6,7 @@
 
 #include "controller.hpp"
 #include "identity.hpp"
+#include "lab_lease.hpp"
 #include "satsuma/core/config.hpp"
 #include "satsuma/core/errors.hpp"
 #include "satsuma/core/id.hpp"
@@ -21,6 +22,17 @@ void expect(const bool condition, const std::string& message) {
     if (!condition) {
         throw std::runtime_error(message);
     }
+}
+
+// 断言操作被安全门禁拒绝。
+template <typename Operation>
+void expect_error(Operation operation, const std::string& message) {
+    try {
+        operation();
+    } catch (const satsuma::Error&) {
+        return;
+    }
+    throw std::runtime_error(message);
 }
 
 // 创建只包含 Host 文件任务所需字段的实验室配置。
@@ -340,6 +352,68 @@ void test_agent_hardware_discovery_and_binding(const std::filesystem::path& root
         "Host hardware binding did not persist both sides of the mapping");
 }
 
+// 验证进程互斥、死亡租约恢复和普通 run finalize。
+void test_lab_lease_lifecycle(const std::filesystem::path& root) {
+    satsuma::LabConfig config = make_config(root);
+    config.host.archive_root = root / L"archive";
+    const std::filesystem::path config_path = root / L"lab.json";
+    auto first = satsuma::host::LabLease::acquire(config, config_path, "test");
+    expect(
+        satsuma::host::LabLease::status(config).at("status") == "busy",
+        "active lab lease was not reported as busy");
+    expect_error(
+        [&] { static_cast<void>(satsuma::host::LabLease::acquire(config, config_path, "other")); },
+        "second Host acquired the same lab process mutex");
+    first->release("released");
+    first.reset();
+
+    const std::filesystem::path lease_path =
+        config.host.archive_root / L"coordination" / L"lab-lease.json";
+    satsuma::write_json_atomic(lease_path, {
+        {"schema_version", 1},
+        {"lab_id", config.lab_id},
+        {"lease_id", "lease_stale"},
+        {"host_process_id", 0},
+        {"command", "orchestrate"},
+        {"run_id", "recover_run"},
+        {"state", "active"},
+        {"acquired_at", "2026-07-29T00:00:00.000Z"},
+        {"renewed_at", "2026-07-29T00:00:00.000Z"},
+    });
+    expect_error(
+        [&] { static_cast<void>(satsuma::host::LabLease::acquire(config, config_path, "new")); },
+        "ordinary write command discarded a stale active lease");
+    auto recovered = satsuma::host::LabLease::acquire(
+        config, config_path, "lab recover", "recover_run", true);
+    recovered->release("released");
+    recovered.reset();
+
+    satsuma::host::Controller controller(config);
+    const satsuma::RunManifest manifest = controller.create_run(make_plan("finalize_run"));
+    for (const satsuma::TaskStep& step : manifest.steps) {
+        satsuma::write_json_atomic(
+            result_path(config, manifest.run_id, step),
+            make_execution(manifest, step, "job_" + step.id));
+    }
+    satsuma::write_json_atomic(lease_path, {
+        {"schema_version", 1},
+        {"lab_id", config.lab_id},
+        {"lease_id", "lease_finalize"},
+        {"host_process_id", 0},
+        {"command", "run"},
+        {"run_id", manifest.run_id},
+        {"state", "active"},
+        {"acquired_at", "2026-07-29T00:00:00.000Z"},
+        {"renewed_at", "2026-07-29T00:00:00.000Z"},
+    });
+    const nlohmann::json finalized = satsuma::host::LabLease::finalize_run(
+        config, config_path, manifest.run_id);
+    expect(
+        finalized.at("status") == "finalized" &&
+            satsuma::host::LabLease::status(config).at("status") == "available",
+        "terminal ordinary run did not release its persistent lease");
+}
+
 }  // namespace
 
 // 运行 Host Controller 测试并清理专用临时目录。
@@ -353,6 +427,7 @@ int main() {
         test_report_rejects_mismatched_identity(root / L"identity");
         test_run_management(root / L"run-management");
         test_agent_hardware_discovery_and_binding(root / L"hardware-binding");
+        test_lab_lease_lifecycle(root / L"lab-lease");
         std::filesystem::remove_all(root);
         std::cout << "SatsumaHostControllerTests passed\n";
         return 0;

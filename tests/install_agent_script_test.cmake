@@ -67,6 +67,17 @@ endif()
 # 保留可恢复但不扩张为完整安装事务的关键步骤。
 foreach(required_text IN ITEMS
     "Global\\SatsumaVM-Install"
+    "D:\\SatsumaTestLab"
+    "[IO.DriveType]::Fixed"
+    "AvailableFreeSpace -lt 2GB"
+    "Join-Path $env:ProgramData 'SatsumaTestLab'"
+    "Join-Path $InstallRoot 'agent'"
+    "Join-Path $agentRoot 'bin'"
+    "Join-Path $InstallRoot 'work'"
+    "storage_root"
+    "local_work_root"
+    "Set-SatsumaProtectedAcl"
+    "BUILTIN\\Administrators"
     "SatsumaVM.new.exe"
     "SatsumaVM.bak.exe"
     "--validate-config"
@@ -82,11 +93,9 @@ foreach(required_text IN ITEMS
     endif()
 endforeach()
 
-# 这些机制属于已取消的本机攻击防御和完整事务范围。
+# 这些机制属于已取消的完整事务范围，或会破坏目录权限边界。
 foreach(forbidden_text IN ITEMS
-    "Set-Acl"
-    "Get-Acl"
-    "AccessControl"
+    "Everyone"
     "Export-ScheduledTask"
     "Register-ScheduledTask"
     ".service-update.lock"

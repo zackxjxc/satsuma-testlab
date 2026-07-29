@@ -45,4 +45,17 @@ std::vector<wchar_t> build_windows_command_line(
     return buffer;
 }
 
+std::vector<wchar_t> build_windows_command_line_verbatim(
+    const std::filesystem::path& program,
+    const std::vector<std::string>& arguments) {
+    std::wstring command = quote_windows_argument(program.native());
+    for (const auto& argument : arguments) {
+        command.push_back(L' ');
+        command += path_from_utf8(argument).native();
+    }
+    std::vector<wchar_t> buffer(command.begin(), command.end());
+    buffer.push_back(L'\0');
+    return buffer;
+}
+
 }  // namespace satsuma

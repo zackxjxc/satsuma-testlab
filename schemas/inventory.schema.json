@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://satsuma.local/schemas/inventory.schema.json",
+  "title": "Satsuma Agent inventory",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "lab_id", "vm_id", "hardware_id", "boot_id", "observed_at",
+    "os", "script_engines", "drives", "memory"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "lab_id": {"$ref": "#/$defs/identifier"},
+    "vm_id": {"$ref": "#/$defs/identifier"},
+    "hardware_id": {"type": "string", "minLength": 1},
+    "boot_id": {"$ref": "#/$defs/identifier"},
+    "observed_at": {"type": "string", "format": "date-time"},
+    "refresh_request_id": {"$ref": "#/$defs/identifier"},
+    "os": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["product_name", "version", "build", "native_architecture", "process_architecture"],
+      "properties": {
+        "product_name": {"type": "string", "minLength": 1},
+        "version": {"type": "string", "minLength": 1},
+        "build": {"type": "integer", "minimum": 1},
+        "native_architecture": {"enum": ["x86", "x64", "arm64", "unknown"]},
+        "process_architecture": {"enum": ["x86", "x64", "arm64", "unknown"]}
+      }
+    },
+    "script_engines": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["engine", "available", "version", "edition", "path"],
+        "properties": {
+          "engine": {"enum": ["cmd", "windows_powershell", "pwsh"]},
+          "available": {"type": "boolean"},
+          "version": {"type": "string"},
+          "edition": {"type": "string"},
+          "path": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "drives": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["root", "type", "file_system", "total_bytes", "available_bytes"],
+        "properties": {
+          "root": {"type": "string", "minLength": 1},
+          "type": {"const": "fixed"},
+          "file_system": {"type": "string"},
+          "total_bytes": {"type": "integer", "minimum": 0},
+          "available_bytes": {"type": "integer", "minimum": 0}
+        }
+      }
+    },
+    "memory": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["total_bytes", "available_bytes"],
+      "properties": {
+        "total_bytes": {"type": "integer", "minimum": 1},
+        "available_bytes": {"type": "integer", "minimum": 0}
+      }
+    }
+  },
+  "$defs": {
+    "identifier": {"type": "string", "pattern": "^[A-Za-z0-9_-]{1,128}$"}
+  }
+}

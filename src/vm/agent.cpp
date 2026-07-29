@@ -40,6 +40,15 @@ namespace {
     return stop_token.stop_requested();
 }
 
+// 返回 SYSTEM 与交互用户共用的本次 VM 工作目录。
+[[nodiscard]] std::filesystem::path resolve_local_run_directory(
+    const AgentConfig& config,
+    const std::string& run_id) {
+    return resolve_under_root(
+        config.local_work_root,
+        path_from_utf8(config.lab_id) / path_from_utf8(run_id) / path_from_utf8(config.vm_id));
+}
+
 // 在可取消操作边界统一转换停止请求。
 void throw_if_stop_requested(const std::stop_token stop_token) {
     if (stop_token.stop_requested()) {
@@ -101,6 +110,9 @@ void write_run_error_best_effort(
     const AgentConfig& config,
     const std::string& error) noexcept {
     try {
+        if (!std::filesystem::is_regular_file(run_directory / L"task.json")) {
+            return;
+        }
         const std::filesystem::path state_directory = run_directory / L"state";
         std::filesystem::create_directories(state_directory);
         write_json_atomic(
@@ -149,18 +161,41 @@ void write_stale_result_best_effort(
     }
 }
 
-// 返回与程序路径完全匹配的 Artifact 登记项。
-[[nodiscard]] const ArtifactManifest* find_program_artifact(
+// 返回与可执行文件或脚本路径完全匹配的 Artifact 登记项。
+[[nodiscard]] const ArtifactManifest* find_artifact(
     const RunManifest& manifest,
     const std::string& vm_id,
-    const std::filesystem::path& program) {
+    const std::filesystem::path& path) {
     const auto match = std::find_if(
         manifest.artifacts.begin(),
         manifest.artifacts.end(),
-        [&vm_id, &program](const ArtifactManifest& artifact) {
-            return artifact.vm == vm_id && artifact.path == program;
+        [&vm_id, &path](const ArtifactManifest& artifact) {
+            return artifact.vm == vm_id && artifact.path == path;
         });
     return match == manifest.artifacts.end() ? nullptr : &*match;
+}
+
+// 防止 cmd.exe /C 在调用脚本前展开用户参数中的环境变量引用。
+[[nodiscard]] std::string escape_cmd_token(const std::string& argument) {
+    std::string escaped = "\"";
+    escaped.reserve(argument.size() + 8);
+    for (const unsigned char character : argument) {
+        if (character == '\0' || character == '\r' || character == '\n') {
+            throw Error("CMD script arguments cannot contain NUL or line breaks");
+        }
+        if (character == '%') {
+            escaped += "%SATSUMA_CMD_PERCENT%";
+        } else if (character == '"') {
+            escaped.push_back('"');
+            escaped.push_back('^');
+            escaped.push_back(static_cast<char>(character));
+            escaped.push_back('"');
+        } else {
+            escaped.push_back(static_cast<char>(character));
+        }
+    }
+    escaped.push_back('"');
+    return escaped;
 }
 
 // 返回当前 SatsumaVM helper 的绝对路径。
@@ -179,6 +214,60 @@ void write_stale_result_best_effort(
     return std::filesystem::path(std::move(buffer));
 }
 
+// 响应 Host 的显式 Guest 工作目录清理请求并原子发布结果。
+void process_guest_cleanup_request(
+    const std::filesystem::path& run_directory,
+    const RunManifest& manifest,
+    const AgentConfig& config) {
+    const std::filesystem::path state_directory = run_directory / L"state";
+    const std::filesystem::path request_path =
+        state_directory / path_from_utf8(config.vm_id + "-cleanup-request.json");
+    if (!std::filesystem::is_regular_file(request_path)) {
+        return;
+    }
+
+    const std::filesystem::path result_path =
+        state_directory / path_from_utf8(config.vm_id + "-cleanup.json");
+    if (std::filesystem::is_regular_file(result_path)) {
+        return;
+    }
+
+    const nlohmann::json request = load_json(request_path);
+    const std::string request_id = request.value("request_id", std::string{});
+    validate_identifier(request_id, "cleanup request_id");
+    if (request.value("schema_version", 0) != 1 ||
+        request.value("lab_id", std::string{}) != config.lab_id ||
+        request.value("run_id", std::string{}) != manifest.run_id ||
+        request.value("vm_id", std::string{}) != config.vm_id ||
+        request.value("target", std::string{}) != "guest_work") {
+        throw Error("Guest cleanup request identity is invalid");
+    }
+
+    const std::filesystem::path local_run_directory =
+        resolve_local_run_directory(config, manifest.run_id);
+    std::error_code cleanup_error;
+    const std::uintmax_t deleted_paths =
+        std::filesystem::remove_all(local_run_directory, cleanup_error);
+    nlohmann::json result = {
+        {"schema_version", 1},
+        {"lab_id", config.lab_id},
+        {"run_id", manifest.run_id},
+        {"vm_id", config.vm_id},
+        {"request_id", request_id},
+        {"target", "guest_work"},
+        {"status", cleanup_error ? "failed" : "deleted"},
+        {"deleted_path_count", deleted_paths},
+        {"failed_path_count", cleanup_error ? 1 : 0},
+        {"finished_at", utc_timestamp()},
+    };
+    if (cleanup_error) {
+        result["error"] =
+            "Cannot delete Guest work directory (error " +
+            std::to_string(cleanup_error.value()) + ")";
+    }
+    write_json_atomic(result_path, result);
+}
+
 }  // namespace
 
 Agent::Agent(
@@ -191,14 +280,25 @@ Agent::Agent(
       helper_executable_(helper_executable.empty()
           ? current_executable_path()
           : std::filesystem::absolute(std::move(helper_executable))),
-      runtime_options_(std::move(runtime_options)) {
+      runtime_options_(std::move(runtime_options)),
+      inventory_(config_, boot_id_) {
     if (config_.protocol_version != kRunManifestProtocolVersion) {
-        throw Error("Agent execution requires file protocol version 2");
+        throw Error("Agent execution requires the current file protocol version");
     }
     validate_claim_lease_policy(runtime_options_.claim_lease_policy);
 }
 
 int Agent::run_once(const std::stop_token stop_token) {
+    if (stop_token.stop_requested()) {
+        return 0;
+    }
+    static_cast<void>(refresh_agent_binding(config_));
+    inventory_.synchronize();
+    write_presence();
+    return execute_pending_runs(stop_token);
+}
+
+int Agent::execute_pending_runs(const std::stop_token stop_token) {
     if (stop_token.stop_requested() || config_.identity_unbound) {
         return 0;
     }
@@ -333,10 +433,7 @@ int Agent::run_once(const std::stop_token stop_token) {
                         path_from_utf8(step.id) / L"execution.json");
                 });
             if (current_vm_complete) {
-                std::error_code cleanup_error;
-                std::filesystem::remove_all(
-                    resolve_under_root(config_.local_work_root, path_from_utf8(manifest.run_id)),
-                    cleanup_error);
+                process_guest_cleanup_request(run_directory, manifest, config_);
             }
         } catch (const std::exception& error) {
             write_run_error_best_effort(run_directory, config_, error.what());
@@ -350,13 +447,14 @@ void Agent::run_watch(const std::stop_token stop_token) {
         bool file_channel_available = false;
         try {
             static_cast<void>(refresh_agent_binding(config_));
+            inventory_.synchronize();
             write_presence();
             if (!config_.identity_unbound &&
                 process_pending_agent_update(config_, stop_token)) {
                 break;
             }
             if (!config_.identity_unbound) {
-                static_cast<void>(run_once(stop_token));
+                static_cast<void>(execute_pending_runs(stop_token));
             }
             file_channel_available = true;
         } catch (const std::exception& error) {
@@ -388,6 +486,11 @@ void Agent::write_presence() const {
         {"boot_id", boot_id_},
         {"process_id", GetCurrentProcessId()},
         {"status", config_.identity_unbound ? "unbound" : "idle"},
+        {"inventory", {
+            {"schema_version", 1},
+            {"observed_at", inventory_.observed_at()},
+            {"sha256", inventory_.digest()},
+        }},
         {"updated_at", utc_timestamp()},
     };
     nlohmann::json published = presence;
@@ -528,8 +631,12 @@ void Agent::execute_step(
             result.duration_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now() - start_time).count();
         } else {
-            if (find_program_artifact(manifest, config_.vm_id, step.program) == nullptr) {
-                throw Error("Execute program is not a registered Artifact: " + path_to_utf8(step.program));
+            const std::filesystem::path& executable_artifact = step.type == "script"
+                ? step.script
+                : step.program;
+            if (find_artifact(manifest, config_.vm_id, executable_artifact) == nullptr) {
+                throw Error("Executable file is not a registered Artifact: " +
+                    path_to_utf8(executable_artifact));
             }
 
             std::optional<InteractiveUserSession> interactive_session;
@@ -538,13 +645,13 @@ void Agent::execute_step(
                 interactive_session.emplace(
                     InteractiveUserSession::acquire(
                         config_.lab_id,
-                        manifest.run_id));
+                        manifest.run_id,
+                        config_.local_work_root,
+                        config_.vm_id));
                 local_run_directory = interactive_session->working_directory();
                 result.interactive_session_id = interactive_session->session_id();
             } else {
-                local_run_directory = resolve_under_root(
-                    config_.local_work_root,
-                    path_from_utf8(manifest.run_id));
+                local_run_directory = resolve_local_run_directory(config_, manifest.run_id);
                 std::filesystem::create_directories(local_run_directory);
             }
             deploy_artifacts(
@@ -555,8 +662,40 @@ void Agent::execute_step(
                 interactive_session ? &*interactive_session : nullptr);
 
             ProcessRequest request;
-            request.program = resolve_under_root(local_run_directory, step.program);
-            request.arguments = step.arguments;
+            if (step.type == "script") {
+                inventory_.synchronize();
+                request.program = inventory_.script_engine_path(script_engine_name(step.engine));
+                const std::string script_path = path_to_utf8(
+                    resolve_under_root(local_run_directory, step.script));
+                if (step.engine == ScriptEngine::Cmd) {
+                    std::string command = "\"" + escape_cmd_token(script_path);
+                    for (const std::string& argument : step.arguments) {
+                        command += " " + escape_cmd_token(argument);
+                    }
+                    command.push_back('"');
+                    request.arguments = {"/D", "/Q", "/V:OFF", "/S", "/C", command};
+                    request.verbatim_arguments = true;
+                    request.environment_overrides["SATSUMA_CMD_PERCENT"] = "%";
+                } else if (step.engine == ScriptEngine::WindowsPowerShell) {
+                    request.arguments = {
+                        "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+                        "-File", script_path,
+                    };
+                } else {
+                    request.arguments = {
+                        "-NoLogo", "-NoProfile", "-NonInteractive", "-File", script_path,
+                    };
+                }
+                if (step.engine == ScriptEngine::Cmd) {
+                    // CMD 参数已经作为一个带外层引号的 /S /C 命令构造完毕。
+                } else {
+                    request.arguments.insert(
+                        request.arguments.end(), step.arguments.begin(), step.arguments.end());
+                }
+            } else {
+                request.program = resolve_under_root(local_run_directory, step.program);
+                request.arguments = step.arguments;
+            }
             request.working_directory = local_run_directory;
             request.stdout_path = stdout_partial;
             request.stderr_path = stderr_partial;

@@ -18,7 +18,14 @@ namespace {
 
 // 缓存放在安装根目录，快照恢复时与 Agent 安装状态一起回退。
 [[nodiscard]] std::filesystem::path hardware_cache_path(const AgentConfig& config) {
-    return config.local_work_root.parent_path() / L"hardware-id-cache.json";
+    const std::filesystem::path storage_root = config.storage_root.empty()
+        ? config.local_work_root.parent_path()
+        : config.storage_root;
+    const std::filesystem::path agent_root =
+        config.legacy_storage_layout || config.storage_root.empty()
+        ? storage_root
+        : storage_root / L"agent";
+    return agent_root / L"hardware-id-cache.json";
 }
 
 // Host 以硬件 UUID 为键发布业务角色绑定。

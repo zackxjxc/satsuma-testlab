@@ -247,6 +247,24 @@ void test_absolute_configuration_paths(const std::filesystem::path& root) {
     invalid_agent = agent;
     invalid_agent["host"] = "127.0.0.1:37100";
     expect_agent_rejected(invalid_agent, "removed Agent network configuration was accepted");
+
+    nlohmann::json unified_agent = agent;
+    unified_agent["protocol_version"] = satsuma::kRunManifestProtocolVersion;
+    unified_agent["storage_root"] = satsuma::path_to_utf8(root / L"storage");
+    unified_agent["local_work_root"] = satsuma::path_to_utf8(root / L"storage" / L"work");
+    satsuma::write_json_atomic(agent_path, unified_agent);
+    const satsuma::AgentConfig unified = satsuma::load_agent_config(agent_path);
+    expect(
+        !unified.legacy_storage_layout && unified.storage_root == root / L"storage",
+        "unified Agent storage root was not parsed");
+
+    invalid_agent = unified_agent;
+    invalid_agent["local_work_root"] = satsuma::path_to_utf8(root / L"other-work");
+    expect_agent_rejected(invalid_agent, "storage_root accepted an unrelated work directory");
+    invalid_agent = unified_agent;
+    invalid_agent["storage_root"] = "\\\\vmware-host\\Shared Folders\\vm-share";
+    invalid_agent["local_work_root"] = "\\\\vmware-host\\Shared Folders\\vm-share\\work";
+    expect_agent_rejected(invalid_agent, "storage_root accepted a VMware Shared Folder");
 }
 
 // 验证硬件 UUID 规范化以及新旧身份配置兼容读取。
@@ -271,7 +289,7 @@ void test_hardware_identity_configuration(const std::filesystem::path& root) {
     satsuma::write_json_atomic(agent_path, agent);
     satsuma::AgentConfig config = satsuma::load_agent_config(agent_path);
     expect(
-        !config.vm_id_configured && config.vm_id.empty(),
+        !config.vm_id_configured && config.vm_id.empty() && config.legacy_storage_layout,
         "Agent config without vm_id was not accepted as unbound");
     agent["vm_id"] = "client";
     satsuma::write_json_atomic(agent_path, agent);
@@ -555,6 +573,67 @@ void test_task_run_as_protocol(const std::filesystem::path& root) {
     static_cast<void>(version_two_echo.get<satsuma::RunManifest>());
 }
 
+// 验证任务 schema 2 和运行清单 v3 的受控脚本协议。
+void test_script_step_protocol(const std::filesystem::path& root) {
+    nlohmann::json plan_value = {
+        {"schema_version", 2},
+        {"name", "script-protocol"},
+        {"artifacts", {{
+            {"source", "C:/scripts/configure.ps1"},
+            {"vm", "client"},
+            {"shared_destination", "artifacts/client/configure.ps1"},
+        }}},
+        {"steps", {{
+            {"id", "configure"},
+            {"vm", "client"},
+            {"type", "script"},
+            {"engine", "windows_powershell"},
+            {"script", "artifacts/client/configure.ps1"},
+            {"arguments", {"", "space value", "中文", "quote\"value", "C:\\tail\\"}},
+            {"run_as", "system"},
+            {"collect_files", {"results/configuration.json"}},
+        }}},
+    };
+    const std::filesystem::path plan_path = root / L"script-plan.json";
+    satsuma::write_json_atomic(plan_path, plan_value);
+    const satsuma::TaskPlan plan = satsuma::load_task_plan(plan_path);
+    expect(
+        plan.schema_version == 2 &&
+            plan.steps.at(0).engine == satsuma::ScriptEngine::WindowsPowerShell &&
+            plan.steps.at(0).script == L"artifacts/client/configure.ps1" &&
+            !plan.steps.at(0).retry_safe,
+        "task schema 2 script step changed during parsing");
+
+    satsuma::RunManifest manifest;
+    manifest.lab_id = "test_lab";
+    manifest.run_id = "run_script";
+    manifest.request_id = "request_script";
+    manifest.name = "script-protocol";
+    manifest.created_at = "2026-07-29T00:00:00.000Z";
+    manifest.steps = plan.steps;
+    const nlohmann::json encoded = manifest;
+    expect(
+        encoded.at("protocol_version") == 3 &&
+            encoded.at("steps").at(0).at("engine") == "windows_powershell",
+        "run manifest v3 did not serialize the script engine");
+    const satsuma::RunManifest decoded = encoded.get<satsuma::RunManifest>();
+    expect(
+        decoded.steps.at(0).arguments == plan.steps.at(0).arguments,
+        "run manifest v3 changed script arguments");
+
+    plan_value["schema_version"] = 1;
+    satsuma::write_json_atomic(plan_path, plan_value);
+    expect_error(
+        [&plan_path] { static_cast<void>(satsuma::load_task_plan(plan_path)); },
+        "task schema 1 accepted a script step");
+
+    nlohmann::json protocol_two = encoded;
+    protocol_two["protocol_version"] = satsuma::kIdentityRunManifestProtocolVersion;
+    expect_error(
+        [&protocol_two] { static_cast<void>(protocol_two.get<satsuma::RunManifest>()); },
+        "run manifest protocol 2 accepted a script step");
+}
+
 // 验证任务生命周期策略解析和普通 run 的安全边界所需模型。
 void test_task_lifecycle_policy(const std::filesystem::path& root) {
     nlohmann::json value = {
@@ -597,6 +676,46 @@ void test_task_lifecycle_policy(const std::filesystem::path& root) {
     expect_error(
         [&plan_path] { static_cast<void>(satsuma::load_task_plan(plan_path)); },
         "restore cleanup action accepted a missing snapshot");
+}
+
+// 验证任务 schema 2 的 Guest 与共享运行目录清理策略。
+void test_task_cleanup_policy(const std::filesystem::path& root) {
+    nlohmann::json value = {
+        {"schema_version", 2},
+        {"name", "task-cleanup-policy"},
+        {"steps", {{{"id", "echo"}, {"vm", "client"}, {"type", "echo"}, {"message", "run"}}}},
+        {"cleanup", {
+            {"guest_work", {{"on_success", "delete"}, {"on_failure", "retain"}}},
+            {"shared_run", {{"on_success", "archive_then_delete"}, {"on_failure", "retain"}}},
+        }},
+    };
+    const std::filesystem::path plan_path = root / L"task-cleanup-plan.json";
+    satsuma::write_json_atomic(plan_path, value);
+    const satsuma::TaskPlan plan = satsuma::load_task_plan(plan_path);
+    expect(
+        plan.cleanup.guest_work_on_success == satsuma::GuestWorkCleanupAction::Delete &&
+            plan.cleanup.guest_work_on_failure == satsuma::GuestWorkCleanupAction::Retain &&
+            plan.cleanup.shared_run_on_success == satsuma::SharedRunCleanupAction::ArchiveThenDelete &&
+            plan.cleanup.shared_run_on_failure == satsuma::SharedRunCleanupAction::Retain,
+        "task cleanup policy changed during parsing");
+    expect(
+        satsuma::guest_work_cleanup_action_name(plan.cleanup.guest_work_on_success) == "delete" &&
+            satsuma::shared_run_cleanup_action_name(plan.cleanup.shared_run_on_success) ==
+                "archive_then_delete",
+        "task cleanup policy names changed");
+
+    value["schema_version"] = 1;
+    satsuma::write_json_atomic(plan_path, value);
+    expect_error(
+        [&plan_path] { static_cast<void>(satsuma::load_task_plan(plan_path)); },
+        "task schema 1 accepted cleanup policies");
+
+    value["schema_version"] = 2;
+    value["cleanup"]["guest_work"]["on_failure"] = "archive_then_delete";
+    satsuma::write_json_atomic(plan_path, value);
+    expect_error(
+        [&plan_path] { static_cast<void>(satsuma::load_task_plan(plan_path)); },
+        "Guest cleanup accepted a shared-run-only action");
 }
 
 // 验证用户任务会尽早拒绝未知字段和 Windows 等价的重复收集路径。
@@ -913,7 +1032,9 @@ int main() {
         test_ai_snapshot_deletion();
         test_protocol_round_trip();
         test_task_run_as_protocol(root);
+        test_script_step_protocol(root);
         test_task_lifecycle_policy(root);
+        test_task_cleanup_policy(root);
         test_task_input_validation(root);
         test_run_lifecycle(root);
         test_claim_recovery_decision(root);

@@ -39,7 +39,7 @@ void print_usage() {
 // 拒绝把兼容读取的旧 agent.json 用于安装或执行新 Agent。
 void require_current_file_protocol(const satsuma::AgentConfig& config) {
     if (config.protocol_version != satsuma::kRunManifestProtocolVersion) {
-        throw satsuma::Error("Agent execution requires file protocol version 2");
+        throw satsuma::Error("Agent execution requires file protocol version 3");
     }
 }
 
@@ -136,7 +136,13 @@ int wmain(const int argc, wchar_t* argv[]) {
         if (mode == L"--validate-config") {
             nlohmann::json output = {
                 {"status", "valid"},
+                {"storage_root", satsuma::path_to_utf8(config.storage_root)},
+                {"migration_required", config.legacy_storage_layout},
             };
+            if (config.legacy_storage_layout) {
+                output["migration_hint"] =
+                    "Run install-agent.ps1 to migrate into the unified storage layout";
+            }
             output["vm_id"] = config.vm_id_configured
                 ? nlohmann::json(config.vm_id)
                 : nlohmann::json(nullptr);

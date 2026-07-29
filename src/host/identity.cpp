@@ -3,10 +3,12 @@
 
 #include <algorithm>
 #include <chrono>
+#include <chrono>
 #include <filesystem>
 #include <map>
 #include <set>
 #include <string>
+#include <thread>
 
 #include <nlohmann/json.hpp>
 
@@ -16,6 +18,7 @@
 #include "satsuma/core/json_io.hpp"
 #include "satsuma/core/lifecycle.hpp"
 #include "satsuma/core/path.hpp"
+#include "satsuma/core/sha256.hpp"
 
 namespace satsuma::host {
 namespace {
@@ -44,8 +47,10 @@ void validate_presence_common(
     const nlohmann::json& presence,
     const LabConfig& config,
     const std::string& hardware_id) {
+    const int protocol_version = presence.value("protocol_version", 0);
     if (presence.value("schema_version", 0) != 1 ||
-        presence.value("protocol_version", 0) != kRunManifestProtocolVersion ||
+        (protocol_version != kIdentityRunManifestProtocolVersion &&
+         protocol_version != kRunManifestProtocolVersion) ||
         presence.value("lab_id", std::string{}) != config.lab_id ||
         normalize_hardware_id(presence.value("hardware_id", std::string{})) != hardware_id) {
         throw Error("Agent presence identity mismatch for hardware_id " + hardware_id);
@@ -67,8 +72,10 @@ void validate_presence_common(
         }
         try {
             const nlohmann::json presence = load_json(entry.path());
+            const int protocol_version = presence.value("protocol_version", 0);
             if (presence.value("schema_version", 0) != 1 ||
-                presence.value("protocol_version", 0) != kRunManifestProtocolVersion ||
+                (protocol_version != kIdentityRunManifestProtocolVersion &&
+                 protocol_version != kRunManifestProtocolVersion) ||
                 presence.value("lab_id", std::string{}) != config.lab_id) {
                 continue;
             }
@@ -148,6 +155,19 @@ std::filesystem::path vm_presence_path(const LabConfig& config, const VmConfig& 
         std::filesystem::path(L"agents") / path_from_utf8(key + ".json"));
 }
 
+// 返回指定 presence 所声明硬件身份的环境清单路径。
+[[nodiscard]] std::filesystem::path presence_inventory_path(
+    const LabConfig& config,
+    const nlohmann::json& presence) {
+    const std::string hardware_id = presence.value("hardware_id", std::string{});
+    if (hardware_id.empty()) {
+        throw Error("Agent presence omitted hardware_id");
+    }
+    return resolve_under_root(
+        config.shared_folder.host_root,
+        std::filesystem::path(L"agents") / path_from_utf8(hardware_id + ".inventory.json"));
+}
+
 nlohmann::json load_vm_presence(const LabConfig& config, const VmConfig& vm) {
     const std::filesystem::path path = vm_presence_path(config, vm);
     const nlohmann::json presence = load_json(path);
@@ -169,6 +189,81 @@ nlohmann::json load_vm_presence(const LabConfig& config, const VmConfig& vm) {
         validate_presence_common(presence, config, vm.hardware_id);
     }
     return presence;
+}
+
+nlohmann::json load_vm_inventory(const LabConfig& config, const VmConfig& vm) {
+    const nlohmann::json presence = load_vm_presence(config, vm);
+    if (!presence.contains("inventory") || !presence.at("inventory").is_object()) {
+        throw Error("Agent presence omitted inventory reference for VM " + vm.id);
+    }
+    const nlohmann::json& reference = presence.at("inventory");
+    if (reference.value("schema_version", 0) != 1 ||
+        reference.value("observed_at", std::string{}).empty()) {
+        throw Error("Agent inventory reference is invalid for VM " + vm.id);
+    }
+    const std::string expected_digest = reference.value("sha256", std::string{});
+    const std::filesystem::path path = presence_inventory_path(config, presence);
+    if (expected_digest.size() != 64 || sha256_file(path) != expected_digest) {
+        throw Error("Agent inventory digest mismatch for VM " + vm.id);
+    }
+    const nlohmann::json inventory = load_json(path);
+    if (inventory.value("schema_version", 0) != 1 ||
+        inventory.value("lab_id", std::string{}) != config.lab_id ||
+        inventory.value("vm_id", std::string{}) != vm.id ||
+        inventory.value("hardware_id", std::string{}) !=
+            presence.value("hardware_id", std::string{}) ||
+        inventory.value("observed_at", std::string{}) !=
+            reference.value("observed_at", std::string{})) {
+        throw Error("Agent inventory identity mismatch for VM " + vm.id);
+    }
+    if (!inventory.contains("script_engines") || !inventory.at("script_engines").is_array() ||
+        !inventory.contains("drives") || !inventory.at("drives").is_array()) {
+        throw Error("Agent inventory capability fields are invalid for VM " + vm.id);
+    }
+    return inventory;
+}
+
+nlohmann::json refresh_vm_inventory(
+    const LabConfig& config,
+    const VmConfig& vm,
+    const std::chrono::seconds timeout) {
+    if (timeout.count() < 1 || timeout.count() > 300) {
+        throw Error("Inventory refresh timeout must be between 1 and 300 seconds");
+    }
+    const nlohmann::json presence = load_vm_presence(config, vm);
+    const std::string hardware_id = presence.value("hardware_id", std::string{});
+    const std::string request_id = make_id("inventory");
+    const std::filesystem::path request_path = resolve_under_root(
+        config.shared_folder.host_root,
+        std::filesystem::path(L"agents") /
+            path_from_utf8(hardware_id + ".inventory-refresh.json"));
+    write_json_atomic(request_path, {
+        {"schema_version", 1},
+        {"lab_id", config.lab_id},
+        {"vm_id", vm.id},
+        {"hardware_id", hardware_id},
+        {"request_id", request_id},
+        {"requested_at", utc_timestamp()},
+    });
+
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    std::string last_error;
+    do {
+        try {
+            nlohmann::json inventory = load_vm_inventory(config, vm);
+            if (inventory.value("refresh_request_id", std::string{}) == request_id) {
+                std::error_code cleanup_error;
+                std::filesystem::remove(request_path, cleanup_error);
+                return inventory;
+            }
+        } catch (const std::exception& error) {
+            last_error = error.what();
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    } while (std::chrono::steady_clock::now() < deadline);
+    throw Error(
+        "Timed out while waiting for Agent inventory refresh for VM " + vm.id +
+        (last_error.empty() ? std::string{} : ": " + last_error));
 }
 
 nlohmann::json discover_agents(const LabConfig& config) {
@@ -203,6 +298,7 @@ nlohmann::json discover_agents(const LabConfig& config) {
                 {"vm_id", presence.value("vm_id", std::string{})},
                 {"status", presence.value("status", std::string{})},
                 {"agent_version", presence.value("agent_version", std::string{})},
+                {"inventory", presence.value("inventory", nlohmann::json(nullptr))},
                 {"updated_at", presence.value("updated_at", std::string{})},
             };
             if (const VmConfig* vm = find_vm_by_hardware(config, hardware_id); vm != nullptr) {

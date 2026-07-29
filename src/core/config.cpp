@@ -7,6 +7,7 @@
 #include <string_view>
 
 #include <nlohmann/json.hpp>
+#include <windows.h>
 
 #include "satsuma/core/errors.hpp"
 #include "satsuma/core/hardware_identity.hpp"
@@ -169,7 +170,7 @@ AgentConfig load_agent_config(const std::filesystem::path& path) {
         value,
         {"$schema", "schema_version", "protocol_version", "lab_id", "vm_id",
          "agent_version", "last_update_id", "shared_root", "local_work_root",
-         "poll_interval_ms", "reconnect_interval_ms"},
+         "storage_root", "poll_interval_ms", "reconnect_interval_ms"},
         "Agent configuration");
     validate_schema_version(value, "agent.json");
 
@@ -191,12 +192,31 @@ AgentConfig load_agent_config(const std::filesystem::path& path) {
     config.local_work_root = path_from_utf8(required_string(value, "local_work_root"));
     require_absolute_path(config.shared_root, "shared_root");
     require_absolute_path(config.local_work_root, "local_work_root");
+    config.legacy_storage_layout = !value.contains("storage_root");
+    config.storage_root = config.legacy_storage_layout
+        ? config.local_work_root.parent_path()
+        : path_from_utf8(required_string(value, "storage_root"));
+    require_absolute_path(config.storage_root, "storage_root");
+    const std::filesystem::path storage_drive = config.storage_root.root_path();
+    if (storage_drive.empty() || GetDriveTypeW(storage_drive.c_str()) != DRIVE_FIXED) {
+        throw Error("storage_root must be located on a local fixed drive");
+    }
+    if (!config.legacy_storage_layout) {
+        const std::filesystem::path expected_work =
+            (config.storage_root / L"work").lexically_normal();
+        if (_wcsicmp(
+                expected_work.native().c_str(),
+                config.local_work_root.lexically_normal().native().c_str()) != 0) {
+            throw Error("local_work_root must equal <storage_root>/work");
+        }
+    }
     config.poll_interval_ms = value.value("poll_interval_ms", 1000);
     config.reconnect_interval_ms = value.value("reconnect_interval_ms", 1000);
 
     if (config.protocol_version != kLegacyRunManifestProtocolVersion &&
+        config.protocol_version != kIdentityRunManifestProtocolVersion &&
         config.protocol_version != kRunManifestProtocolVersion) {
-        throw Error("agent.json requires protocol_version 1 or 2");
+        throw Error("agent.json requires protocol_version 1, 2, or 3");
     }
     if (config.poll_interval_ms < 100 || config.poll_interval_ms > 60'000) {
         throw Error("poll_interval_ms must be between 100 and 60000");

@@ -6,11 +6,11 @@
   "additionalProperties": false,
   "required": [
     "schema_version", "protocol_version", "lab_id", "vm_id", "hardware_id", "agent_version",
-    "update_id", "session_id", "boot_id", "process_id", "status", "updated_at"
+    "update_id", "session_id", "boot_id", "process_id", "status", "inventory", "updated_at"
   ],
   "properties": {
     "schema_version": {"const": 1},
-    "protocol_version": {"const": 2},
+    "protocol_version": {"const": 3},
     "lab_id": {"type": "string", "pattern": "^[A-Za-z0-9_-]{1,128}$"},
     "vm_id": {"type": "string", "pattern": "^[A-Za-z0-9_-]{1,128}$"},
     "hardware_id": {"$ref": "#/$defs/hardware_id"},
@@ -23,6 +23,16 @@
     "boot_id": {"type": "string", "minLength": 1},
     "process_id": {"type": "integer", "minimum": 0},
     "status": {"enum": ["idle", "running", "unbound"]},
+    "inventory": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "observed_at", "sha256"],
+      "properties": {
+        "schema_version": {"const": 1},
+        "observed_at": {"type": "string", "format": "date-time"},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
     "updated_at": {"type": "string", "format": "date-time"}
   },
   "$defs": {

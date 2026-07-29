@@ -8,6 +8,7 @@
 #include "satsuma/core/config.hpp"
 #include "satsuma/core/task.hpp"
 #include "claim_renewal.hpp"
+#include "inventory.hpp"
 #include "process_runner.hpp"
 
 namespace satsuma::vm {
@@ -36,6 +37,9 @@ public:
     void run_watch(std::stop_token stop_token = {});
 
 private:
+    // 扫描并执行当前文件通道中等待当前 VM 的任务。
+    [[nodiscard]] int execute_pending_runs(std::stop_token stop_token);
+
     // 执行已领取步骤，仅在仍持有有效 claim 时发布规范 execution.json。
     void execute_step(
         const std::filesystem::path& run_directory,
@@ -67,6 +71,7 @@ private:
     std::string boot_id_;      // 当前进程启动 ID
     std::filesystem::path helper_executable_; // 交互用户 helper 路径
     AgentRuntimeOptions runtime_options_; // 当前进程使用的可注入运行策略
+    InventoryPublisher inventory_; // 当前会话的 Guest 环境快照
     ProcessRunner runner_;     // Windows Job Object 执行器
 };
 

@@ -6,8 +6,10 @@ add_library(
     ../src/vm/claim_renewal.cpp
     ../src/vm/claim_store.cpp
     ../src/vm/hardware_identity.cpp
+    ../src/vm/inventory.cpp
     ../src/vm/interactive_process.cpp
     ../src/vm/process_runner.cpp
+    ../src/vm/process_environment.cpp
     ../src/vm/service.cpp
     ../src/vm/update.cpp
 )
@@ -21,7 +23,7 @@ target_compile_definitions(
 )
 target_link_libraries(
     SatsumaVmTestLib
-    PUBLIC SatsumaCore advapi32 shell32 userenv wtsapi32
+    PUBLIC SatsumaCore advapi32 shell32 userenv version wtsapi32
 )
 if(MSVC)
     target_compile_options(

@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
+#include <map>
 #include <optional>
 #include <stop_token>
 #include <string>
@@ -15,6 +16,8 @@ namespace satsuma::vm {
 struct ProcessRequest {
     std::filesystem::path program;          // VM 本地程序绝对路径
     std::vector<std::string> arguments;     // UTF-8 进程参数
+    bool verbatim_arguments{false};         // 参数已由内部解释器适配器安全转义
+    std::map<std::string, std::string> environment_overrides; // 子进程专用环境覆盖
     std::filesystem::path working_directory;// VM 本地工作目录
     std::filesystem::path stdout_path;      // 持续落盘的 stdout 路径
     std::filesystem::path stderr_path;      // 持续落盘的 stderr 路径

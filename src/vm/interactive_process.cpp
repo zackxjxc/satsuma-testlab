@@ -7,6 +7,7 @@
 #include <exception>
 #include <functional>
 #include <limits>
+#include <map>
 #include <stop_token>
 #include <string>
 #include <string_view>
@@ -14,6 +15,7 @@
 #include <vector>
 
 #include <windows.h>
+#include <aclapi.h>
 #include <sddl.h>
 #include <userenv.h>
 #include <wtsapi32.h>
@@ -25,6 +27,7 @@
 #include "satsuma/core/json_io.hpp"
 #include "satsuma/core/path.hpp"
 #include "satsuma/core/windows_command_line.hpp"
+#include "process_environment.hpp"
 
 namespace satsuma::vm {
 namespace {
@@ -397,6 +400,62 @@ void run_impersonated(
     revert_to_self_or_fail_fast();
 }
 
+// 只给当前已验证用户 SID 增加本次运行目录的可继承权限。
+void grant_run_directory_access(
+    const std::filesystem::path& directory,
+    const HANDLE token) {
+    DWORD size = 0;
+    GetTokenInformation(token, TokenUser, nullptr, 0, &size);
+    if (GetLastError() != ERROR_INSUFFICIENT_BUFFER || size == 0) {
+        throw Error("Cannot query interactive user SID");
+    }
+    std::vector<BYTE> token_buffer(size);
+    ensure_win32(
+        GetTokenInformation(token, TokenUser, token_buffer.data(), size, &size),
+        "GetTokenInformation(TokenUser)");
+    const auto* user = reinterpret_cast<const TOKEN_USER*>(token_buffer.data());
+
+    PACL current_acl = nullptr;
+    PSECURITY_DESCRIPTOR descriptor = nullptr;
+    const DWORD read_status = GetNamedSecurityInfoW(
+        const_cast<wchar_t*>(directory.c_str()),
+        SE_FILE_OBJECT,
+        DACL_SECURITY_INFORMATION,
+        nullptr,
+        nullptr,
+        &current_acl,
+        nullptr,
+        &descriptor);
+    if (read_status != ERROR_SUCCESS) {
+        throw Error("GetNamedSecurityInfoW failed with Win32 error " + std::to_string(read_status));
+    }
+
+    EXPLICIT_ACCESSW access{};
+    access.grfAccessPermissions = GENERIC_READ | GENERIC_WRITE | GENERIC_EXECUTE | DELETE;
+    access.grfAccessMode = GRANT_ACCESS;
+    access.grfInheritance = SUB_CONTAINERS_AND_OBJECTS_INHERIT;
+    BuildTrusteeWithSidW(&access.Trustee, user->User.Sid);
+    PACL updated_acl = nullptr;
+    const DWORD merge_status = SetEntriesInAclW(1, &access, current_acl, &updated_acl);
+    if (merge_status != ERROR_SUCCESS) {
+        LocalFree(descriptor);
+        throw Error("SetEntriesInAclW failed with Win32 error " + std::to_string(merge_status));
+    }
+    const DWORD write_status = SetNamedSecurityInfoW(
+        const_cast<wchar_t*>(directory.c_str()),
+        SE_FILE_OBJECT,
+        DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+        nullptr,
+        nullptr,
+        updated_acl,
+        nullptr);
+    LocalFree(updated_acl);
+    LocalFree(descriptor);
+    if (write_status != ERROR_SUCCESS) {
+        throw Error("SetNamedSecurityInfoW failed with Win32 error " + std::to_string(write_status));
+    }
+}
+
 // 打开可由 Host 实时读取的继承型日志句柄。
 [[nodiscard]] UniqueHandle open_log(const std::filesystem::path& path) {
     std::filesystem::create_directories(path.parent_path());
@@ -554,9 +613,14 @@ InteractiveUserSession& InteractiveUserSession::operator=(
 
 InteractiveUserSession InteractiveUserSession::acquire(
     const std::string& lab_id,
-    const std::string& run_id) {
+    const std::string& run_id,
+    const std::filesystem::path& local_work_root,
+    const std::string& vm_id) {
     validate_identifier(lab_id, "interactive lab_id");
     validate_identifier(run_id, "interactive run_id");
+    if (!local_work_root.empty()) {
+        validate_identifier(vm_id, "interactive vm_id");
+    }
 #ifdef SATSUMA_INTERACTIVE_TESTS
     if (g_interactive_session_unavailable) {
         throw Error(kNoInteractiveUserSessionError);
@@ -578,15 +642,13 @@ InteractiveUserSession InteractiveUserSession::acquire(
             state->selected_user.token.get(),
             FALSE),
         "CreateEnvironmentBlock");
-    state->working_directory =
-        environment_path(environment.get(), L"LOCALAPPDATA") /
-        L"SatsumaTestLab" /
-        path_from_utf8(lab_id) /
-        L"runs" /
-        path_from_utf8(run_id);
-    run_impersonated(state->selected_user.token.get(), [&state] {
-        std::filesystem::create_directories(state->working_directory);
-    });
+    state->working_directory = local_work_root.empty()
+        ? environment_path(environment.get(), L"LOCALAPPDATA") /
+            L"SatsumaTestLab" / path_from_utf8(lab_id) / L"runs" / path_from_utf8(run_id)
+        : local_work_root / path_from_utf8(lab_id) / path_from_utf8(run_id) /
+            path_from_utf8(vm_id);
+    std::filesystem::create_directories(state->working_directory);
+    grant_run_directory_access(state->working_directory, state->selected_user.token.get());
     return InteractiveUserSession(std::move(state));
 }
 
@@ -775,6 +837,8 @@ ProcessResult InteractiveUserSession::run(
             {"session_id", state_->identity.session_id},
             {"program", path_to_utf8(request.program)},
             {"arguments", request.arguments},
+            {"verbatim_arguments", request.verbatim_arguments},
+            {"environment_overrides", request.environment_overrides},
             {"working_directory", path_to_utf8(request.working_directory)},
             {"stdin_handle", duplicate_remote_handle(
                 helper_process.get(), standard_input.get())},
@@ -952,6 +1016,9 @@ int run_interactive_process_helper(
             path_from_utf8(request.at("working_directory").get<std::string>());
         const std::vector<std::string> arguments =
             request.at("arguments").get<std::vector<std::string>>();
+        const bool verbatim_arguments = request.value("verbatim_arguments", false);
+        const std::map<std::string, std::string> environment_overrides =
+            request.value("environment_overrides", std::map<std::string, std::string>{});
 
         UniqueHandle standard_input(reinterpret_cast<HANDLE>(
             static_cast<std::uintptr_t>(
@@ -973,8 +1040,12 @@ int run_interactive_process_helper(
         startup.hStdOutput = standard_output.get();
         startup.hStdError = standard_error.get();
         PROCESS_INFORMATION process_info{};
-        std::vector<wchar_t> command =
-            build_windows_command_line(program, arguments);
+        std::vector<wchar_t> command = verbatim_arguments
+            ? build_windows_command_line_verbatim(program, arguments)
+            : build_windows_command_line(program, arguments);
+        std::vector<wchar_t> target_environment = environment_overrides.empty()
+            ? std::vector<wchar_t>{}
+            : build_process_environment(environment_overrides);
         ensure_win32(
             CreateProcessW(
                 program.c_str(),
@@ -982,8 +1053,8 @@ int run_interactive_process_helper(
                 nullptr,
                 nullptr,
                 TRUE,
-                CREATE_NO_WINDOW,
-                nullptr,
+                CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT,
+                target_environment.empty() ? nullptr : target_environment.data(),
                 working_directory.c_str(),
                 &startup,
                 &process_info),

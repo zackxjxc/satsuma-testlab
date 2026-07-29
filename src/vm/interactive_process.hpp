@@ -32,7 +32,9 @@ public:
     // 获取当前活动控制台用户并创建本次运行工作目录。
     [[nodiscard]] static InteractiveUserSession acquire(
         const std::string& lab_id,
-        const std::string& run_id);
+        const std::string& run_id,
+        const std::filesystem::path& local_work_root = {},
+        const std::string& vm_id = {});
 
     // 返回交互用户本地工作目录。
     [[nodiscard]] const std::filesystem::path& working_directory() const noexcept;

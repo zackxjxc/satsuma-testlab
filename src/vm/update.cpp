@@ -105,8 +105,13 @@ struct UpdateOperations {
 [[nodiscard]] UpdatePaths make_update_paths(
     const AgentConfig& config,
     const std::filesystem::path& update_directory) {
+    const std::filesystem::path storage_root = config.storage_root.empty()
+        ? config.local_work_root.parent_path()
+        : config.storage_root;
     const std::filesystem::path install_root =
-        std::filesystem::absolute(config.local_work_root).parent_path();
+        config.legacy_storage_layout || config.storage_root.empty()
+        ? std::filesystem::absolute(storage_root)
+        : std::filesystem::absolute(storage_root) / L"agent";
     const std::filesystem::path bin_root = install_root / L"bin";
     return {
         update_directory,
