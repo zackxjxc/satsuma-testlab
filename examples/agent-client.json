@@ -4,7 +4,7 @@
   "protocol_version": 3,
   "lab_id": "local_windows_lab",
   "vm_id": "client",
-  "agent_version": "0.1.0",
+  "agent_version": "0.2.0",
   "shared_root": "\\\\vmware-host\\Shared Folders\\vm-share",
   "storage_root": "D:\\SatsumaTestLab",
   "local_work_root": "D:\\SatsumaTestLab\\work",
