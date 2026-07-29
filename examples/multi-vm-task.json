@@ -1,9 +1,19 @@
 {
   "$schema": "../schemas/task.schema.json",
-  "schema_version": 1,
+  "schema_version": 2,
   "name": "two VM lifecycle smoke",
   "run_id": "replace_with_unique_run_id",
   "artifacts": [],
+  "cleanup": {
+    "guest_work": {
+      "on_success": "delete",
+      "on_failure": "retain"
+    },
+    "shared_run": {
+      "on_success": "archive_then_delete",
+      "on_failure": "retain"
+    }
+  },
   "lifecycle": {
     "vms": [
       {

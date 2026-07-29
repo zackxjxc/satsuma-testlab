@@ -16,6 +16,7 @@
 #include "controller.hpp"
 #include "diagnostics.hpp"
 #include "identity.hpp"
+#include "lab_lease.hpp"
 #include "orchestrator.hpp"
 #include "satsuma/core/config.hpp"
 #include "satsuma/core/errors.hpp"
@@ -81,10 +82,15 @@ void validate_options(
         return subcommand == L"list" || subcommand == L"create-ai" || subcommand == L"delete-ai";
     }
     if (command == L"agent") {
-        return subcommand == L"update" || subcommand == L"rebind";
+        return subcommand == L"update" || subcommand == L"rebind" ||
+            subcommand == L"inventory" || subcommand == L"inventory refresh";
     }
     if (command == L"runs") {
-        return subcommand == L"list" || subcommand == L"cancel" || subcommand == L"prune";
+        return subcommand == L"list" || subcommand == L"cancel" || subcommand == L"prune" ||
+            subcommand == L"finalize";
+    }
+    if (command == L"lab") {
+        return subcommand == L"status" || subcommand == L"recover" || subcommand == L"unlock";
     }
     return false;
 }
@@ -99,7 +105,7 @@ void validate_command_options(
     } else if (command == L"discover") {
         validate_options(options, {L"config"});
     } else if (command == L"run") {
-        validate_options(options, {L"config", L"plan"});
+        validate_options(options, {L"config", L"plan", L"timeout-seconds"});
     } else if (command == L"orchestrate") {
         validate_options(options, {L"config", L"plan", L"timeout-seconds"});
     } else if (command == L"report") {
@@ -123,12 +129,24 @@ void validate_command_options(
             options,
             {L"config", L"vm", L"hardware-id", L"next-vm", L"binary", L"version",
              L"timeout-seconds"});
+    } else if (command == L"agent" && subcommand == L"inventory") {
+        validate_options(options, {L"config", L"vm"});
+    } else if (command == L"agent" && subcommand == L"inventory refresh") {
+        validate_options(options, {L"config", L"vm", L"timeout-seconds"});
     } else if (command == L"runs" && subcommand == L"list") {
         validate_options(options, {L"config"});
     } else if (command == L"runs" && subcommand == L"cancel") {
         validate_options(options, {L"config", L"run", L"reason"});
     } else if (command == L"runs" && subcommand == L"prune") {
         validate_options(options, {L"config", L"keep"});
+    } else if (command == L"runs" && subcommand == L"finalize") {
+        validate_options(options, {L"config", L"run"});
+    } else if (command == L"lab" && subcommand == L"status") {
+        validate_options(options, {L"config"});
+    } else if (command == L"lab" && subcommand == L"recover") {
+        validate_options(options, {L"config", L"plan", L"timeout-seconds"});
+    } else if (command == L"lab" && subcommand == L"unlock") {
+        validate_options(options, {L"config", L"force"});
     }
 }
 
@@ -271,13 +289,22 @@ void print_usage() {
            "[--timeout-seconds <1-3600>] --config lab.local.json\n"
         << "  SatsumaHost agent rebind --vm <vm-id> --hardware-id <uuid> "
            "--config lab.local.json\n"
-        << "  SatsumaHost run --config lab.local.json --plan task.json\n"
+        << "  SatsumaHost agent inventory --config lab.local.json --vm <vm-id>\n"
+        << "  SatsumaHost agent inventory refresh --config lab.local.json --vm <vm-id> "
+           "[--timeout-seconds <1-300>]\n"
+        << "  SatsumaHost run --config lab.local.json --plan task.json "
+           "[--timeout-seconds <1-300>]\n"
         << "  SatsumaHost orchestrate --config lab.local.json --plan task.json "
            "[--timeout-seconds <1-86400>]\n"
         << "  SatsumaHost report --config lab.local.json --run <run-id> [--wait-seconds <1-86400>]\n"
         << "  SatsumaHost runs list --config lab.local.json\n"
         << "  SatsumaHost runs cancel --config lab.local.json --run <run-id> [--reason <text>]\n"
-        << "  SatsumaHost runs prune --config lab.local.json --keep <0-10000>\n";
+        << "  SatsumaHost runs finalize --config lab.local.json --run <run-id>\n"
+        << "  SatsumaHost runs prune --config lab.local.json --keep <0-10000>\n"
+        << "  SatsumaHost lab status --config lab.local.json\n"
+        << "  SatsumaHost lab recover --config lab.local.json --plan task.json "
+           "[--timeout-seconds <1-86400>]\n"
+        << "  SatsumaHost lab unlock --config lab.local.json --force true\n";
 }
 
 }  // namespace
@@ -304,7 +331,7 @@ int wmain(const int argc, wchar_t* argv[]) {
         int options_start = 2;
         const bool grouped_command =
             command == L"vm" || command == L"snapshot" || command == L"agent" ||
-            command == L"runs";
+            command == L"runs" || command == L"lab";
         if (grouped_command) {
             if (argc < 3) {
                 print_usage();
@@ -312,6 +339,11 @@ int wmain(const int argc, wchar_t* argv[]) {
             }
             subcommand = argv[2];
             options_start = 3;
+            if (command == L"agent" && subcommand == L"inventory" && argc >= 4 &&
+                std::wstring_view(argv[3]) == L"refresh") {
+                subcommand = L"inventory refresh";
+                options_start = 4;
+            }
         }
 
         if (!is_supported_command(command, subcommand)) {
@@ -324,12 +356,61 @@ int wmain(const int argc, wchar_t* argv[]) {
         const std::filesystem::path config_path = require_option(options, L"config");
         satsuma::LabConfig config = satsuma::load_lab_config(config_path);
 
+        if (command == L"lab" && subcommand == L"status") {
+            std::cout << satsuma::host::LabLease::status(config).dump(2) << '\n';
+            return 0;
+        }
+        if (command == L"lab" && subcommand == L"unlock") {
+            if (satsuma::path_to_utf8(require_option(options, L"force")) != "true") {
+                throw satsuma::Error("lab unlock requires --force true");
+            }
+            std::cout << satsuma::host::LabLease::force_unlock(config, config_path).dump(2) << '\n';
+            return 0;
+        }
+        if (command == L"lab" && subcommand == L"recover") {
+            const std::filesystem::path plan_path = require_option(options, L"plan");
+            const satsuma::TaskPlan plan = satsuma::load_task_plan(plan_path);
+            if (!plan.lifecycle.has_value() || !plan.run_id.has_value()) {
+                throw satsuma::Error("lab recover requires a lifecycle plan with an explicit run_id");
+            }
+            auto lease = satsuma::host::LabLease::acquire(
+                config, config_path, "lab recover", plan.run_id, true);
+            satsuma::host::Orchestrator orchestrator(config);
+            const nlohmann::json output = orchestrator.execute(
+                plan_path, parse_orchestration_timeout(options));
+            const std::string status = output.at("status").get<std::string>();
+            if (status == "COMPLETED" || status == "FAILED") {
+                lease->release("released");
+            }
+            std::cout << output.dump(2) << '\n';
+            return status == "COMPLETED" ? 0 : 1;
+        }
+
         if (command == L"discover") {
             std::cout << satsuma::host::discover_agents(config).dump(2) << '\n';
             return 0;
         }
 
+        const bool short_write_operation =
+            command == L"vm" ||
+            (command == L"snapshot" && subcommand != L"list") ||
+            (command == L"agent" && subcommand != L"inventory") ||
+            (command == L"runs" && (subcommand == L"cancel" || subcommand == L"prune"));
+        std::unique_ptr<satsuma::host::LabLease> operation_lease;
+        if (short_write_operation) {
+            operation_lease = satsuma::host::LabLease::acquire(
+                config,
+                config_path,
+                satsuma::path_to_utf8(command + (subcommand.empty() ? L"" : L" " + subcommand)));
+        }
+
         if (command == L"runs") {
+            if (subcommand == L"finalize") {
+                const std::string run_id = satsuma::path_to_utf8(require_option(options, L"run"));
+                std::cout << satsuma::host::LabLease::finalize_run(
+                    config, config_path, run_id).dump(2) << '\n';
+                return 0;
+            }
             satsuma::host::Controller controller(std::move(config));
             if (subcommand == L"list") {
                 std::cout << controller.list_runs().dump(2) << '\n';
@@ -341,10 +422,14 @@ int wmain(const int argc, wchar_t* argv[]) {
                 const std::string reason = reason_option == options.end()
                     ? "Cancellation requested by SatsumaHost"
                     : satsuma::path_to_utf8(reason_option->second);
-                std::cout << controller.cancel_run(run_id, reason).dump(2) << '\n';
+                const nlohmann::json output = controller.cancel_run(run_id, reason);
+                operation_lease->release("released");
+                std::cout << output.dump(2) << '\n';
                 return 0;
             }
-            std::cout << controller.prune_runs(parse_run_retention(options)).dump(2) << '\n';
+            const nlohmann::json output = controller.prune_runs(parse_run_retention(options));
+            operation_lease->release("released");
+            std::cout << output.dump(2) << '\n';
             return 0;
         }
 
@@ -355,8 +440,13 @@ int wmain(const int argc, wchar_t* argv[]) {
                 vm_id = satsuma::path_to_utf8(vm_option->second);
             }
             const std::chrono::seconds timeout = parse_diagnostic_timeout(options);
+            auto lease = satsuma::host::LabLease::acquire(config, config_path, "check");
             satsuma::host::Diagnostics diagnostics(std::move(config));
             const nlohmann::json report = diagnostics.run_probe(vm_id, timeout);
+            if (report.at("status") == "ready" ||
+                (report.contains("run_id") && report.at("run_id").is_null())) {
+                lease->release("released");
+            }
             std::cout << report.dump(2) << '\n';
             const std::string status = report.at("status").get<std::string>();
             if (status == "ready") {
@@ -366,12 +456,23 @@ int wmain(const int argc, wchar_t* argv[]) {
         }
 
         if (command == L"agent") {
-            if (subcommand != L"update" && subcommand != L"rebind") {
-                print_usage();
-                return 2;
-            }
             const std::string vm_id = satsuma::path_to_utf8(
                 require_option(options, L"vm"));
+            const satsuma::VmConfig* vm = satsuma::find_vm(config, vm_id);
+            if (vm == nullptr) {
+                throw satsuma::Error("Unknown VM id: " + vm_id);
+            }
+            if (subcommand == L"inventory") {
+                std::cout << satsuma::host::load_vm_inventory(config, *vm).dump(2) << '\n';
+                return 0;
+            }
+            if (subcommand == L"inventory refresh") {
+                const nlohmann::json output = satsuma::host::refresh_vm_inventory(
+                    config, *vm, parse_diagnostic_timeout(options));
+                operation_lease->release("released");
+                std::cout << output.dump(2) << '\n';
+                return 0;
+            }
             const auto hardware_option = options.find(L"hardware-id");
             if (subcommand == L"rebind" && hardware_option != options.end()) {
                 if (options.contains(L"next-vm") || options.contains(L"binary") ||
@@ -384,6 +485,7 @@ int wmain(const int argc, wchar_t* argv[]) {
                     config,
                     vm_id,
                     satsuma::path_to_utf8(hardware_option->second)).dump(2) << '\n';
+                operation_lease->release("released");
                 return 0;
             }
             const std::filesystem::path binary = require_option(options, L"binary");
@@ -405,6 +507,9 @@ int wmain(const int argc, wchar_t* argv[]) {
             nlohmann::json output = result;
             output["manifest"] = manifest;
             std::cout << output.dump(2) << '\n';
+            if (result.status == "succeeded") {
+                operation_lease->release("released");
+            }
             return result.status == "succeeded" ? 0 : 1;
         }
 
@@ -456,6 +561,7 @@ int wmain(const int argc, wchar_t* argv[]) {
                 output["mode"] = stop_mode;
             }
             std::cout << output.dump(2) << '\n';
+            operation_lease->release("released");
             return 0;
         }
 
@@ -491,7 +597,12 @@ int wmain(const int argc, wchar_t* argv[]) {
             }
             if (subcommand == L"delete-ai") {
                 const std::string snapshot_name = satsuma::path_to_utf8(require_option(options, L"snapshot"));
-                satsuma::validate_ai_snapshot_deletion(vm->snapshots, existing, snapshot_name);
+                try {
+                    satsuma::validate_ai_snapshot_deletion(vm->snapshots, existing, snapshot_name);
+                } catch (...) {
+                    operation_lease->release("rejected");
+                    throw;
+                }
                 const std::filesystem::path metadata_path = satsuma::resolve_under_root(
                     config.host.archive_root,
                     std::filesystem::path(L"snapshots") /
@@ -543,6 +654,7 @@ int wmain(const int argc, wchar_t* argv[]) {
                     output["reconciled"] = true;
                 }
                 std::cout << output.dump(2) << '\n';
+                operation_lease->release("released");
                 return 0;
             }
 
@@ -603,16 +715,27 @@ int wmain(const int argc, wchar_t* argv[]) {
                 output["reconciled"] = true;
             }
             std::cout << output.dump(2) << '\n';
+            operation_lease->release("released");
             return 0;
         }
 
         if (command == L"orchestrate") {
             const std::filesystem::path plan_path = require_option(options, L"plan");
             const std::chrono::seconds timeout = parse_orchestration_timeout(options);
+            const satsuma::TaskPlan plan = satsuma::load_task_plan(plan_path);
+            if (!plan.lifecycle.has_value() || !plan.run_id.has_value()) {
+                throw satsuma::Error(
+                    "Host orchestrate requires an explicit plan run_id for crash recovery");
+            }
+            auto lease = satsuma::host::LabLease::acquire(
+                config, config_path, "orchestrate", plan.run_id);
             satsuma::host::Orchestrator orchestrator(std::move(config));
             const nlohmann::json output = orchestrator.execute(plan_path, timeout);
-            std::cout << output.dump(2) << '\n';
             const std::string status = output.at("status").get<std::string>();
+            if (status == "COMPLETED" || status == "FAILED") {
+                lease->release("released");
+            }
+            std::cout << output.dump(2) << '\n';
             if (status == "COMPLETED") {
                 return 0;
             }
@@ -622,11 +745,38 @@ int wmain(const int argc, wchar_t* argv[]) {
             return status == "MANUAL_INTERVENTION_REQUIRED" ? 5 : 1;
         }
 
-        satsuma::host::Controller controller(std::move(config));
-
         if (command == L"run") {
             const std::filesystem::path plan_path = require_option(options, L"plan");
-            const satsuma::RunManifest manifest = controller.create_run(plan_path);
+            const satsuma::TaskPlan plan = satsuma::load_task_plan(plan_path);
+            if (plan.lifecycle.has_value()) {
+                throw satsuma::Error(
+                    "Task lifecycle policies require the Host orchestrator and cannot use run");
+            }
+            auto lease = satsuma::host::LabLease::acquire(config, config_path, "run");
+            satsuma::host::Diagnostics diagnostics(config);
+            const std::chrono::seconds check_timeout = parse_diagnostic_timeout(options);
+            std::vector<std::string> checked_vms;
+            nlohmann::json checks = nlohmann::json::array();
+            bool checks_ready = true;
+            for (const satsuma::TaskStep& step : plan.steps) {
+                if (std::find(checked_vms.begin(), checked_vms.end(), step.vm) != checked_vms.end()) {
+                    continue;
+                }
+                checked_vms.push_back(step.vm);
+                nlohmann::json check = diagnostics.run_probe(step.vm, check_timeout);
+                checks_ready = checks_ready && check.at("status") == "ready";
+                checks.push_back({{"vm_id", step.vm}, {"result", std::move(check)}});
+            }
+            if (!checks_ready) {
+                std::cout << nlohmann::json({
+                    {"status", "check_failed"},
+                    {"checks", checks},
+                }).dump(2) << '\n';
+                return 1;
+            }
+            satsuma::host::Controller controller(config);
+            const satsuma::RunManifest manifest = controller.create_run(plan);
+            lease->attach_run(manifest.run_id);
             nlohmann::json output = {
                 {"status", "prepared"},
                 {"run_id", manifest.run_id},
@@ -635,6 +785,7 @@ int wmain(const int argc, wchar_t* argv[]) {
             std::cout << output.dump(2) << '\n';
             return 0;
         }
+        satsuma::host::Controller controller(std::move(config));
         if (command == L"report") {
             const std::string run_id = satsuma::path_to_utf8(require_option(options, L"run"));
             const std::optional<std::chrono::seconds> wait = parse_report_wait(options);

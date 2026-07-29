@@ -113,7 +113,7 @@ function(run_multi_vm_scenario name expected_exit expected_status client_step ga
     set(agent_json [=[
 {
   "schema_version": 1,
-  "protocol_version": 2,
+  "protocol_version": 3,
   "lab_id": "multi_vm_lab",
   "vm_id": "@VM_ID@",
   "agent_version": "0.1.0",
@@ -135,7 +135,7 @@ function(run_multi_vm_scenario name expected_exit expected_status client_step ga
     set(run_id "multi_vm_${name}")
     set(plan_json [=[
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "name": "multi VM lifecycle @NAME@",
   "run_id": "@RUN_ID@",
   "artifacts": [
@@ -150,6 +150,10 @@ function(run_multi_vm_scenario name expected_exit expected_status client_step ga
       "shared_destination": "artifacts/gateway/SatsumaTestFixture.exe"
     }
   ],
+  "cleanup": {
+    "guest_work": {"on_success": "delete", "on_failure": "retain"},
+    "shared_run": {"on_success": "archive_then_delete", "on_failure": "retain"}
+  },
   "steps": [
     @CLIENT_STEP@,
     @GATEWAY_STEP@
@@ -266,6 +270,15 @@ function(run_multi_vm_scenario name expected_exit expected_status client_step ga
        NOT EXISTS "${finally_evidence}/results/gateway/gateway_finally/execution.json")
         message(FATAL_ERROR "Multi-VM ${name} omitted finally evidence")
     endif()
+    file(READ "${archive}/runs/${run_id}/orchestration.json" orchestration_identity)
+    string(JSON finally_run_id GET "${orchestration_identity}" finally_run_id)
+    if(expected_status STREQUAL "COMPLETED")
+        if(EXISTS "${share}/runs/${run_id}" OR EXISTS "${share}/runs/${finally_run_id}")
+            message(FATAL_ERROR "Multi-VM ${name} retained shared runs after verified archive")
+        endif()
+    elseif(NOT EXISTS "${share}/runs/${run_id}")
+        message(FATAL_ERROR "Multi-VM ${name} deleted failure evidence from the shared folder")
+    endif()
     file(READ "${main_evidence}/task.json" main_manifest)
     string(JSON step_count LENGTH "${main_manifest}" steps)
     string(JSON first_vm GET "${main_manifest}" steps 0 vm)
@@ -358,6 +371,35 @@ function(run_multi_vm_scenario name expected_exit expected_status client_step ga
         OUTPUT_VARIABLE reentry_output
         ERROR_VARIABLE reentry_error
     )
+    if(expected_status STREQUAL "RECOVERY_FAILED")
+        if(reentry_result EQUAL 0 OR
+           NOT reentry_error MATCHES "manual_intervention_required: stale active lab lease")
+            message(FATAL_ERROR
+                "Multi-VM ${name} cleanup failure did not retain its lease: "
+                "${reentry_error}\n${reentry_output}")
+        endif()
+        execute_process(
+            COMMAND "${HOST_EXE}" lab status --config "${root}/lab.json"
+            RESULT_VARIABLE lease_status_result
+            OUTPUT_VARIABLE lease_status_output
+            ERROR_VARIABLE lease_status_error
+        )
+        if(NOT lease_status_result EQUAL 0)
+            message(FATAL_ERROR
+                "Multi-VM ${name} cannot inspect retained lease: ${lease_status_error}")
+        endif()
+        string(JSON lease_state GET "${lease_status_output}" lease state)
+        string(JSON lease_run_id GET "${lease_status_output}" lease run_id)
+        if(NOT lease_state STREQUAL "active" OR NOT lease_run_id STREQUAL "${run_id}")
+            message(FATAL_ERROR
+                "Multi-VM ${name} cleanup failure changed retained lease: ${lease_status_output}")
+        endif()
+        file(SIZE "${vmrun_log}" vmrun_log_size_after_reentry)
+        if(NOT vmrun_log_size_after_reentry EQUAL vmrun_log_size_before_reentry)
+            message(FATAL_ERROR "Multi-VM ${name} blocked reentry called vmrun again")
+        endif()
+        return()
+    endif()
     if(NOT reentry_result EQUAL expected_exit)
         message(FATAL_ERROR
             "Multi-VM ${name} terminal reentry failed: ${reentry_error}\n${reentry_output}")
@@ -369,20 +411,11 @@ function(run_multi_vm_scenario name expected_exit expected_status client_step ga
         message(FATAL_ERROR
             "Multi-VM ${name} terminal reentry changed stable output: ${reentry_output}")
     endif()
-    if(expected_status STREQUAL "RECOVERY_FAILED")
-        string(FIND "${host_output}" "\"cleanup_actions\"" initial_cleanup_position)
-        string(FIND "${reentry_output}" "\"cleanup_actions\"" reentry_cleanup_position)
-        if(NOT initial_cleanup_position EQUAL -1 OR NOT reentry_cleanup_position EQUAL -1)
-            message(FATAL_ERROR
-                "Multi-VM ${name} exposed non-persisted cleanup status")
-        endif()
-    else()
-        string(JSON initial_cleanup_actions GET "${host_output}" cleanup_actions)
-        string(JSON reentry_cleanup_actions GET "${reentry_output}" cleanup_actions)
-        if(NOT reentry_cleanup_actions STREQUAL initial_cleanup_actions)
-            message(FATAL_ERROR
-                "Multi-VM ${name} terminal reentry changed cleanup actions: ${reentry_output}")
-        endif()
+    string(JSON initial_cleanup_actions GET "${host_output}" cleanup_actions)
+    string(JSON reentry_cleanup_actions GET "${reentry_output}" cleanup_actions)
+    if(NOT reentry_cleanup_actions STREQUAL initial_cleanup_actions)
+        message(FATAL_ERROR
+            "Multi-VM ${name} terminal reentry changed cleanup actions: ${reentry_output}")
     endif()
     file(SIZE "${vmrun_log}" vmrun_log_size_after_reentry)
     if(NOT vmrun_log_size_after_reentry EQUAL vmrun_log_size_before_reentry)

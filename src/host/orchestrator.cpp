@@ -48,6 +48,8 @@ struct OrchestrationArchive {
 
 constexpr std::chrono::seconds kVmStateReconciliationTimeout{5}; // 启停报错后的状态收敛等待上限
 constexpr std::chrono::milliseconds kVmStateReconciliationDelay{100}; // 状态对账轮询间隔
+constexpr std::chrono::seconds kSharedRunDeleteTimeout{5}; // 等待 Agent 释放共享目录句柄的上限
+constexpr std::chrono::milliseconds kSharedRunDeleteDelay{100}; // 共享目录删除重试间隔
 
 // 返回指定编排在 Host 归档中的稳定根目录。
 [[nodiscard]] std::filesystem::path orchestration_archive_root(
@@ -391,6 +393,67 @@ void copy_tree_without_reparse_points(
     }
 }
 
+// 生成证据目录内普通文件的稳定路径、大小和哈希清单。
+[[nodiscard]] nlohmann::json build_evidence_file_manifest(
+    const std::filesystem::path& root) {
+    struct EvidenceFile {
+        std::string path;
+        std::uintmax_t size;
+        std::string sha256;
+    };
+    std::vector<EvidenceFile> files;
+    std::filesystem::recursive_directory_iterator iterator(root);
+    const std::filesystem::recursive_directory_iterator end;
+    for (; iterator != end; ++iterator) {
+        const DWORD attributes = GetFileAttributesW(iterator->path().c_str());
+        if (attributes == INVALID_FILE_ATTRIBUTES) {
+            throw Error("Cannot inspect archived evidence path");
+        }
+        if ((attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
+            iterator.disable_recursion_pending();
+            throw Error("Archived evidence contains a forbidden reparse point");
+        }
+        if (iterator->is_directory()) {
+            continue;
+        }
+        if (!iterator->is_regular_file()) {
+            throw Error("Archived evidence contains an unsupported file type");
+        }
+        const std::filesystem::path relative = iterator->path().lexically_relative(root);
+        if (relative == L".archive-complete.json") {
+            continue;
+        }
+        files.push_back({
+            path_to_utf8(relative),
+            std::filesystem::file_size(iterator->path()),
+            sha256_file(iterator->path()),
+        });
+    }
+    std::sort(files.begin(), files.end(), [](const EvidenceFile& left, const EvidenceFile& right) {
+        return left.path < right.path;
+    });
+    nlohmann::json manifest = nlohmann::json::array();
+    for (const EvidenceFile& file : files) {
+        manifest.push_back({
+            {"path", file.path},
+            {"size", file.size},
+            {"sha256", file.sha256},
+        });
+    }
+    return manifest;
+}
+
+// 验证已发布归档的完成标记和全部文件摘要。
+void validate_archived_evidence(const std::filesystem::path& destination) {
+    const nlohmann::json marker = load_json(destination / L".archive-complete.json");
+    if (marker.value("schema_version", 0) != 1 ||
+        marker.value("status", std::string{}) != "complete" ||
+        !marker.contains("files") ||
+        marker.at("files") != build_evidence_file_manifest(destination)) {
+        throw Error("Run evidence archive failed validation: " + path_to_utf8(destination));
+    }
+}
+
 // 将共享目录运行证据一次性发布到 Guest 不可见的归档目录。
 void archive_run_evidence(
     const LabConfig& config,
@@ -405,22 +468,137 @@ void archive_run_evidence(
         std::filesystem::path(L"runs") / path_from_utf8(lifecycle_run_id) / L"evidence");
     const std::filesystem::path destination = resolve_under_root(archive_root, path_from_utf8(label));
     if (std::filesystem::exists(destination)) {
-        if (std::filesystem::is_regular_file(destination / L"task.json")) {
-            return;
-        }
-        throw Error("Run evidence archive is incomplete: " + path_to_utf8(destination));
+        validate_archived_evidence(destination);
+        return;
     }
 
     const std::filesystem::path staging = resolve_under_root(
         archive_root,
         path_from_utf8("." + label + "-" + make_id("archive")));
     try {
+        const nlohmann::json source_files = build_evidence_file_manifest(source);
         copy_tree_without_reparse_points(source, staging);
+        if (source_files != build_evidence_file_manifest(staging)) {
+            throw Error("Run evidence changed while it was being archived");
+        }
+        write_json_atomic(staging / L".archive-complete.json", {
+            {"schema_version", 1},
+            {"status", "complete"},
+            {"source_run_id", execution_run_id},
+            {"archived_at", utc_timestamp()},
+            {"files", source_files},
+        });
         rename_path_with_retry(staging, destination);
+        validate_archived_evidence(destination);
     } catch (...) {
         std::error_code cleanup_error;
         std::filesystem::remove_all(staging, cleanup_error);
         throw;
+    }
+}
+
+// 请求指定 Agent 删除当前运行的统一 Guest 工作目录并等待回执。
+[[nodiscard]] nlohmann::json request_guest_work_cleanup(
+    const LabConfig& config,
+    const std::string& run_id,
+    const std::string& vm_id,
+    const std::chrono::seconds timeout) {
+    const std::filesystem::path run_directory = resolve_under_root(
+        config.shared_folder.host_root,
+        std::filesystem::path(L"runs") / path_from_utf8(run_id));
+    const std::filesystem::path state_directory = run_directory / L"state";
+    const std::filesystem::path request_path =
+        state_directory / path_from_utf8(vm_id + "-cleanup-request.json");
+    const std::filesystem::path result_path =
+        state_directory / path_from_utf8(vm_id + "-cleanup.json");
+
+    std::string request_id;
+    if (std::filesystem::is_regular_file(request_path)) {
+        const nlohmann::json request = load_json(request_path);
+        request_id = request.value("request_id", std::string{});
+        validate_identifier(request_id, "cleanup request_id");
+        if (request.value("schema_version", 0) != 1 ||
+            request.value("lab_id", std::string{}) != config.lab_id ||
+            request.value("run_id", std::string{}) != run_id ||
+            request.value("vm_id", std::string{}) != vm_id ||
+            request.value("target", std::string{}) != "guest_work") {
+            throw Error("Persisted Guest cleanup request identity is invalid");
+        }
+    } else {
+        request_id = make_id("cleanup");
+        write_json_atomic(request_path, {
+            {"schema_version", 1},
+            {"lab_id", config.lab_id},
+            {"run_id", run_id},
+            {"vm_id", vm_id},
+            {"request_id", request_id},
+            {"target", "guest_work"},
+            {"requested_at", utc_timestamp()},
+        });
+    }
+
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    while (true) {
+        if (std::filesystem::is_regular_file(result_path)) {
+            const nlohmann::json result = load_json(result_path);
+            if (result.value("schema_version", 0) != 1 ||
+                result.value("lab_id", std::string{}) != config.lab_id ||
+                result.value("run_id", std::string{}) != run_id ||
+                result.value("vm_id", std::string{}) != vm_id ||
+                result.value("request_id", std::string{}) != request_id ||
+                result.value("target", std::string{}) != "guest_work") {
+                throw Error("Guest cleanup result identity is invalid");
+            }
+            const std::string status = result.value("status", std::string{});
+            if (status == "deleted") {
+                return result;
+            }
+            if (status == "failed") {
+                throw Error(
+                    "Guest cleanup failed for VM " + vm_id + " in run " + run_id +
+                    ": " + result.value("error", std::string("unknown error")));
+            }
+            throw Error("Guest cleanup result status is invalid");
+        }
+        if (std::chrono::steady_clock::now() >= deadline) {
+            throw Error("Timed out while waiting for Guest cleanup: " + vm_id + "/" + run_id);
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+}
+
+// 删除已经归档并完成 Guest 清理的 Shared Folder 运行目录。
+void delete_shared_run(const LabConfig& config, const std::string& run_id) {
+    const std::filesystem::path run_directory = resolve_under_root(
+        config.shared_folder.host_root,
+        std::filesystem::path(L"runs") / path_from_utf8(run_id));
+    const DWORD attributes = GetFileAttributesW(run_directory.c_str());
+    if (attributes == INVALID_FILE_ATTRIBUTES ||
+        (attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
+        throw Error("Shared run directory is missing or unsafe: " + run_id);
+    }
+
+    const auto deadline = std::chrono::steady_clock::now() + kSharedRunDeleteTimeout;
+    std::error_code last_error;
+    while (true) {
+        std::error_code remove_error;
+        std::filesystem::remove_all(run_directory, remove_error);
+
+        std::error_code exists_error;
+        const bool still_exists = std::filesystem::exists(run_directory, exists_error);
+        if (!still_exists && !exists_error) {
+            return;
+        }
+        last_error = remove_error ? remove_error : exists_error;
+        if (std::chrono::steady_clock::now() >= deadline) {
+            const std::string detail = last_error
+                ? last_error.message()
+                : "directory still exists";
+            throw Error(
+                "Failed to delete Shared run directory within retry timeout: " +
+                run_id + ": " + detail);
+        }
+        std::this_thread::sleep_for(kSharedRunDeleteDelay);
     }
 }
 
@@ -470,7 +648,8 @@ void apply_main_report(
 void apply_terminal_state_output(
     nlohmann::json& output,
     const RunLifecycleState& state,
-    const std::vector<VmLifecyclePolicy>& policies) {
+    const std::vector<VmLifecyclePolicy>& policies,
+    const TaskCleanupPolicy& task_cleanup) {
     const bool business_success = state.phase == RunPhase::Completed;
     switch (state.phase) {
     case RunPhase::Completed:
@@ -489,6 +668,14 @@ void apply_terminal_state_output(
         throw Error("Cannot return a non-terminal orchestration state");
     }
     if (state.phase == RunPhase::Completed || state.phase == RunPhase::Failed) {
+        const GuestWorkCleanupAction guest_action = business_success
+            ? task_cleanup.guest_work_on_success
+            : task_cleanup.guest_work_on_failure;
+        const SharedRunCleanupAction shared_action = business_success
+            ? task_cleanup.shared_run_on_success
+            : task_cleanup.shared_run_on_failure;
+        output["guest_work_cleanup"] = guest_work_cleanup_action_name(guest_action);
+        output["shared_run_cleanup"] = shared_run_cleanup_action_name(shared_action);
         if (policies.size() == 1) {
             const VmCleanupPolicy& cleanup = business_success
                 ? policies.front().on_success
@@ -577,7 +764,7 @@ nlohmann::json Orchestrator::execute(
             vm_ids);
         if (is_terminal_run_phase(archive->state.phase)) {
             nlohmann::json output = make_orchestration_output(*archive);
-            apply_terminal_state_output(output, archive->state, policies);
+            apply_terminal_state_output(output, archive->state, policies, plan.cleanup);
             return output;
         }
     }
@@ -632,6 +819,7 @@ nlohmann::json Orchestrator::execute(
     std::vector<bool> assumed_running = initially_running; // 编排期间逐台维护的预期状态
     bool agent_ready = active_archive.resumed;
     bool main_published = active_archive.resumed;
+    bool finally_published = false;
     bool business_success = false;
     bool manual_gate = false;
     std::string business_error;
@@ -817,6 +1005,7 @@ nlohmann::json Orchestrator::execute(
                     plan,
                     active_archive.identity.finally_run_id);
                 const RunManifest finally_manifest = controller.create_run(finally_plan);
+                finally_published = true;
                 output["finally_run_id"] = finally_manifest.run_id;
                 output["finally_report"] = wait_for_report(controller, finally_manifest.run_id, timeout);
                 archive_run_evidence(config_, run_id, finally_manifest.run_id, "finally");
@@ -845,7 +1034,58 @@ nlohmann::json Orchestrator::execute(
         utc_timestamp(),
         business_success ? "apply success cleanup policy" : "apply failure cleanup policy");
 
-    bool cleanup_failed = false; // 任一 VM 清理失败后仍继续处理其余 VM
+    const GuestWorkCleanupAction guest_cleanup = business_success
+        ? plan.cleanup.guest_work_on_success
+        : plan.cleanup.guest_work_on_failure;
+    const SharedRunCleanupAction shared_cleanup = business_success
+        ? plan.cleanup.shared_run_on_success
+        : plan.cleanup.shared_run_on_failure;
+    output["guest_work_cleanup"] = guest_work_cleanup_action_name(guest_cleanup);
+    output["shared_run_cleanup"] = shared_run_cleanup_action_name(shared_cleanup);
+
+    std::vector<std::string> execution_run_ids;
+    if (main_published) {
+        execution_run_ids.push_back(active_archive.identity.main_run_id);
+    }
+    if (finally_published) {
+        execution_run_ids.push_back(active_archive.identity.finally_run_id);
+    }
+
+    bool cleanup_failed = false; // 任一目录或 VM 清理失败后仍继续处理其余目标
+    if (guest_cleanup == GuestWorkCleanupAction::Delete) {
+        output["guest_cleanup_results"] = nlohmann::json::array();
+        for (std::size_t reverse_index = policies.size(); reverse_index > 0; --reverse_index) {
+            const std::size_t index = reverse_index - 1;
+            const VmLifecyclePolicy& policy = policies[index];
+            const VmCleanupPolicy& vm_cleanup = business_success
+                ? policy.on_success
+                : policy.on_failure;
+            if (vm_cleanup.action == VmCleanupAction::Restore) {
+                continue;
+            }
+            for (const std::string& execution_run_id : execution_run_ids) {
+                try {
+                    output["guest_cleanup_results"].push_back(request_guest_work_cleanup(
+                        config_, execution_run_id, policy.vm, timeout));
+                } catch (const std::exception& error) {
+                    cleanup_failed = true;
+                    append_error(business_error, error.what());
+                }
+            }
+        }
+    }
+
+    if (!cleanup_failed && shared_cleanup == SharedRunCleanupAction::ArchiveThenDelete) {
+        try {
+            for (const std::string& execution_run_id : execution_run_ids) {
+                delete_shared_run(config_, execution_run_id);
+            }
+        } catch (const std::exception& error) {
+            cleanup_failed = true;
+            append_error(business_error, error.what());
+        }
+    }
+
     for (std::size_t reverse_index = policies.size(); reverse_index > 0; --reverse_index) {
         const std::size_t index = reverse_index - 1;
         const VmLifecyclePolicy& policy = policies[index];
@@ -862,7 +1102,7 @@ nlohmann::json Orchestrator::execute(
             cleanup_failed = true;
             append_error(
                 business_error,
-                "Cleanup failed for VM " + policy.vm + ": " + error.what());
+                "VM lifecycle cleanup failed for " + policy.vm + ": " + error.what());
         }
     }
 

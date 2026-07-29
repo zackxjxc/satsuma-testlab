@@ -64,6 +64,7 @@ function(require_file_order first_path second_path context)
 endfunction()
 
 # 第一阶段只允许 Host 发布并完成 Client 诊断。
+run_agent_once(Client "${CLIENT_CONFIG}")
 set(client_diagnostic_manifest "")
 foreach(attempt RANGE 1 300)
     if(EXISTS "${main_manifest}")
@@ -100,6 +101,7 @@ if(EXISTS "${main_manifest}")
 endif()
 
 # 第二阶段必须等待 Client Ready 后才允许发布 Gateway 诊断。
+run_agent_once(Gateway "${GATEWAY_CONFIG}")
 set(gateway_diagnostic_manifest "")
 foreach(attempt RANGE 1 300)
     if(EXISTS "${main_manifest}")
@@ -181,8 +183,10 @@ endif()
 run_agent_once(Client "${CLIENT_CONFIG}")
 run_agent_once(Gateway "${GATEWAY_CONFIG}")
 
-# finally 完成后不再扫描任务，只等待 Host 清理并持久化终态。
+# finally 完成后继续轮询 Agent，以处理 Host 在归档后发布的 Guest 清理请求。
 foreach(attempt RANGE 1 300)
+    run_agent_once(Client "${CLIENT_CONFIG}")
+    run_agent_once(Gateway "${GATEWAY_CONFIG}")
     if(EXISTS "${LIFECYCLE_STATE}")
         execute_process(
             COMMAND "${CMAKE_COMMAND}" -E cat "${LIFECYCLE_STATE}"

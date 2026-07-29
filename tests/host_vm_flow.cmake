@@ -79,7 +79,7 @@ file(WRITE "${TEST_ROOT}/lab.json" "${lab_json}")
 set(agent_json [=[
 {
   "schema_version": 1,
-  "protocol_version": 2,
+  "protocol_version": 3,
   "lab_id": "integration_lab",
   "vm_id": "client",
   "agent_version": "0.1.0",
@@ -92,6 +92,21 @@ set(agent_json [=[
 string(REPLACE "@SHARE@" "${share_path}" agent_json "${agent_json}")
 string(REPLACE "@LOCAL@" "${local_path}" agent_json "${agent_json}")
 file(WRITE "${TEST_ROOT}/agent.json" "${agent_json}")
+
+# 独立故障场景确认保留租约后，由测试操作者显式放弃现场。
+function(force_unlock_lab context)
+    execute_process(
+        COMMAND "${HOST_EXE}" lab unlock
+            --config "${TEST_ROOT}/lab.json"
+            --force true
+        RESULT_VARIABLE unlock_result
+        OUTPUT_VARIABLE unlock_output
+        ERROR_VARIABLE unlock_error
+    )
+    if(NOT unlock_result EQUAL 0 OR NOT unlock_output MATCHES "\"status\": \"unlocked\"")
+        message(FATAL_ERROR "${context} lease could not be unlocked: ${unlock_error}\n${unlock_output}")
+    endif()
+endfunction()
 
 set(task_json [=[
 {
@@ -478,19 +493,29 @@ set(executing_plan_path "${TEST_ROOT}/orchestration-executing-resume.json")
 set(executing_main_path "${TEST_ROOT}/orchestration-executing-main.json")
 file(WRITE "${executing_plan_path}" "${executing_resume_plan}")
 file(WRITE "${executing_main_path}" "${executing_main_plan}")
-execute_process(
-    COMMAND "${HOST_EXE}" run
-        --config "${TEST_ROOT}/lab.json"
-        --plan "${executing_main_path}"
-    RESULT_VARIABLE executing_publish_result
-    OUTPUT_VARIABLE executing_publish_output
-    ERROR_VARIABLE executing_publish_error
-)
-if(NOT executing_publish_result EQUAL 0)
-    message(FATAL_ERROR
-        "Executing resume fixture could not publish its main task: "
-        "${executing_publish_error}\n${executing_publish_output}")
-endif()
+file(MAKE_DIRECTORY "${share_path}/runs/orchestration_executing_resume")
+file(WRITE "${share_path}/runs/orchestration_executing_resume/task.json" [=[
+{
+  "schema_version": 1,
+  "protocol_version": 3,
+  "lab_id": "integration_lab",
+  "run_id": "orchestration_executing_resume",
+  "request_id": "request_executing_resume",
+  "name": "host-executing-resume",
+  "created_at": "2026-07-29T00:00:00.000Z",
+  "artifacts": [],
+  "steps": [
+    {
+      "id": "resume_echo",
+      "vm": "client",
+      "type": "echo",
+      "message": "resume persisted execution",
+      "timeout_seconds": 120,
+      "retry_safe": true
+    }
+  ]
+}
+]=])
 
 set(executing_archive "${archive_path}/runs/orchestration_executing_resume")
 set(executing_state "${executing_archive}/lifecycle.json")
@@ -595,6 +620,16 @@ string(REPLACE
     collecting_resume_plan
     "${collecting_resume_plan}")
 string(REPLACE
+    "\"schema_version\": 1,"
+    "\"schema_version\": 2,"
+    collecting_resume_plan
+    "${collecting_resume_plan}")
+string(REPLACE
+    "  \"lifecycle\": {"
+    "  \"cleanup\": {\n    \"guest_work\": {\"on_success\": \"retain\", \"on_failure\": \"retain\"},\n    \"shared_run\": {\"on_success\": \"retain\", \"on_failure\": \"retain\"}\n  },\n  \"lifecycle\": {"
+    collecting_resume_plan
+    "${collecting_resume_plan}")
+string(REPLACE
     "orchestration_executing_resume"
     "orchestration_collecting_resume"
     collecting_main_plan
@@ -603,19 +638,30 @@ set(collecting_plan_path "${TEST_ROOT}/orchestration-collecting-resume.json")
 set(collecting_main_path "${TEST_ROOT}/orchestration-collecting-main.json")
 file(WRITE "${collecting_plan_path}" "${collecting_resume_plan}")
 file(WRITE "${collecting_main_path}" "${collecting_main_plan}")
-execute_process(
-    COMMAND "${HOST_EXE}" run
-        --config "${TEST_ROOT}/lab.json"
-        --plan "${collecting_main_path}"
-    RESULT_VARIABLE collecting_publish_result
-    OUTPUT_VARIABLE collecting_publish_output
-    ERROR_VARIABLE collecting_publish_error
-)
-if(NOT collecting_publish_result EQUAL 0)
-    message(FATAL_ERROR
-        "Collecting resume fixture could not publish its main task: "
-        "${collecting_publish_error}\n${collecting_publish_output}")
-endif()
+set(collecting_manifest [=[
+{
+  "schema_version": 1,
+  "protocol_version": 3,
+  "lab_id": "integration_lab",
+  "run_id": "orchestration_collecting_resume",
+  "request_id": "request_collecting_resume",
+  "name": "host-collecting-resume",
+  "created_at": "2026-07-29T00:00:00.000Z",
+  "artifacts": [],
+  "steps": [
+    {
+      "id": "resume_echo",
+      "vm": "client",
+      "type": "echo",
+      "message": "resume persisted execution",
+      "timeout_seconds": 120,
+      "retry_safe": true
+    }
+  ]
+}
+]=])
+file(MAKE_DIRECTORY "${share_path}/runs/orchestration_collecting_resume")
+file(WRITE "${share_path}/runs/orchestration_collecting_resume/task.json" "${collecting_manifest}")
 execute_process(
     COMMAND "${VM_EXE}" --config "${TEST_ROOT}/agent.json" --once
     RESULT_VARIABLE collecting_agent_result
@@ -754,6 +800,7 @@ string(FIND "${unsafe_state_json}"
 if(unsafe_resume_status_position EQUAL -1 OR unsafe_state_position EQUAL -1)
     message(FATAL_ERROR "Unsafe persisted phase did not preserve its manual gate")
 endif()
+force_unlock_lab("Unsafe persisted phase")
 
 set(orchestration_failure_json [=[
 {
@@ -866,6 +913,7 @@ string(FIND
 if(recovery_failed_phase_position EQUAL -1)
     message(FATAL_ERROR "Recovery failure lifecycle omitted terminal state: ${recovery_failure_state_json}")
 endif()
+force_unlock_lab("Recovery failure")
 
 set(manual_gate_task [=[
 {
@@ -941,11 +989,12 @@ endif()
 if(EXISTS "${archive_path}/runs/orchestration_manual_gate/evidence/finally")
     message(FATAL_ERROR "SatsumaHost executed finally after an unsafe claim gate")
 endif()
+force_unlock_lab("Manual intervention")
 
 set(claim_task_template [=[
 {
   "schema_version": 1,
-  "protocol_version": 2,
+  "protocol_version": 3,
   "lab_id": "integration_lab",
   "run_id": "@RUN_ID@",
   "request_id": "request_claim_recovery",
@@ -1194,33 +1243,28 @@ if(blocked_share_mode_position EQUAL -1 OR
     message(FATAL_ERROR "Blocked Shared Folder check lost its JSON report: ${blocked_share_output}")
 endif()
 
-# 归档不可写不阻断文件通道探针，但完整报告保持 degraded。
+# 归档根不可用时无法创建持久租约，必须在发布诊断任务前失败。
 file(WRITE "${TEST_ROOT}/blocked-archive" "not a directory\n")
 file(TO_CMAKE_PATH "${TEST_ROOT}/blocked-archive" blocked_archive_path)
 string(REPLACE "${archive_path}" "${blocked_archive_path}" blocked_archive_lab_json "${lab_json}")
 file(WRITE "${TEST_ROOT}/lab-blocked-archive.json" "${blocked_archive_lab_json}")
 execute_process(
-    COMMAND "${CMAKE_COMMAND}"
-        "-DVM_EXE=${VM_EXE}"
-        "-DAGENT_CONFIG=${TEST_ROOT}/agent.json"
-        -P "${CMAKE_CURRENT_LIST_DIR}/run_agent_once_after_delay.cmake"
     COMMAND "${HOST_EXE}" check
         --config "${TEST_ROOT}/lab-blocked-archive.json"
         --vm client
         --timeout-seconds 10
-    RESULTS_VARIABLE blocked_archive_results
+    RESULT_VARIABLE blocked_archive_result
     OUTPUT_VARIABLE blocked_archive_output
     ERROR_VARIABLE blocked_archive_error
 )
-if(NOT blocked_archive_results STREQUAL "0;3")
+if(NOT blocked_archive_result EQUAL 1 OR
+   NOT blocked_archive_error MATCHES "coordination")
     message(FATAL_ERROR
-        "Blocked archive check returned ${blocked_archive_results}: "
+        "Blocked archive check returned ${blocked_archive_result}: "
         "${blocked_archive_error}\n${blocked_archive_output}")
 endif()
-string(FIND "${blocked_archive_output}" "\"status\": \"degraded\"" blocked_archive_status_position)
-string(FIND "${blocked_archive_output}" "\"status\": \"passed\"" blocked_archive_agent_position)
-if(blocked_archive_status_position EQUAL -1 OR blocked_archive_agent_position EQUAL -1)
-    message(FATAL_ERROR "Blocked archive check did not preserve the Agent result: ${blocked_archive_output}")
+if(NOT blocked_archive_output STREQUAL "")
+    message(FATAL_ERROR "Blocked archive check published unexpected output: ${blocked_archive_output}")
 endif()
 
 execute_process(
@@ -1437,13 +1481,17 @@ if(NOT reconcile_deleted_status STREQUAL "deleted" OR
 endif()
 
 execute_process(
+    COMMAND "${CMAKE_COMMAND}"
+        "-DVM_EXE=${VM_EXE}"
+        "-DAGENT_CONFIG=${TEST_ROOT}/agent.json"
+        -P "${CMAKE_CURRENT_LIST_DIR}/run_agent_once_after_delay.cmake"
     COMMAND "${HOST_EXE}" run --config "${TEST_ROOT}/lab.json" --plan "${TEST_ROOT}/task.json"
-    RESULT_VARIABLE host_result
+    RESULTS_VARIABLE host_results
     OUTPUT_VARIABLE host_output
     ERROR_VARIABLE host_error
 )
-if(NOT host_result EQUAL 0)
-    message(FATAL_ERROR "SatsumaHost run failed: ${host_error}\n${host_output}")
+if(NOT host_results STREQUAL "0;0")
+    message(FATAL_ERROR "SatsumaHost run failed (${host_results}): ${host_error}\n${host_output}")
 endif()
 
 execute_process(
@@ -1497,4 +1545,16 @@ file(READ "${timeout_result}" timeout_json)
 string(FIND "${timeout_json}" "\"timed_out\": true" timed_out_position)
 if(timed_out_position EQUAL -1)
     message(FATAL_ERROR "Process timeout was not recorded: ${timeout_json}")
+endif()
+
+execute_process(
+    COMMAND "${HOST_EXE}" runs finalize
+        --config "${TEST_ROOT}/lab.json"
+        --run integration_run
+    RESULT_VARIABLE finalize_result
+    OUTPUT_VARIABLE finalize_output
+    ERROR_VARIABLE finalize_error
+)
+if(NOT finalize_result EQUAL 0 OR NOT finalize_output MATCHES "\"status\": \"finalized\"")
+    message(FATAL_ERROR "Completed run did not release its lease: ${finalize_error}\n${finalize_output}")
 endif()
