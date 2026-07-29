@@ -9,8 +9,11 @@ Artifact 原子发布到 VMware Shared Folder；每台 Guest 中的 Windows Serv
 
 ## 主要能力
 
-- `echo` 与进程树受控的 `execute` 步骤，支持 `system` 和 `interactive_user` 身份。
+- `echo`、`execute` 与受控 `script` 步骤，支持 CMD、Windows PowerShell 5.1、PowerShell 7。
 - 多 VM 顺序启动、可选快照恢复、失败清理和始终执行的 `finally` 步骤。
+- Guest inventory 首次上报、缓存自愈和 Host 显式刷新。
+- 同一实验室的进程互斥、持久租约、崩溃恢复与人工解锁门禁。
+- 统一 Guest 存储根、按运行授权交互用户，以及可确认的本机/共享目录清理。
 - Shared Folder 单一事实源，无额外监听端口或管理网络依赖。
 - 步骤 claim、租约续期、结果 fencing、崩溃恢复和人工介入门禁。
 - 文件取消、运行列表与安全保留策略；失败运行不会阻塞其他运行。
@@ -43,12 +46,13 @@ cmake --build --preset windows-release --target SatsumaPackage
 bin\SatsumaHost.exe discover --config config\lab.local.json
 bin\SatsumaHost.exe agent rebind --config config\lab.local.json --vm client --hardware-id <uuid>
 bin\SatsumaHost.exe check --config config\lab.local.json --timeout-seconds 180
-bin\SatsumaHost.exe run --config config\lab.local.json --plan examples\hello-vm-task.json
-bin\SatsumaHost.exe report --config config\lab.local.json --run <run-id> --wait-seconds 300
+bin\SatsumaHost.exe lab status --config config\lab.local.json
+bin\SatsumaHost.exe orchestrate --config config\lab.local.json --plan examples\multi-vm-task.json --timeout-seconds 900
 ```
 
-`run` 会输出 `run_id`。报告的 `status` 为 `succeeded` 才表示业务成功；`pending`、`failed` 和
-`manual_intervention_required` 都需要继续处理。
+自动化默认使用 `orchestrate`，它会在取得实验室独占租约后启动目标 VM、验证 inventory 和内部 echo、归档
+证据并按策略清理。普通 `run` 仍可用于无生命周期任务，但发布后会保持持久租约，必须在报告终态后执行
+`runs finalize`。
 
 ## 文档
 
