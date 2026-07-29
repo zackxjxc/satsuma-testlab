@@ -89,13 +89,16 @@ execute_process(
 if(gate_result EQUAL 0)
     message(FATAL_ERROR "Real fault recovery driver accepted an invalid confirmation")
 endif()
-string(FIND
-    "${gate_output}${gate_error}"
-    "Confirmation must exactly equal I_UNDERSTAND_SHARED_FOLDER_WILL_BE_TEMPORARILY_DISABLED"
-    gate_error_position)
-if(gate_error_position EQUAL -1)
-    message(FATAL_ERROR "Real fault recovery driver did not reject confirmation before file access")
-endif()
+set(gate_text "${gate_output}${gate_error}")
+# PowerShell 可能按输出宽度折行较长的异常消息。
+foreach(required_gate_text IN ITEMS
+    "Confirmation must exactly equal"
+    "I_UNDERSTAND_SHARED_FOLDER_WILL_BE_TEMPORARILY_DISABLED")
+    string(FIND "${gate_text}" "${required_gate_text}" gate_text_position)
+    if(gate_text_position EQUAL -1)
+        message(FATAL_ERROR "Real fault recovery driver did not reject confirmation before file access")
+    endif()
+endforeach()
 
 foreach(required_text IN ITEMS
     "AI-authored"
