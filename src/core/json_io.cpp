@@ -5,6 +5,7 @@
 #include <fstream>
 #include <iterator>
 #include <string>
+#include <string_view>
 #include <thread>
 
 #include <windows.h>
@@ -79,6 +80,12 @@ nlohmann::json load_json(const std::filesystem::path& path) {
     } catch (const nlohmann::json::exception& error) {
         throw Error("Invalid JSON file " + path_to_utf8(path) + ": " + error.what());
     }
+}
+
+bool is_json_atomic_temporary_file(const std::filesystem::path& path) {
+    constexpr std::wstring_view prefix = L".tmp-write-";
+    const std::wstring filename = path.filename().native();
+    return filename.size() > prefix.size() && filename.starts_with(prefix);
 }
 
 // 根据调用方策略准备父目录并执行同目录原子替换。

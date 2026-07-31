@@ -363,7 +363,11 @@ if (-not (Test-Path -LiteralPath $sharedRoot -PathType Container)) {
 if (-not (Test-Path -LiteralPath $archiveRoot -PathType Container)) {
     throw "Archive root does not exist: $archiveRoot"
 }
-$presencePath = Join-Path $sharedRoot (Join-Path 'agents' "$VmId.json")
+$hardwareId = [string]$matchingVms[0].hardware_id
+if ([string]::IsNullOrWhiteSpace($hardwareId)) {
+    throw "Lab config VM $VmId does not define hardware_id"
+}
+$presencePath = Join-Path $sharedRoot (Join-Path 'agents' "$hardwareId.json")
 $validationTimestamp = [DateTime]::UtcNow.ToString('yyyyMMddHHmmss')
 $validationSuffix = [Guid]::NewGuid().ToString('N').Substring(0, 8)
 $validationId = "real-fault-$validationTimestamp-$validationSuffix"

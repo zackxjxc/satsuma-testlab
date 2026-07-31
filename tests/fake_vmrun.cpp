@@ -25,15 +25,29 @@ namespace {
     return vmx.parent_path() / L"snapshot-reconciliation.state";
 }
 
+// 返回电源关闭失败场景使用的跨进程运行状态文件。
+[[nodiscard]] std::filesystem::path running_vm_state_path() {
+    return std::filesystem::temp_directory_path() / L"satsuma-fake-vmrun-running-vm.txt";
+}
+
 }  // namespace
 
 // 模拟 VmrunProvider 当前支持的结构化命令。
 int wmain(const int argc, wchar_t* argv[]) {
     if (argc == 2 && std::wstring(argv[1]) == L"list") {
+        std::ifstream state(running_vm_state_path());
+        std::string running_path;
+        std::getline(state, running_path);
         std::cout
-            << "Total running VMs: 2\n"
+            << "Total running VMs: " << (running_path.empty() ? 2 : 3) << "\n"
             << "C:\\VM Space\\VM-01.vmx\n"
             << "D:\\VM-02\\VM-02.vmx\n";
+        if (!running_path.empty()) {
+            std::cout << running_path << '\n';
+        }
+        state.close();
+        std::error_code error;
+        std::filesystem::remove(running_vm_state_path(), error);
         return 0;
     }
     if (argc == 3 &&
@@ -99,6 +113,20 @@ int wmain(const int argc, wchar_t* argv[]) {
          (std::filesystem::path(argv[2]).filename() == L"VM 01.vmx" &&
           (std::wstring(argv[3]) == L"soft" || std::wstring(argv[3]) == L"hard")))) {
         return 0;
+    }
+    if (argc == 4 &&
+        std::wstring(argv[1]) == L"stop" &&
+        std::filesystem::path(argv[2]).filename() == L"Stop Reconciled VM.vmx" &&
+        std::wstring(argv[3]) == L"hard") {
+        return 7;
+    }
+    if (argc == 4 &&
+        std::wstring(argv[1]) == L"stop" &&
+        std::filesystem::path(argv[2]).filename() == L"Stop Failed VM.vmx" &&
+        std::wstring(argv[3]) == L"hard") {
+        std::ofstream state(running_vm_state_path(), std::ios::binary | std::ios::trunc);
+        state << std::filesystem::path(argv[2]).string();
+        return state ? 7 : 3;
     }
     if (argc == 4 &&
         std::wstring(argv[1]) == L"revertToSnapshot" &&

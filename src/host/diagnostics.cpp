@@ -28,6 +28,7 @@ namespace {
 
 constexpr std::chrono::seconds kEnvironmentRecheckTimeout{30}; // Agent 上线后的环境收敛等待上限
 constexpr std::chrono::seconds kEnvironmentRecheckDelay{1}; // 环境复检间隔
+constexpr std::chrono::seconds kToolsStartupWait{30}; // VM 已运行但 Tools 尚未上线时的等待上限
 
 // 向机器可读报告追加一项独立检查。
 void add_check(
@@ -115,6 +116,17 @@ void probe_writable_directory(const std::filesystem::path& root) {
         tools_pending = true;
     }
     return tools_pending;
+}
+
+// 判断 VM 是否明确未运行，避免把整段诊断超时浪费在不存在的 Guest 上。
+[[nodiscard]] bool vm_is_not_running(const nlohmann::json& report) {
+    for (const auto& check : report.at("checks")) {
+        if (check.at("name") == "vmware_control") {
+            const auto details = check.value("details", nlohmann::json::object());
+            return details.value("running_vms", nlohmann::json::array()).empty();
+        }
+    }
+    return false;
 }
 
 }  // namespace
@@ -294,6 +306,33 @@ nlohmann::json Diagnostics::run_probe(
         return report;
     }
 
+    if (only_vmware_tools_pending(report) && vm_is_not_running(report)) {
+        nlohmann::json agents = nlohmann::json::array();
+        for (const VmConfig* vm : targets) {
+            agents.push_back({
+                {"vm_id", vm->id},
+                {"status", "skipped"},
+                {"message", "Agent diagnostic was skipped because the VM is not running"},
+            });
+        }
+        report["mode"] = "full";
+        report["environment_status"] = environment_status;
+        report["status"] = "failed";
+        report["run_id"] = nullptr;
+        report["finished_at"] = utc_timestamp();
+        report["probe_summary"] = {
+            {"expected_agents", targets.size()},
+            {"passed", 0},
+            {"failed", 0},
+            {"skipped", targets.size()},
+        };
+        report["agents"] = std::move(agents);
+        return report;
+    }
+
+    const std::chrono::seconds diagnostic_timeout =
+        only_vmware_tools_pending(report) ? std::min(timeout, kToolsStartupWait) : timeout;
+
     nlohmann::json inventories = nlohmann::json::array();
     for (const VmConfig* vm : targets) {
         try {
@@ -341,7 +380,7 @@ nlohmann::json Diagnostics::run_probe(
         step.vm = vm->id;
         step.type = "echo";
         step.message = "satsuma-diagnostic:" + *plan.run_id + ":" + vm->id;
-        step.timeout_seconds = static_cast<int>(timeout.count());
+        step.timeout_seconds = static_cast<int>(diagnostic_timeout.count());
         step.retry_safe = true;
         plan.steps.push_back(std::move(step));
     }
@@ -354,7 +393,7 @@ nlohmann::json Diagnostics::run_probe(
     nlohmann::json agents = nlohmann::json::array();
     std::set<std::string> reported;
     std::map<std::string, std::string> validation_errors; // 瞬断期间保留最近一次读取错误
-    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    const auto deadline = std::chrono::steady_clock::now() + diagnostic_timeout;
 
     while (reported.size() < targets.size() && std::chrono::steady_clock::now() < deadline) {
         for (const VmConfig* vm : targets) {

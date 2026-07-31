@@ -69,6 +69,13 @@ struct AgentUpdateOperations {
 // 验证身份切换后的 Agent 能从来源目录补发已提交结果。
 [[nodiscard]] bool recover_rebound_update_success_for_test(
     const AgentConfig& config);
+
+// 验证 Agent 重启后可清理已确认回滚的本机残留。
+[[nodiscard]] bool recover_verified_failed_rollback_for_test(
+    const AgentUpdatePaths& paths,
+    const AgentUpdateManifest& manifest,
+    const std::filesystem::path& running_executable,
+    const std::string& running_version);
 #endif
 
 }  // namespace satsuma::vm

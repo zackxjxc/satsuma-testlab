@@ -6,6 +6,7 @@
 #include <stdexcept>
 #include <string>
 
+#include "satsuma/core/errors.hpp"
 #include "satsuma/core/id.hpp"
 #include "satsuma/core/path.hpp"
 #include "vmrun_provider.hpp"
@@ -30,6 +31,8 @@ public:
         start_path_ = create_vmx(L"VM 01.vmx");
         soft_stop_path_ = create_vmx(L"Soft VM.vmx");
         hard_stop_path_ = create_vmx(L"Hard VM.vmx");
+        reconciled_stop_path_ = create_vmx(L"Stop Reconciled VM.vmx");
+        failed_stop_path_ = create_vmx(L"Stop Failed VM.vmx");
         snapshot_path_ = create_vmx(L"Snapshot VM.vmx");
         create_snapshot_path_ = create_vmx(L"Create VM.vmx");
         list_snapshots_path_ = create_vmx(L"List Snapshots VM.vmx");
@@ -61,6 +64,16 @@ public:
     // 返回硬关闭测试使用的 VMX 路径。
     [[nodiscard]] const std::filesystem::path& hard_stop_path() const noexcept {
         return hard_stop_path_;
+    }
+
+    // 返回 vmrun 非零但已关机的收敛测试路径。
+    [[nodiscard]] const std::filesystem::path& reconciled_stop_path() const noexcept {
+        return reconciled_stop_path_;
+    }
+
+    // 返回 vmrun 非零且仍运行的失败测试路径。
+    [[nodiscard]] const std::filesystem::path& failed_stop_path() const noexcept {
+        return failed_stop_path_;
     }
 
     // 返回快照恢复测试使用的 VMX 路径。
@@ -114,6 +127,8 @@ private:
     std::filesystem::path start_path_;      // 启动测试路径
     std::filesystem::path soft_stop_path_;  // 软关闭测试路径
     std::filesystem::path hard_stop_path_;  // 硬关闭测试路径
+    std::filesystem::path reconciled_stop_path_; // 已达到关机状态的非零退出路径
+    std::filesystem::path failed_stop_path_; // 未达到关机状态的非零退出路径
     std::filesystem::path snapshot_path_;   // 快照恢复测试路径
     std::filesystem::path create_snapshot_path_;  // 快照创建测试路径
     std::filesystem::path list_snapshots_path_;  // 快照列表测试路径
@@ -152,6 +167,14 @@ int wmain(const int argc, wchar_t* argv[]) {
         provider.start(vmx.start_path());
         provider.stop(vmx.soft_stop_path(), satsuma::vmware::VmStopMode::Soft);
         provider.stop(vmx.hard_stop_path(), satsuma::vmware::VmStopMode::Hard);
+        provider.stop(vmx.reconciled_stop_path(), satsuma::vmware::VmStopMode::Hard);
+        bool stop_failed = false;
+        try {
+            provider.stop(vmx.failed_stop_path(), satsuma::vmware::VmStopMode::Hard);
+        } catch (const satsuma::Error&) {
+            stop_failed = true;
+        }
+        expect(stop_failed, "vmrun stop failure was hidden while the VM remained running");
         provider.revert_to_snapshot(vmx.snapshot_path(), "Clean Base");
         provider.create_snapshot(vmx.create_snapshot_path(), "satsuma-ai-network-ready");
         provider.delete_snapshot(vmx.delete_snapshot_path(), "satsuma-ai-obsolete");

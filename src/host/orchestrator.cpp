@@ -380,6 +380,9 @@ void copy_tree_without_reparse_points(
             iterator.disable_recursion_pending();
             throw Error("Run evidence contains a forbidden reparse point");
         }
+        if (!iterator->is_directory() && is_json_atomic_temporary_file(iterator->path())) {
+            continue;
+        }
         const std::filesystem::path relative = iterator->path().lexically_relative(source);
         const std::filesystem::path target = resolve_under_root(destination, relative);
         if (iterator->is_directory()) {
@@ -418,6 +421,9 @@ void copy_tree_without_reparse_points(
         }
         if (!iterator->is_regular_file()) {
             throw Error("Archived evidence contains an unsupported file type");
+        }
+        if (is_json_atomic_temporary_file(iterator->path())) {
+            continue;
         }
         const std::filesystem::path relative = iterator->path().lexically_relative(root);
         if (relative == L".archive-complete.json") {

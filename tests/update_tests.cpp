@@ -672,6 +672,59 @@ void test_rollback_failure_preserves_evidence(const std::filesystem::path& root)
         "rollback failure deleted the state evidence");
 }
 
+// 验证重启后的旧 Agent 可清理已实际回滚但确认超时的残留状态。
+void test_failed_rollback_restart_recovery(const std::filesystem::path& root) {
+    UpdateFixture fixture = make_fixture(root, "failed-rollback-restart");
+    write_text(fixture.paths.config_backup, "old-config-backup");
+    satsuma::write_json_atomic(fixture.paths.state, {
+        {"update_id", fixture.manifest.update_id},
+        {"phase", "rollback_failed"},
+    });
+    satsuma::AgentUpdateResult failed;
+    failed.update_id = fixture.manifest.update_id;
+    failed.vm_id = fixture.manifest.vm_id;
+    failed.version = fixture.manifest.version;
+    failed.status = "failed";
+    failed.rollback_status = "failed";
+    failed.error = "injected rollback presence timeout";
+    failed.completed_at = "2026-07-27T00:01:00.000Z";
+    satsuma::write_json_atomic(fixture.paths.result, failed);
+
+    expect(
+        satsuma::vm::recover_verified_failed_rollback_for_test(
+            fixture.paths,
+            fixture.manifest,
+            fixture.paths.formal_binary,
+            "0.1.0"),
+        "restarted old Agent did not recover a verified rollback");
+    expect(
+        std::filesystem::is_regular_file(fixture.paths.formal_binary) &&
+        std::filesystem::is_regular_file(fixture.paths.result) &&
+        !std::filesystem::exists(fixture.paths.new_binary) &&
+        !std::filesystem::exists(fixture.paths.config_backup) &&
+        !std::filesystem::exists(fixture.paths.manifest) &&
+        !std::filesystem::exists(fixture.paths.state),
+        "verified rollback recovery changed formal evidence or retained local staging");
+
+    UpdateFixture ambiguous = make_fixture(root, "failed-rollback-ambiguous");
+    write_text(ambiguous.paths.backup_binary, "ambiguous-backup");
+    satsuma::write_json_atomic(ambiguous.paths.state, {
+        {"update_id", ambiguous.manifest.update_id},
+        {"phase", "rollback_failed"},
+    });
+    failed.update_id = ambiguous.manifest.update_id;
+    satsuma::write_json_atomic(ambiguous.paths.result, failed);
+    expect(
+        !satsuma::vm::recover_verified_failed_rollback_for_test(
+            ambiguous.paths,
+            ambiguous.manifest,
+            ambiguous.paths.formal_binary,
+            "0.1.0") &&
+        std::filesystem::is_regular_file(ambiguous.paths.backup_binary) &&
+        std::filesystem::is_regular_file(ambiguous.paths.state),
+        "ambiguous failed rollback was cleaned without manual verification");
+}
+
 // 验证 bak 删除失败仍处于回滚阶段并保留配置与状态证据。
 void test_backup_commit_failure_preserves_evidence(
     const std::filesystem::path& root) {
@@ -774,6 +827,7 @@ int main() {
         test_switch_failure_rollback(root);
         test_presence_failure_rollback(root);
         test_rollback_failure_preserves_evidence(root);
+        test_failed_rollback_restart_recovery(root);
         test_backup_commit_failure_preserves_evidence(root);
         test_presence_identity(root);
         std::filesystem::remove_all(root);

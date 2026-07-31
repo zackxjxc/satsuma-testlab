@@ -85,16 +85,6 @@ void write_text(const std::filesystem::path& path, const std::string& content) {
     }
 }
 
-// 将 partial 日志原子发布为最终日志。
-void publish_log(const std::filesystem::path& partial, const std::filesystem::path& final) {
-    if (!std::filesystem::exists(partial)) {
-        write_text(partial, "");
-    }
-    if (!MoveFileExW(partial.c_str(), final.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
-        throw Error("Cannot publish process log (Win32 error " + std::to_string(GetLastError()) + ")");
-    }
-}
-
 // 将补充错误追加到执行结果并保持稳定分隔符。
 void append_result_error(ExecutionResult& result, const std::string& error) {
     result.status = "failed";
@@ -129,13 +119,20 @@ void write_run_error_best_effort(
     }
 }
 
-// 将 partial 日志收束为当前 job 的完整暂存文件。
-void finalize_staged_log(
-    const std::filesystem::path& partial,
+// 将 Guest 本地日志复制到当前 job 的共享暂存文件。
+void stage_local_log(
+    const std::filesystem::path& local,
     const std::filesystem::path& staged,
     ExecutionResult& result) {
     try {
-        publish_log(partial, staged);
+        if (!std::filesystem::is_regular_file(local)) {
+            write_text(local, "");
+        }
+        std::filesystem::create_directories(staged.parent_path());
+        std::filesystem::copy_file(
+            local,
+            staged,
+            std::filesystem::copy_options::overwrite_existing);
     } catch (const std::exception& error) {
         append_result_error(result, error.what());
         if (!std::filesystem::is_regular_file(staged)) {
@@ -602,12 +599,16 @@ void Agent::execute_step(
         std::filesystem::path(L".jobs") / path_from_utf8(claim.job_id));
     std::filesystem::create_directories(job_directory);
 
-    const std::filesystem::path stdout_partial = job_directory / L"stdout.log.partial";
-    const std::filesystem::path stderr_partial = job_directory / L"stderr.log.partial";
     const std::filesystem::path stdout_staged = job_directory / L"stdout.log";
     const std::filesystem::path stderr_staged = job_directory / L"stderr.log";
     const std::filesystem::path stdout_final = result_directory / L"stdout.log";
     const std::filesystem::path stderr_final = result_directory / L"stderr.log";
+    std::filesystem::path local_run_directory = resolve_local_run_directory(config_, manifest.run_id);
+    std::filesystem::path local_job_directory = resolve_under_root(
+        local_run_directory,
+        std::filesystem::path(L".satsuma") / L"jobs" / path_from_utf8(claim.job_id));
+    std::filesystem::path stdout_local = local_job_directory / L"stdout.log.partial";
+    std::filesystem::path stderr_local = local_job_directory / L"stderr.log.partial";
     std::vector<StepResultEvidenceFile> evidence_files; // 锁内发布的暂存文件映射
 
     ExecutionResult result;
@@ -624,9 +625,10 @@ void Agent::execute_step(
     try {
         throw_if_stop_requested(execution_stop_token);
         const auto start_time = std::chrono::steady_clock::now();
+        std::filesystem::create_directories(local_job_directory);
         if (step.type == "echo") {
-            write_text(stdout_partial, step.message + "\n");
-            write_text(stderr_partial, "");
+            write_text(stdout_local, step.message + "\n");
+            write_text(stderr_local, "");
             result.exit_code = 0;
             result.duration_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now() - start_time).count();
@@ -640,7 +642,6 @@ void Agent::execute_step(
             }
 
             std::optional<InteractiveUserSession> interactive_session;
-            std::filesystem::path local_run_directory;
             if (step.run_as == TaskRunAs::InteractiveUser) {
                 interactive_session.emplace(
                     InteractiveUserSession::acquire(
@@ -649,9 +650,15 @@ void Agent::execute_step(
                         config_.local_work_root,
                         config_.vm_id));
                 local_run_directory = interactive_session->working_directory();
+                local_job_directory = resolve_under_root(
+                    local_run_directory,
+                    std::filesystem::path(L".satsuma") / L"jobs" /
+                        path_from_utf8(claim.job_id));
+                std::filesystem::create_directories(local_job_directory);
+                stdout_local = local_job_directory / L"stdout.log.partial";
+                stderr_local = local_job_directory / L"stderr.log.partial";
                 result.interactive_session_id = interactive_session->session_id();
             } else {
-                local_run_directory = resolve_local_run_directory(config_, manifest.run_id);
                 std::filesystem::create_directories(local_run_directory);
             }
             deploy_artifacts(
@@ -697,8 +704,8 @@ void Agent::execute_step(
                 request.arguments = step.arguments;
             }
             request.working_directory = local_run_directory;
-            request.stdout_path = stdout_partial;
-            request.stderr_path = stderr_partial;
+            request.stdout_path = stdout_local;
+            request.stderr_path = stderr_local;
             request.timeout = std::chrono::seconds(step.timeout_seconds);
             request.max_output_bytes = kDefaultMaxOutputBytes;
             request.stop_token = execution_stop_token;
@@ -754,8 +761,8 @@ void Agent::execute_step(
             : error.what();
     }
 
-    finalize_staged_log(stdout_partial, stdout_staged, result);
-    finalize_staged_log(stderr_partial, stderr_staged, result);
+    stage_local_log(stdout_local, stdout_staged, result);
+    stage_local_log(stderr_local, stderr_staged, result);
     evidence_files.insert(
         evidence_files.begin(),
         {
@@ -795,6 +802,7 @@ void Agent::execute_step(
 
     std::error_code cleanup_error;
     std::filesystem::remove_all(job_directory, cleanup_error);
+    std::filesystem::remove_all(local_job_directory, cleanup_error);
     write_state(run_directory, "idle", "");
 }
 

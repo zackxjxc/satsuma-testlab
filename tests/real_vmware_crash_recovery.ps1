@@ -534,8 +534,13 @@ function Invoke-HostCrashScenario {
         $terminated = Stop-CapturedHost -Handle $handle
         $handle = $null
 
+        $recoveryArguments = @(
+            'lab', 'recover', '--config', $script:resolvedLabConfig,
+            '--plan', $plan.Path,
+            '--timeout-seconds', [string]$ScenarioTimeoutSeconds
+        )
         $resumedResult = Invoke-HostCommand `
-            -ProcessArguments $processArguments `
+            -ProcessArguments $recoveryArguments `
             -ExpectedExitCodes @(0) `
             -Label "$($plan.RunId).resumed" `
             -TimeoutSeconds $ScenarioTimeoutSeconds
@@ -671,6 +676,18 @@ function Invoke-AgentCrashScenario {
             if ($recovery.status -cne 'manual_intervention_required') {
                 throw 'Unsafe Agent crash did not publish its recovery gate.'
             }
+            $unlockResult = Invoke-HostCommand `
+                -ProcessArguments @(
+                    'lab', 'unlock', '--config', $script:resolvedLabConfig,
+                    '--force', 'true'
+                ) `
+                -ExpectedExitCodes @(0) `
+                -Label "$($plan.RunId).unlock" `
+                -TimeoutSeconds 30
+            $unlocked = ConvertFrom-HostOutput -Result $unlockResult
+            if ($unlocked.status -cne 'unlocked') {
+                throw 'Unsafe Agent crash test could not release its manual intervention lease.'
+            }
         }
 
         return [ordered]@{
@@ -721,7 +738,11 @@ if (-not (Test-Path -LiteralPath $sharedRoot -PathType Container)) {
 if (-not (Test-Path -LiteralPath $archiveRoot -PathType Container)) {
     throw "Archive root does not exist: $archiveRoot"
 }
-$presencePath = Join-Path $sharedRoot (Join-Path 'agents' "$VmId.json")
+$hardwareId = [string]$matchingVms[0].hardware_id
+if ([string]::IsNullOrWhiteSpace($hardwareId)) {
+    throw "Lab config VM $VmId does not define hardware_id"
+}
+$presencePath = Join-Path $sharedRoot (Join-Path 'agents' "$hardwareId.json")
 $validationTimestamp = [DateTime]::UtcNow.ToString('yyyyMMddHHmmss')
 $validationSuffix = [Guid]::NewGuid().ToString('N').Substring(0, 8)
 $validationId = "real-crash-$validationTimestamp-$validationSuffix"

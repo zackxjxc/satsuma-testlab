@@ -161,6 +161,27 @@ void test_long_execution_renews_claim(
 
     satsuma::vm::AgentRuntimeOptions options;
     options.claim_lease_policy = test_policy();
+    std::atomic<bool> observed_local_logs{false}; // 续租时是否只看到 Guest 本地运行日志
+    options.claim_renew_operation = [&local_work_root, &shared_root, &run_id, &observed_local_logs](
+        const std::filesystem::path& claim_path,
+        const satsuma::StepClaimLease& claim,
+        const std::int64_t renewed_unix_ms) {
+        const std::filesystem::path local_log =
+            local_work_root / L"vm_agent_claim_test" / satsuma::path_from_utf8(run_id) /
+            L"vm_01" / L".satsuma" / L"jobs" / satsuma::path_from_utf8(claim.job_id) /
+            L"stdout.log.partial";
+        const std::filesystem::path shared_log =
+            shared_root / L"runs" / satsuma::path_from_utf8(run_id) / L"results" /
+            L"vm_01" / L"execute" / L".jobs" / satsuma::path_from_utf8(claim.job_id) /
+            L"stdout.log.partial";
+        if (std::filesystem::is_regular_file(local_log) && !std::filesystem::exists(shared_log)) {
+            observed_local_logs.store(true, std::memory_order_release);
+        }
+        return satsuma::vm::renew_step_claim_transaction(
+            claim_path,
+            claim,
+            renewed_unix_ms);
+    };
     satsuma::vm::Agent agent(
         make_config(shared_root, local_work_root),
         {},
@@ -175,6 +196,9 @@ void test_long_execution_renews_claim(
     expect(
         effective.renewal_sequence >= 2,
         "long Agent execution did not cross two renewal intervals");
+    expect(
+        observed_local_logs.load(std::memory_order_acquire),
+        "running process logs were not isolated from the shared folder");
     const std::uint32_t stopped_sequence = effective.renewal_sequence;
     std::this_thread::sleep_for(options.claim_lease_policy.renewal_interval * 2);
     expect(
@@ -199,6 +223,11 @@ void test_long_execution_renews_claim(
         !std::filesystem::exists(
             result_directory / L".jobs" / satsuma::path_from_utf8(result.job_id)),
         "successful job staging directory was not cleaned up");
+    expect(
+        !std::filesystem::exists(
+            local_work_root / L"vm_agent_claim_test" / satsuma::path_from_utf8(run_id) /
+            L"vm_01" / L".satsuma" / L"jobs" / satsuma::path_from_utf8(result.job_id)),
+        "successful local job log directory was not cleaned up");
 }
 
 // 验证持续续租失败取消进程树，旧 job 隔离后由 attempt 2 恢复。

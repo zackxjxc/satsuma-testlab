@@ -30,7 +30,7 @@
 namespace satsuma::vm {
 namespace {
 
-constexpr std::chrono::seconds kPresenceTimeout{60};
+constexpr std::chrono::seconds kPresenceTimeout{120}; // 两段 presence 窗口不超过 Host 默认总预算
 
 // 自动释放普通 Win32 HANDLE。
 class UniqueHandle {
@@ -697,6 +697,49 @@ void cleanup_finished_update(const UpdatePaths& paths) noexcept {
     remove_update_file_best_effort(pending_success_result_path(paths));
 }
 
+// 旧版本已重新运行但回滚确认曾超时，清理不会再影响正式文件的残留状态。
+[[nodiscard]] bool recover_verified_failed_rollback(
+    const UpdatePaths& paths,
+    const AgentUpdateManifest& manifest,
+    const std::filesystem::path& running_executable,
+    const std::string& running_version) {
+    if (!std::filesystem::is_regular_file(paths.result) ||
+        !std::filesystem::is_regular_file(paths.state) ||
+        std::filesystem::exists(paths.backup_binary)) {
+        return false;
+    }
+    const AgentUpdateResult result = load_agent_update_result(paths.result);
+    if (result.status != "failed" ||
+        result.rollback_status != "failed" ||
+        result.update_id != manifest.update_id ||
+        result.vm_id != manifest.vm_id ||
+        result.version != manifest.version) {
+        return false;
+    }
+    const nlohmann::json state = load_json(paths.state);
+    if (state.value("update_id", std::string{}) != manifest.update_id) {
+        return false;
+    }
+    const AgentConfig config = load_runtime_agent_config(paths.config);
+    if (config.lab_id != manifest.lab_id ||
+        config.vm_id != manifest.vm_id ||
+        config.agent_version != running_version ||
+        config.last_update_id == manifest.update_id ||
+        !std::filesystem::is_regular_file(paths.formal_binary)) {
+        return false;
+    }
+    std::error_code equivalent_error;
+    if (!std::filesystem::equivalent(
+            running_executable,
+            paths.formal_binary,
+            equivalent_error) ||
+        equivalent_error) {
+        return false;
+    }
+    cleanup_finished_update(paths);
+    return local_success_cleanup_complete(paths);
+}
+
 }  // namespace
 
 bool process_pending_agent_update(
@@ -751,6 +794,13 @@ bool process_pending_agent_update(
             const AgentUpdateResult result = load_agent_update_result(paths.result);
             if (result.status == "failed" && result.rollback_status != "failed") {
                 cleanup_finished_update(paths);
+            } else if (result.status == "failed" &&
+                       recover_verified_failed_rollback(
+                           paths,
+                           manifest,
+                           current_executable_path(),
+                           std::string(kVersion))) {
+                // 回滚后的正式 Agent 已确认恢复，继续扫描后续更新目录。
             }
             continue;
         }
@@ -951,6 +1001,29 @@ bool recover_committed_update_success_for_test(
 
 bool recover_rebound_update_success_for_test(const AgentConfig& config) {
     return recover_rebound_update_success(config);
+}
+
+bool recover_verified_failed_rollback_for_test(
+    const AgentUpdatePaths& paths,
+    const AgentUpdateManifest& manifest,
+    const std::filesystem::path& running_executable,
+    const std::string& running_version) {
+    const UpdatePaths internal_paths{
+        paths.update_directory,
+        paths.manifest,
+        paths.result,
+        paths.config,
+        paths.config_backup,
+        paths.formal_binary,
+        paths.new_binary,
+        paths.backup_binary,
+        paths.state,
+    };
+    return recover_verified_failed_rollback(
+        internal_paths,
+        manifest,
+        running_executable,
+        running_version);
 }
 #endif
 

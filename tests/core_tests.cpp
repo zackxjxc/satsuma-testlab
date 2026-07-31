@@ -89,6 +89,15 @@ void test_file_primitives(const std::filesystem::path& root) {
     expect(
         updated.at("message") == "updated" && updated.at("value") == 8,
         "atomic JSON replacement after read failed");
+    expect(
+        satsuma::is_json_atomic_temporary_file(root / L"state" / L".tmp-write-regression"),
+        "atomic JSON temporary file was not recognized");
+    expect(
+        !satsuma::is_json_atomic_temporary_file(root / L"state" / L".tmp-write-"),
+        "empty atomic JSON temporary file identifier was accepted");
+    expect(
+        !satsuma::is_json_atomic_temporary_file(root / L"state" / L"prefix.tmp-write-regression"),
+        "embedded atomic JSON temporary file prefix was accepted");
 
     const std::filesystem::path removed_parent = root / L"removed";
     expect_error(

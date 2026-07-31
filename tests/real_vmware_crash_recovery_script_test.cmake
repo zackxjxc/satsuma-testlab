@@ -82,6 +82,8 @@ foreach(required_text IN ITEMS
     "Kill($true)"
     "WaitForExit(10000)"
     "ScenarioTimeoutSeconds"
+    "'lab', 'recover'"
+    "'lab', 'unlock'"
     "claim-recovery.json"
     "summary.json")
     string(FIND "${script_text}" "${required_text}" required_position)

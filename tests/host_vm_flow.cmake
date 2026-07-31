@@ -336,6 +336,8 @@ execute_process(
         "-DVM_EXE=${VM_EXE}"
         "-DAGENT_CONFIG=${TEST_ROOT}/agent.json"
         "-DLIFECYCLE_STATE=${lifecycle_state}"
+        "-DSHARED_ROOT=${TEST_ROOT}/share"
+        -DINJECT_ATOMIC_JSON_TEMPORARY=ON
         -P "${CMAKE_CURRENT_LIST_DIR}/run_agent_until_lifecycle_terminal.cmake"
     COMMAND "${HOST_EXE}" orchestrate
         --config "${TEST_ROOT}/lab.json"
@@ -370,6 +372,13 @@ endif()
 if(NOT EXISTS "${archive_path}/runs/orchestration_run/evidence/main/task.json" OR
    NOT EXISTS "${archive_path}/runs/orchestration_run/evidence/finally/task.json")
     message(FATAL_ERROR "SatsumaHost orchestrate did not archive main and finally evidence")
+endif()
+file(GLOB_RECURSE archived_atomic_temporaries
+    "${archive_path}/runs/orchestration_run/evidence/.tmp-write-*"
+    "${archive_path}/runs/orchestration_run/evidence/*/.tmp-write-*")
+if(archived_atomic_temporaries)
+    message(FATAL_ERROR
+        "SatsumaHost archived atomic JSON temporary files: ${archived_atomic_temporaries}")
 endif()
 
 # 编排总等待可超过 300 秒，但 Agent 诊断仍使用自身受支持的有限上限。
@@ -1241,6 +1250,18 @@ if(blocked_share_mode_position EQUAL -1 OR
    blocked_share_run_position EQUAL -1 OR
    blocked_share_skip_position EQUAL -1)
     message(FATAL_ERROR "Blocked Shared Folder check lost its JSON report: ${blocked_share_output}")
+endif()
+execute_process(
+    COMMAND "${HOST_EXE}" lab status --config "${TEST_ROOT}/lab-blocked-share.json"
+    RESULT_VARIABLE blocked_share_status_result
+    OUTPUT_VARIABLE blocked_share_status_output
+    ERROR_VARIABLE blocked_share_status_error
+)
+if(NOT blocked_share_status_result EQUAL 0 OR
+   NOT blocked_share_status_output MATCHES "\"status\": \"available\"")
+    message(FATAL_ERROR
+        "Failed diagnostic retained the lab lease: "
+        "${blocked_share_status_error}\n${blocked_share_status_output}")
 endif()
 
 # 归档根不可用时无法创建持久租约，必须在发布诊断任务前失败。

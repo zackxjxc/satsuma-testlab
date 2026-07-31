@@ -443,10 +443,7 @@ int wmain(const int argc, wchar_t* argv[]) {
             auto lease = satsuma::host::LabLease::acquire(config, config_path, "check");
             satsuma::host::Diagnostics diagnostics(std::move(config));
             const nlohmann::json report = diagnostics.run_probe(vm_id, timeout);
-            if (report.at("status") == "ready" ||
-                (report.contains("run_id") && report.at("run_id").is_null())) {
-                lease->release("released");
-            }
+            lease->release("released");
             std::cout << report.dump(2) << '\n';
             const std::string status = report.at("status").get<std::string>();
             if (status == "ready") {

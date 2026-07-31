@@ -1,6 +1,7 @@
 // VMware vmrun 结构化调用实现。
 #include "vmrun_provider.hpp"
 
+#include <algorithm>
 #include <charconv>
 #include <cstdint>
 #include <fstream>
@@ -297,7 +298,24 @@ void VmrunProvider::stop(const std::filesystem::path& vmx, const VmStopMode mode
         default:
             throw Error("Unsupported vmrun stop mode");
     }
-    static_cast<void>(invoke({"stop", path_to_utf8(vmx), power_mode}));
+    try {
+        static_cast<void>(invoke({"stop", path_to_utf8(vmx), power_mode}));
+    } catch (...) {
+        const std::filesystem::path normalized = std::filesystem::absolute(vmx).lexically_normal();
+        const std::wstring expected = normalized.native();
+        const std::vector<std::filesystem::path> running = list_running();
+        const bool still_running = std::any_of(
+            running.begin(),
+            running.end(),
+            [&expected](const std::filesystem::path& candidate) {
+                const std::wstring actual =
+                    std::filesystem::absolute(candidate).lexically_normal().native();
+                return _wcsicmp(actual.c_str(), expected.c_str()) == 0;
+            });
+        if (still_running) {
+            throw;
+        }
+    }
 }
 
 void VmrunProvider::revert_to_snapshot(
