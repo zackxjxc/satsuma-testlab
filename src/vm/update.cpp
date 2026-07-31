@@ -31,6 +31,8 @@ namespace satsuma::vm {
 namespace {
 
 constexpr std::chrono::seconds kPresenceTimeout{120}; // 两段 presence 窗口不超过 Host 默认总预算
+constexpr DWORD kUpdateHelperCreationFlags =
+    CREATE_NO_WINDOW | CREATE_BREAKAWAY_FROM_JOB;
 
 // 自动释放普通 Win32 HANDLE。
 class UniqueHandle {
@@ -673,7 +675,7 @@ void stage_update_candidate(
             nullptr,
             nullptr,
             FALSE,
-            CREATE_NO_WINDOW,
+            kUpdateHelperCreationFlags,
             nullptr,
             paths.new_binary.parent_path().c_str(),
             &startup,
@@ -1001,6 +1003,10 @@ bool recover_committed_update_success_for_test(
 
 bool recover_rebound_update_success_for_test(const AgentConfig& config) {
     return recover_rebound_update_success(config);
+}
+
+std::uint32_t agent_update_helper_creation_flags_for_test() {
+    return kUpdateHelperCreationFlags;
 }
 
 bool recover_verified_failed_rollback_for_test(

@@ -70,6 +70,9 @@ struct AgentUpdateOperations {
 [[nodiscard]] bool recover_rebound_update_success_for_test(
     const AgentConfig& config);
 
+// 验证更新 Helper 不会随 Agent Service 的 Job 一起终止。
+[[nodiscard]] std::uint32_t agent_update_helper_creation_flags_for_test();
+
 // 验证 Agent 重启后可清理已确认回滚的本机残留。
 [[nodiscard]] bool recover_verified_failed_rollback_for_test(
     const AgentUpdatePaths& paths,

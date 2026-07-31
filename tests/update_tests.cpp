@@ -806,6 +806,16 @@ void test_presence_identity(const std::filesystem::path& root) {
         "wrong update presence ID was accepted");
 }
 
+// 验证更新 Helper 显式脱离 Agent Service 的 Job Object。
+void test_update_helper_breakaway_flag() {
+    const std::uint32_t flags =
+        satsuma::vm::agent_update_helper_creation_flags_for_test();
+    expect((flags & CREATE_NO_WINDOW) != 0,
+        "update helper lost its hidden-window flag");
+    expect((flags & CREATE_BREAKAWAY_FROM_JOB) != 0,
+        "update helper can still be terminated with the Agent Service job");
+}
+
 }  // namespace
 
 // 顺序运行更新状态机测试并清理临时目录。
@@ -830,6 +840,7 @@ int main() {
         test_failed_rollback_restart_recovery(root);
         test_backup_commit_failure_preserves_evidence(root);
         test_presence_identity(root);
+        test_update_helper_breakaway_flag();
         std::filesystem::remove_all(root);
         std::cout << "SatsumaVmUpdateTests passed\n";
         return 0;
