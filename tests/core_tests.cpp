@@ -67,6 +67,21 @@ void test_file_primitives(const std::filesystem::path& root) {
     satsuma::write_json_atomic(json_path, {{"message", "hello"}, {"value", 7}});
     const nlohmann::json value = satsuma::load_json(json_path);
     expect(value.at("message") == "hello" && value.at("value") == 7, "atomic JSON round trip failed");
+    HANDLE delete_capable_reader = CreateFileW( // 模拟原子替换需要兼容的删除权限
+        json_path.c_str(),
+        GENERIC_READ | DELETE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        nullptr,
+        OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL,
+        nullptr);
+    expect(delete_capable_reader != INVALID_HANDLE_VALUE,
+        "shared read test could not open its delete-capable handle");
+    const nlohmann::json shared_value = satsuma::load_json(json_path);
+    const std::string shared_hash = satsuma::sha256_file(json_path);
+    CloseHandle(delete_capable_reader);
+    expect(shared_value == value && shared_hash.size() == 64,
+        "JSON or SHA-256 reader denied atomic replacement sharing");
     HANDLE blocking_reader = CreateFileW( // 模拟共享目录延迟释放的读取 lease
         json_path.c_str(),
         GENERIC_READ,

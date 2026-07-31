@@ -373,8 +373,13 @@ void test_file_watch_and_agent_stop(
     expect(
         presence.value("agent_version", std::string{}) == "0.1.0" &&
             presence.value("update_id", std::string{}).empty() &&
+            presence.value("binary_sha256", std::string{}).size() == 64 &&
+            presence.at("runtime").value("started_at", std::string{}).size() > 10 &&
+            presence.at("runtime").value("file_channel_failure_count", 1) == 0 &&
+            !presence.at("runtime").contains("last_file_channel_error_at") &&
+            !presence.at("runtime").contains("last_file_channel_recovered_at") &&
             presence.at("inventory").value("sha256", std::string{}).size() == 64,
-        "Agent presence did not publish its version and update identity");
+        "Agent presence did not publish its build and runtime identity");
     expect(
         std::filesystem::is_regular_file(shared_root / L"agents" / L"vm_01.inventory.json"),
         "Agent did not publish its environment inventory");
@@ -394,6 +399,76 @@ void test_file_watch_and_agent_stop(
         "default execute step did not retain the SYSTEM identity");
     expect(!stopped.timed_out, "Agent stop was incorrectly recorded as a timeout");
     expect(stopped.error == "Agent stop requested", "Agent stop did not preserve the stable error text");
+}
+
+// 验证共享目录恢复后，Agent 保留累计故障并清零连续故障状态。
+void test_file_channel_runtime_recovery(const std::filesystem::path& root) {
+    std::filesystem::create_directories(root);
+    const std::filesystem::path shared_root = root / L"share";
+    std::ofstream blocker(shared_root, std::ios::binary);
+    blocker << "shared folder unavailable";
+    blocker.close();
+
+    satsuma::AgentConfig config;
+    config.lab_id = "vm_agent_test";
+    config.vm_id = "vm_01";
+    config.agent_version = "0.1.0";
+    config.shared_root = shared_root;
+    config.local_work_root = root / L"work";
+    config.poll_interval_ms = 20;
+    config.reconnect_interval_ms = 20;
+
+    satsuma::vm::Agent agent(std::move(config));
+    std::stop_source stop_source;
+    std::exception_ptr worker_error;
+    std::thread worker([&] {
+        try {
+            agent.run_watch(stop_source.get_token());
+        } catch (...) {
+            worker_error = std::current_exception();
+        }
+    });
+
+    std::this_thread::sleep_for(250ms);
+    std::error_code recovery_error;
+    const bool blocker_removed = std::filesystem::remove(shared_root, recovery_error);
+    if (blocker_removed) {
+        std::filesystem::create_directories(shared_root, recovery_error);
+    }
+
+    bool recovered = false;
+    nlohmann::json presence;
+    const std::filesystem::path presence_path = shared_root / L"agents" / L"vm_01.json";
+    const auto deadline = std::chrono::steady_clock::now() + 5s;
+    while (!recovery_error && std::chrono::steady_clock::now() < deadline) {
+        try {
+            if (std::filesystem::is_regular_file(presence_path)) {
+                presence = satsuma::load_json(presence_path);
+                const nlohmann::json& runtime = presence.at("runtime");
+                recovered = runtime.value("file_channel_failure_count", 0) > 0 &&
+                    runtime.value("consecutive_file_channel_failures", 1) == 0 &&
+                    !runtime.value("last_file_channel_recovered_at", std::string{}).empty();
+                if (recovered) {
+                    break;
+                }
+            }
+        } catch (const std::exception&) {
+        }
+        std::this_thread::sleep_for(20ms);
+    }
+
+    stop_source.request_stop();
+    worker.join();
+    if (worker_error != nullptr) {
+        std::rethrow_exception(worker_error);
+    }
+    expect(blocker_removed && !recovery_error, "test could not restore the shared folder");
+    expect(recovered, "Agent did not publish recovered file-channel runtime state");
+    const nlohmann::json& runtime = presence.at("runtime");
+    expect(
+        !runtime.value("last_file_channel_error", std::string{}).empty() &&
+            !runtime.value("last_file_channel_error_at", std::string{}).empty(),
+        "Agent recovery presence omitted the previous file-channel failure");
 }
 
 // 验证清单在会话内缓存、自愈，并只响应显式刷新重新采集。
@@ -782,6 +857,7 @@ int main(const int argc, char* argv[]) {
         test_process_runner_cancellation(root / L"process-runner", fixture);
         test_process_runner_output_limit(root / L"process-output-limit", fixture);
         test_file_watch_and_agent_stop(root / L"agent-watch", fixture);
+        test_file_channel_runtime_recovery(root / L"file-channel-recovery");
         test_inventory_cache_and_refresh(root / L"inventory");
         test_powershell_script_execution(root / L"powershell-script");
         test_cmd_script_execution(root / L"cmd-script");

@@ -298,7 +298,9 @@ nlohmann::json discover_agents(const LabConfig& config) {
                 {"vm_id", presence.value("vm_id", std::string{})},
                 {"status", presence.value("status", std::string{})},
                 {"agent_version", presence.value("agent_version", std::string{})},
+                {"binary_sha256", presence.value("binary_sha256", std::string{})},
                 {"inventory", presence.value("inventory", nlohmann::json(nullptr))},
+                {"runtime", presence.value("runtime", nlohmann::json(nullptr))},
                 {"updated_at", presence.value("updated_at", std::string{})},
             };
             if (const VmConfig* vm = find_vm_by_hardware(config, hardware_id); vm != nullptr) {

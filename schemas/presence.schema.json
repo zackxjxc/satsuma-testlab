@@ -18,6 +18,7 @@
     "previous_hardware_id": {"$ref": "#/$defs/hardware_id"},
     "previous_vm_id": {"type": "string", "pattern": "^[A-Za-z0-9_-]{1,128}$"},
     "agent_version": {"type": "string", "minLength": 1, "maxLength": 64},
+    "binary_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "update_id": {"type": "string", "maxLength": 128},
     "session_id": {"type": "string", "minLength": 1},
     "boot_id": {"type": "string", "minLength": 1},
@@ -33,7 +34,21 @@
         "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
       }
     },
-    "updated_at": {"type": "string", "format": "date-time"}
+    "updated_at": {"type": "string", "format": "date-time"},
+    "runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "started_at", "file_channel_failure_count", "consecutive_file_channel_failures"],
+      "properties": {
+        "schema_version": {"const": 1},
+        "started_at": {"type": "string", "format": "date-time"},
+        "file_channel_failure_count": {"type": "integer", "minimum": 0},
+        "consecutive_file_channel_failures": {"type": "integer", "minimum": 0},
+        "last_file_channel_error": {"type": "string", "maxLength": 1027},
+        "last_file_channel_error_at": {"type": "string", "format": "date-time"},
+        "last_file_channel_recovered_at": {"type": "string", "format": "date-time"}
+      }
+    }
   },
   "$defs": {
     "hardware_id": {

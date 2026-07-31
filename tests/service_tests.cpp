@@ -58,7 +58,7 @@ void test_service_spec(const std::filesystem::path& root) {
             std::array<std::uint32_t, 3>{5'000, 15'000, 60'000},
         "service restart delays changed");
     expect(spec.failure_reset_seconds == 86'400, "service failure reset period changed");
-    expect(spec.delayed_auto_start, "service delayed auto-start was disabled");
+    expect(!spec.delayed_auto_start, "service delayed auto-start was unexpectedly enabled");
     expect(spec.restart_on_non_crash, "service non-crash recovery was disabled");
     expect(
         satsuma::vm::agent_service_startup_log_path_for_test(root / L"agent.json") ==

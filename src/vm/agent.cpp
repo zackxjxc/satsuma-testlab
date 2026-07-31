@@ -211,6 +211,16 @@ void write_stale_result_best_effort(
     return std::filesystem::path(std::move(buffer));
 }
 
+// 限制 presence 中诊断错误的长度，避免异常信息无限膨胀共享状态文件。
+[[nodiscard]] std::string bounded_runtime_error(std::string message) {
+    constexpr std::size_t kMaxRuntimeErrorBytes = 1024;
+    if (message.size() > kMaxRuntimeErrorBytes) {
+        message.resize(kMaxRuntimeErrorBytes);
+        message += "...";
+    }
+    return message;
+}
+
 // 响应 Host 的显式 Guest 工作目录清理请求并原子发布结果。
 void process_guest_cleanup_request(
     const std::filesystem::path& run_directory,
@@ -274,6 +284,8 @@ Agent::Agent(
     : config_(std::move(config)),
       session_id_(make_id("session")),
       boot_id_(make_id("boot")),
+      session_started_at_(utc_timestamp()),
+      binary_sha256_(sha256_file(current_executable_path())),
       helper_executable_(helper_executable.empty()
           ? current_executable_path()
           : std::filesystem::absolute(std::move(helper_executable))),
@@ -458,7 +470,15 @@ void Agent::run_watch(const std::stop_token stop_token) {
             if (stop_token.stop_requested()) {
                 break;
             }
+            ++file_channel_failure_count_;
+            ++consecutive_file_channel_failures_;
+            last_file_channel_error_ = bounded_runtime_error(error.what());
+            last_file_channel_error_at_ = utc_timestamp();
             std::cerr << "SatsumaVM file channel unavailable: " << error.what() << '\n';
+        }
+        if (file_channel_available && consecutive_file_channel_failures_ != 0) {
+            consecutive_file_channel_failures_ = 0;
+            last_file_channel_recovered_at_ = utc_timestamp();
         }
         const int delay_ms = file_channel_available
             ? config_.poll_interval_ms
@@ -470,6 +490,21 @@ void Agent::run_watch(const std::stop_token stop_token) {
 }
 
 void Agent::write_presence() const {
+    nlohmann::json runtime = {
+        {"schema_version", 1},
+        {"started_at", session_started_at_},
+        {"file_channel_failure_count", file_channel_failure_count_},
+        {"consecutive_file_channel_failures", consecutive_file_channel_failures_},
+    }; // 无事件时不发布无效的空时间戳
+    if (!last_file_channel_error_.empty()) {
+        runtime["last_file_channel_error"] = last_file_channel_error_;
+    }
+    if (!last_file_channel_error_at_.empty()) {
+        runtime["last_file_channel_error_at"] = last_file_channel_error_at_;
+    }
+    if (!last_file_channel_recovered_at_.empty()) {
+        runtime["last_file_channel_recovered_at"] = last_file_channel_recovered_at_;
+    }
     const nlohmann::json presence = {
         {"schema_version", 1},
         {"protocol_version", config_.protocol_version},
@@ -482,6 +517,7 @@ void Agent::write_presence() const {
         {"session_id", session_id_},
         {"boot_id", boot_id_},
         {"process_id", GetCurrentProcessId()},
+        {"binary_sha256", binary_sha256_},
         {"status", config_.identity_unbound ? "unbound" : "idle"},
         {"inventory", {
             {"schema_version", 1},
@@ -489,6 +525,7 @@ void Agent::write_presence() const {
             {"sha256", inventory_.digest()},
         }},
         {"updated_at", utc_timestamp()},
+        {"runtime", std::move(runtime)},
     };
     nlohmann::json published = presence;
     if (!config_.previous_hardware_id.empty()) {

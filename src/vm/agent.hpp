@@ -1,6 +1,7 @@
 // VM Agent 任务领取、执行和结果落盘接口。
 #pragma once
 
+#include <cstdint>
 #include <filesystem>
 #include <stop_token>
 #include <string>
@@ -69,10 +70,17 @@ private:
     AgentConfig config_;       // 当前 VM Agent 配置
     std::string session_id_;   // 当前进程会话 ID
     std::string boot_id_;      // 当前进程启动 ID
+    std::string session_started_at_; // 当前进程启动时间
+    std::string binary_sha256_; // 当前运行 Agent 二进制哈希
     std::filesystem::path helper_executable_; // 交互用户 helper 路径
     AgentRuntimeOptions runtime_options_; // 当前进程使用的可注入运行策略
     InventoryPublisher inventory_; // 当前会话的 Guest 环境快照
     ProcessRunner runner_;     // Windows Job Object 执行器
+    std::uint64_t file_channel_failure_count_{0}; // 共享目录累计失败次数
+    std::uint64_t consecutive_file_channel_failures_{0}; // 当前连续失败次数
+    std::string last_file_channel_error_; // 最近一次共享目录失败
+    std::string last_file_channel_error_at_; // 最近一次共享目录失败时间
+    std::string last_file_channel_recovered_at_; // 最近一次共享目录恢复时间
 };
 
 }  // namespace satsuma::vm

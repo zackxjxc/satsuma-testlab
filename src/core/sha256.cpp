@@ -66,7 +66,7 @@ std::string sha256_file(const std::filesystem::path& path) {
         file = CreateFileW(
             path.c_str(),
             GENERIC_READ,
-            FILE_SHARE_READ,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
             nullptr,
             OPEN_EXISTING,
             FILE_FLAG_SEQUENTIAL_SCAN,

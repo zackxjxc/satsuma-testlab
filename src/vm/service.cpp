@@ -18,6 +18,7 @@
 #include "hardware_identity.hpp"
 #include "satsuma/core/config.hpp"
 #include "satsuma/core/errors.hpp"
+#include "satsuma/core/id.hpp"
 #include "satsuma/core/path.hpp"
 #include "satsuma/core/windows_command_line.hpp"
 
@@ -509,7 +510,7 @@ void append_service_startup_error(
             service_startup_log_path(config_path),
             std::ios::binary | std::ios::app);
         if (output) {
-            output << message << '\n';
+            output << utc_timestamp() << ' ' << message << '\n';
         }
     } catch (...) {
     }
@@ -926,7 +927,8 @@ std::uint32_t start_owned_agent_service(
     const std::filesystem::path& config) {
     const UniqueServiceHandle manager = open_service_manager(SC_MANAGER_CONNECT);
     constexpr DWORD access =
-        SERVICE_QUERY_CONFIG | SERVICE_QUERY_STATUS | SERVICE_START;
+        SERVICE_QUERY_CONFIG | SERVICE_QUERY_STATUS | SERVICE_CHANGE_CONFIG |
+        SERVICE_START | SERVICE_STOP;
     const UniqueServiceHandle service(OpenServiceW(
         manager.get(),
         kAgentServiceName.data(),
@@ -944,6 +946,13 @@ std::uint32_t start_owned_agent_service(
         reinterpret_cast<const QUERY_SERVICE_CONFIGW*>(existing_buffer.data());
     if (!service_belongs_to_agent(*existing, spec)) {
         throw Error("Existing SatsumaVM service points to a different command");
+    }
+    const bool definition_matches = service_definition_matches(service.get(), spec);
+    if (!definition_matches) {
+        if (query_service_status(service.get()).dwCurrentState != SERVICE_STOPPED) {
+            stop_service(service.get());
+        }
+        configure_service(service.get(), spec);
     }
     return start_service(service.get());
 }
