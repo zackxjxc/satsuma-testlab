@@ -4,18 +4,18 @@
   "name": "Windows PowerShell configuration",
   "artifacts": [
     {
-      "source": "C:\\SatsumaTasks\\configure-client.ps1",
-      "vm": "client",
-      "shared_destination": "artifacts/client/configure-client.ps1"
+      "source": "C:\\SatsumaTasks\\configure-vm-01.ps1",
+      "vm": "vm_01",
+      "shared_destination": "artifacts/vm_01/configure-vm-01.ps1"
     }
   ],
   "steps": [
     {
-      "id": "configure_client",
-      "vm": "client",
+      "id": "configure_vm_01",
+      "vm": "vm_01",
       "type": "script",
       "engine": "windows_powershell",
-      "script": "artifacts/client/configure-client.ps1",
+      "script": "artifacts/vm_01/configure-vm-01.ps1",
       "arguments": ["argument with spaces"],
       "run_as": "system",
       "timeout_seconds": 300,

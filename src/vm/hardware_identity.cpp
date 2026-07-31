@@ -28,7 +28,7 @@ namespace {
     return agent_root / L"hardware-id-cache.json";
 }
 
-// Host 以硬件 UUID 为键发布业务角色绑定。
+// Host 以硬件 UUID 为键发布 VM 标识绑定。
 [[nodiscard]] std::filesystem::path binding_path(const AgentConfig& config) {
     return config.shared_root / L"agents" /
         path_from_utf8(config.hardware_id + ".binding.json");
@@ -48,7 +48,7 @@ namespace {
     return vm_id;
 }
 
-// 原子保存当前硬件及已确认业务角色。
+// 原子保存当前硬件及已确认的 VM 标识。
 void write_hardware_cache(const AgentConfig& config) {
     nlohmann::json cache = {
         {"schema_version", 1},

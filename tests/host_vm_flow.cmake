@@ -15,7 +15,7 @@ file(TO_CMAKE_PATH "${TEST_ROOT}/local" local_path)
 file(TO_CMAKE_PATH "${TEST_ROOT}/archive" archive_path)
 file(TO_CMAKE_PATH "${FIXTURE_EXE}" fixture_path)
 file(TO_CMAKE_PATH "${VMRUN_EXE}" vmrun_path)
-file(TO_CMAKE_PATH "${TEST_ROOT}/Client VM.vmx" vmx_path)
+file(TO_CMAKE_PATH "${TEST_ROOT}/VM 01.vmx" vmx_path)
 file(TO_CMAKE_PATH "${TEST_ROOT}/Hard VM.vmx" hard_vmx_path)
 file(TO_CMAKE_PATH "${TEST_ROOT}/Reconcile VM.vmx" reconcile_vmx_path)
 file(WRITE "${vmx_path}" "# Test VMX placeholder\n")
@@ -36,7 +36,7 @@ set(lab_json [=[
   },
   "vms": [
     {
-      "id": "client",
+      "id": "vm_01",
       "vmx": "@VMX@",
       "agent_version": "0.1.0",
       "snapshots": {
@@ -81,7 +81,7 @@ set(agent_json [=[
   "schema_version": 1,
   "protocol_version": 3,
   "lab_id": "integration_lab",
-  "vm_id": "client",
+  "vm_id": "vm_01",
   "agent_version": "0.1.0",
   "shared_root": "@SHARE@",
   "local_work_root": "@LOCAL@",
@@ -116,25 +116,25 @@ set(task_json [=[
   "artifacts": [
     {
       "source": "@FIXTURE@",
-      "vm": "client",
-      "shared_destination": "artifacts/client/SatsumaTestFixture.exe"
+      "vm": "vm_01",
+      "shared_destination": "artifacts/vm_01/SatsumaTestFixture.exe"
     }
   ],
   "steps": [
     {
       "id": "execute_fixture",
-      "vm": "client",
+      "vm": "vm_01",
       "type": "execute",
-      "program": "artifacts/client/SatsumaTestFixture.exe",
+      "program": "artifacts/vm_01/SatsumaTestFixture.exe",
       "arguments": ["--message", "hello from fixture", "--output", "generated/result.json"],
       "timeout_seconds": 10,
       "collect_files": ["generated/result.json"]
     },
     {
       "id": "timeout_fixture",
-      "vm": "client",
+      "vm": "vm_01",
       "type": "execute",
-      "program": "artifacts/client/SatsumaTestFixture.exe",
+      "program": "artifacts/vm_01/SatsumaTestFixture.exe",
       "arguments": ["--sleep-ms", "3000"],
       "timeout_seconds": 1,
       "collect_files": []
@@ -185,7 +185,7 @@ if(NOT unknown_command_result EQUAL 2 OR unknown_command_usage_position EQUAL -1
 endif()
 
 execute_process(
-    COMMAND "${HOST_EXE}" vm start --id client
+    COMMAND "${HOST_EXE}" vm start --id vm_01
     WORKING_DIRECTORY "${TEST_ROOT}"
     RESULT_VARIABLE missing_config_result
     OUTPUT_VARIABLE missing_config_output
@@ -237,7 +237,7 @@ set(lifecycle_task_json [=[
   "steps": [
     {
       "id": "echo",
-      "vm": "client",
+      "vm": "vm_01",
       "type": "echo",
       "message": "must not run"
     }
@@ -245,7 +245,7 @@ set(lifecycle_task_json [=[
   "lifecycle": {
     "vms": [
       {
-        "vm": "client",
+        "vm": "vm_01",
         "restore_before": "clean",
         "on_success": {"action": "stop"},
         "on_failure": {"action": "restore", "snapshot": "clean"}
@@ -303,7 +303,7 @@ set(orchestration_task_json [=[
   "steps": [
     {
       "id": "main_echo",
-      "vm": "client",
+      "vm": "vm_01",
       "type": "echo",
       "message": "main lifecycle step"
     }
@@ -311,7 +311,7 @@ set(orchestration_task_json [=[
   "lifecycle": {
     "vms": [
       {
-        "vm": "client",
+        "vm": "vm_01",
         "restore_before": "clean",
         "on_success": {"action": "stop"},
         "on_failure": {"action": "restore", "snapshot": "clean"}
@@ -320,7 +320,7 @@ set(orchestration_task_json [=[
     "finally": [
       {
         "id": "finally_echo",
-        "vm": "client",
+        "vm": "vm_01",
         "type": "echo",
         "message": "finally lifecycle step"
       }
@@ -458,7 +458,7 @@ set(executing_resume_plan [=[
   "steps": [
     {
       "id": "resume_echo",
-      "vm": "client",
+      "vm": "vm_01",
       "type": "echo",
       "message": "resume persisted execution"
     }
@@ -466,7 +466,7 @@ set(executing_resume_plan [=[
   "lifecycle": {
     "vms": [
       {
-        "vm": "client",
+        "vm": "vm_01",
         "on_success": {"action": "stop"},
         "on_failure": {"action": "restore", "snapshot": "clean"}
       }
@@ -482,7 +482,7 @@ set(executing_main_plan [=[
   "steps": [
     {
       "id": "resume_echo",
-      "vm": "client",
+      "vm": "vm_01",
       "type": "echo",
       "message": "resume persisted execution"
     }
@@ -507,7 +507,7 @@ file(WRITE "${share_path}/runs/orchestration_executing_resume/task.json" [=[
   "steps": [
     {
       "id": "resume_echo",
-      "vm": "client",
+      "vm": "vm_01",
       "type": "echo",
       "message": "resume persisted execution",
       "timeout_seconds": 120,
@@ -526,7 +526,7 @@ file(WRITE "${executing_archive}/orchestration.json" [=[
 {
   "schema_version": 1,
   "run_id": "orchestration_executing_resume",
-  "vm_id": "client",
+  "vm_id": "vm_01",
   "main_run_id": "orchestration_executing_resume",
   "finally_run_id": "finally_executing_resume",
   "plan_sha256": "@PLAN_SHA256@"
@@ -651,7 +651,7 @@ set(collecting_manifest [=[
   "steps": [
     {
       "id": "resume_echo",
-      "vm": "client",
+      "vm": "vm_01",
       "type": "echo",
       "message": "resume persisted execution",
       "timeout_seconds": 120,
@@ -683,7 +683,7 @@ file(WRITE "${collecting_archive}/orchestration.json" [=[
 {
   "schema_version": 1,
   "run_id": "orchestration_collecting_resume",
-  "vm_id": "client",
+  "vm_id": "vm_01",
   "main_run_id": "orchestration_collecting_resume",
   "finally_run_id": "finally_collecting_resume",
   "plan_sha256": "@PLAN_SHA256@"
@@ -750,7 +750,7 @@ file(WRITE "${unsafe_archive}/orchestration.json" [=[
 {
   "schema_version": 1,
   "run_id": "orchestration_unsafe_resume",
-  "vm_id": "client",
+  "vm_id": "vm_01",
   "main_run_id": "orchestration_unsafe_resume",
   "finally_run_id": "finally_unsafe_resume",
   "plan_sha256": "@PLAN_SHA256@"
@@ -810,16 +810,16 @@ set(orchestration_failure_json [=[
   "artifacts": [
     {
       "source": "@FIXTURE@",
-      "vm": "client",
-      "shared_destination": "artifacts/client/SatsumaTestFixture.exe"
+      "vm": "vm_01",
+      "shared_destination": "artifacts/vm_01/SatsumaTestFixture.exe"
     }
   ],
   "steps": [
     {
       "id": "timeout",
-      "vm": "client",
+      "vm": "vm_01",
       "type": "execute",
-      "program": "artifacts/client/SatsumaTestFixture.exe",
+      "program": "artifacts/vm_01/SatsumaTestFixture.exe",
       "arguments": ["--sleep-ms", "3000"],
       "timeout_seconds": 1
     }
@@ -827,7 +827,7 @@ set(orchestration_failure_json [=[
   "lifecycle": {
     "vms": [
       {
-        "vm": "client",
+        "vm": "vm_01",
         "on_success": {"action": "stop"},
         "on_failure": {"action": "restore", "snapshot": "clean"}
       }
@@ -923,7 +923,7 @@ set(manual_gate_task [=[
   "steps": [
     {
       "id": "main_echo",
-      "vm": "client",
+      "vm": "vm_01",
       "type": "echo",
       "message": "must remain blocked",
       "retry_safe": false
@@ -932,7 +932,7 @@ set(manual_gate_task [=[
   "lifecycle": {
     "vms": [
       {
-        "vm": "client",
+        "vm": "vm_01",
         "on_success": {"action": "stop"},
         "on_failure": {"action": "restore", "snapshot": "clean"}
       }
@@ -940,7 +940,7 @@ set(manual_gate_task [=[
     "finally": [
       {
         "id": "must_not_run",
-        "vm": "client",
+        "vm": "vm_01",
         "type": "echo",
         "message": "unsafe finally"
       }
@@ -1004,7 +1004,7 @@ set(claim_task_template [=[
   "steps": [
     {
       "id": "echo",
-      "vm": "client",
+      "vm": "vm_01",
       "type": "echo",
       "message": "claim recovery",
       "timeout_seconds": 1,
@@ -1017,7 +1017,7 @@ set(claim_template [=[
 {
   "schema_version": 2,
   "run_id": "@RUN_ID@",
-  "vm_id": "client",
+  "vm_id": "vm_01",
   "step_id": "echo",
   "job_id": "job_old",
   "session_id": "session_old",
@@ -1035,9 +1035,9 @@ string(REPLACE "@RUN_ID@" "${safe_claim_run}" safe_claim_task "${claim_task_temp
 string(REPLACE "@RETRY_SAFE@" "true" safe_claim_task "${safe_claim_task}")
 string(REPLACE "@RUN_ID@" "${safe_claim_run}" safe_claim "${claim_template}")
 string(REPLACE "@RETRY_SAFE@" "true" safe_claim "${safe_claim}")
-file(MAKE_DIRECTORY "${share_path}/runs/${safe_claim_run}/state/client")
+file(MAKE_DIRECTORY "${share_path}/runs/${safe_claim_run}/state/vm_01")
 file(WRITE "${share_path}/runs/${safe_claim_run}/task.json" "${safe_claim_task}")
-file(WRITE "${share_path}/runs/${safe_claim_run}/state/client/echo.claim.json" "${safe_claim}")
+file(WRITE "${share_path}/runs/${safe_claim_run}/state/vm_01/echo.claim.json" "${safe_claim}")
 execute_process(
     COMMAND "${VM_EXE}" --config "${TEST_ROOT}/agent.json" --once
     RESULT_VARIABLE safe_claim_result
@@ -1047,17 +1047,17 @@ execute_process(
 if(NOT safe_claim_result EQUAL 0)
     message(FATAL_ERROR "Safe claim recovery failed: ${safe_claim_error}\n${safe_claim_output}")
 endif()
-set(safe_execution "${share_path}/runs/${safe_claim_run}/results/client/echo/execution.json")
+set(safe_execution "${share_path}/runs/${safe_claim_run}/results/vm_01/echo/execution.json")
 if(NOT EXISTS "${safe_execution}")
     message(FATAL_ERROR "Expired safe claim was not executed")
 endif()
-file(READ "${share_path}/runs/${safe_claim_run}/state/client/echo.claim.json" safe_claim_after)
+file(READ "${share_path}/runs/${safe_claim_run}/state/vm_01/echo.claim.json" safe_claim_after)
 string(FIND "${safe_claim_after}" "\"attempt\": 2" safe_attempt_position)
 if(safe_attempt_position EQUAL -1)
     message(FATAL_ERROR "Recovered safe claim did not increment attempt: ${safe_claim_after}")
 endif()
 file(GLOB safe_expired_claims
-    "${share_path}/runs/${safe_claim_run}/state/client/echo.claim.json.expired-attempt-1-*")
+    "${share_path}/runs/${safe_claim_run}/state/vm_01/echo.claim.json.expired-attempt-1-*")
 list(LENGTH safe_expired_claims safe_expired_count)
 if(NOT safe_expired_count EQUAL 1)
     message(FATAL_ERROR "Safe claim recovery did not preserve exactly one expired claim")
@@ -1068,9 +1068,9 @@ string(REPLACE "@RUN_ID@" "${unsafe_claim_run}" unsafe_claim_task "${claim_task_
 string(REPLACE "@RETRY_SAFE@" "false" unsafe_claim_task "${unsafe_claim_task}")
 string(REPLACE "@RUN_ID@" "${unsafe_claim_run}" unsafe_claim "${claim_template}")
 string(REPLACE "@RETRY_SAFE@" "false" unsafe_claim "${unsafe_claim}")
-file(MAKE_DIRECTORY "${share_path}/runs/${unsafe_claim_run}/state/client")
+file(MAKE_DIRECTORY "${share_path}/runs/${unsafe_claim_run}/state/vm_01")
 file(WRITE "${share_path}/runs/${unsafe_claim_run}/task.json" "${unsafe_claim_task}")
-file(WRITE "${share_path}/runs/${unsafe_claim_run}/state/client/echo.claim.json" "${unsafe_claim}")
+file(WRITE "${share_path}/runs/${unsafe_claim_run}/state/vm_01/echo.claim.json" "${unsafe_claim}")
 execute_process(
     COMMAND "${VM_EXE}" --config "${TEST_ROOT}/agent.json" --once
     RESULT_VARIABLE unsafe_claim_result
@@ -1080,11 +1080,11 @@ execute_process(
 if(NOT unsafe_claim_result EQUAL 0)
     message(FATAL_ERROR "Unsafe claim audit failed: ${unsafe_claim_error}\n${unsafe_claim_output}")
 endif()
-if(EXISTS "${share_path}/runs/${unsafe_claim_run}/results/client/echo/execution.json")
+if(EXISTS "${share_path}/runs/${unsafe_claim_run}/results/vm_01/echo/execution.json")
     message(FATAL_ERROR "Expired unsafe claim was executed without manual approval")
 endif()
 set(unsafe_recovery
-    "${share_path}/runs/${unsafe_claim_run}/state/client/echo.claim-recovery.json")
+    "${share_path}/runs/${unsafe_claim_run}/state/vm_01/echo.claim-recovery.json")
 if(NOT EXISTS "${unsafe_recovery}")
     message(FATAL_ERROR "Expired unsafe claim did not publish a recovery gate")
 endif()
@@ -1144,9 +1144,9 @@ string(REPLACE
     "\"lease_expires_unix_ms\": 4102444800000"
     pending_claim
     "${pending_claim}")
-file(MAKE_DIRECTORY "${share_path}/runs/${pending_run}/state/client")
+file(MAKE_DIRECTORY "${share_path}/runs/${pending_run}/state/vm_01")
 file(WRITE "${share_path}/runs/${pending_run}/task.json" "${pending_task}")
-file(WRITE "${share_path}/runs/${pending_run}/state/client/echo.claim.json" "${pending_claim}")
+file(WRITE "${share_path}/runs/${pending_run}/state/vm_01/echo.claim.json" "${pending_claim}")
 execute_process(
     COMMAND "${HOST_EXE}" report
         --config "${TEST_ROOT}/lab.json"
@@ -1171,7 +1171,7 @@ execute_process(
         -P "${CMAKE_CURRENT_LIST_DIR}/run_agent_once_after_delay.cmake"
     COMMAND "${HOST_EXE}" check
         --config "${TEST_ROOT}/lab.json"
-        --vm client
+        --vm vm_01
         --timeout-seconds 10
     RESULTS_VARIABLE check_results
     OUTPUT_VARIABLE check_output
@@ -1200,7 +1200,7 @@ if(check_tools_position EQUAL -1 OR
    check_capacity_position EQUAL -1)
     message(FATAL_ERROR "SatsumaHost active check omitted Tools or capacity details: ${check_output}")
 endif()
-file(GLOB diagnostic_claims "${share_path}/runs/check-*/state/client/client.claim.json")
+file(GLOB diagnostic_claims "${share_path}/runs/check-*/state/vm_01/vm_01.claim.json")
 list(LENGTH diagnostic_claims diagnostic_claim_count)
 if(diagnostic_claim_count LESS 1)
     message(FATAL_ERROR "SatsumaHost active check did not create a diagnostic claim")
@@ -1220,7 +1220,7 @@ file(WRITE "${TEST_ROOT}/lab-blocked-share.json" "${blocked_share_lab_json}")
 execute_process(
     COMMAND "${HOST_EXE}" check
         --config "${TEST_ROOT}/lab-blocked-share.json"
-        --vm client
+        --vm vm_01
         --timeout-seconds 2
     RESULT_VARIABLE blocked_share_result
     OUTPUT_VARIABLE blocked_share_output
@@ -1251,7 +1251,7 @@ file(WRITE "${TEST_ROOT}/lab-blocked-archive.json" "${blocked_archive_lab_json}"
 execute_process(
     COMMAND "${HOST_EXE}" check
         --config "${TEST_ROOT}/lab-blocked-archive.json"
-        --vm client
+        --vm vm_01
         --timeout-seconds 10
     RESULT_VARIABLE blocked_archive_result
     OUTPUT_VARIABLE blocked_archive_output
@@ -1268,7 +1268,7 @@ if(NOT blocked_archive_output STREQUAL "")
 endif()
 
 execute_process(
-    COMMAND "${HOST_EXE}" vm start --config "${TEST_ROOT}/lab.json" --id client
+    COMMAND "${HOST_EXE}" vm start --config "${TEST_ROOT}/lab.json" --id vm_01
     WORKING_DIRECTORY "${TEST_ROOT}"
     RESULT_VARIABLE vm_start_result
     OUTPUT_VARIABLE vm_start_output
@@ -1283,7 +1283,7 @@ if(vm_start_position EQUAL -1)
 endif()
 
 execute_process(
-    COMMAND "${HOST_EXE}" vm stop --config "${TEST_ROOT}/lab.json" --id client
+    COMMAND "${HOST_EXE}" vm stop --config "${TEST_ROOT}/lab.json" --id vm_01
     WORKING_DIRECTORY "${TEST_ROOT}"
     RESULT_VARIABLE vm_stop_result
     OUTPUT_VARIABLE vm_stop_output
@@ -1315,7 +1315,7 @@ endif()
 
 execute_process(
     COMMAND "${HOST_EXE}" vm restore
-        --config "${TEST_ROOT}/lab.json" --id client --snapshot clean
+        --config "${TEST_ROOT}/lab.json" --id vm_01 --snapshot clean
     WORKING_DIRECTORY "${TEST_ROOT}"
     RESULT_VARIABLE vm_restore_result
     OUTPUT_VARIABLE vm_restore_output
@@ -1330,7 +1330,7 @@ if(vm_restore_position EQUAL -1)
 endif()
 
 execute_process(
-    COMMAND "${HOST_EXE}" snapshot list --config "${TEST_ROOT}/lab.json" --vm client
+    COMMAND "${HOST_EXE}" snapshot list --config "${TEST_ROOT}/lab.json" --vm vm_01
     WORKING_DIRECTORY "${TEST_ROOT}"
     RESULT_VARIABLE snapshot_list_result
     OUTPUT_VARIABLE snapshot_list_output
@@ -1346,7 +1346,7 @@ endif()
 
 execute_process(
     COMMAND "${HOST_EXE}" snapshot delete-ai
-        --config "${TEST_ROOT}/lab.json" --vm client --snapshot clean
+        --config "${TEST_ROOT}/lab.json" --vm vm_01 --snapshot clean
     WORKING_DIRECTORY "${TEST_ROOT}"
     RESULT_VARIABLE base_delete_result
     OUTPUT_VARIABLE base_delete_output
@@ -1358,7 +1358,7 @@ endif()
 
 execute_process(
     COMMAND "${HOST_EXE}" snapshot create-ai
-        --config "${TEST_ROOT}/lab.json" --vm client --name network-ready
+        --config "${TEST_ROOT}/lab.json" --vm vm_01 --name network-ready
     WORKING_DIRECTORY "${TEST_ROOT}"
     RESULT_VARIABLE snapshot_create_result
     OUTPUT_VARIABLE snapshot_create_output
@@ -1371,7 +1371,7 @@ string(FIND "${snapshot_create_output}" "\"status\": \"created\"" snapshot_creat
 if(snapshot_create_position EQUAL -1)
     message(FATAL_ERROR "SatsumaHost snapshot create-ai returned unexpected output: ${snapshot_create_output}")
 endif()
-file(GLOB snapshot_metadata "${archive_path}/snapshots/client/*.json")
+file(GLOB snapshot_metadata "${archive_path}/snapshots/vm_01/*.json")
 list(LENGTH snapshot_metadata snapshot_metadata_count)
 if(NOT snapshot_metadata_count EQUAL 1)
     message(FATAL_ERROR "SatsumaHost did not create exactly one snapshot metadata record")
@@ -1385,7 +1385,7 @@ endif()
 
 execute_process(
     COMMAND "${HOST_EXE}" snapshot delete-ai
-        --config "${TEST_ROOT}/lab.json" --vm client --snapshot satsuma-ai-obsolete
+        --config "${TEST_ROOT}/lab.json" --vm vm_01 --snapshot satsuma-ai-obsolete
     WORKING_DIRECTORY "${TEST_ROOT}"
     RESULT_VARIABLE snapshot_delete_result
     OUTPUT_VARIABLE snapshot_delete_output
@@ -1398,7 +1398,7 @@ string(FIND "${snapshot_delete_output}" "\"status\": \"deleted\"" snapshot_delet
 if(snapshot_delete_position EQUAL -1)
     message(FATAL_ERROR "SatsumaHost snapshot delete-ai returned unexpected output: ${snapshot_delete_output}")
 endif()
-set(deleted_metadata_path "${archive_path}/snapshots/client/satsuma-ai-obsolete.json")
+set(deleted_metadata_path "${archive_path}/snapshots/vm_01/satsuma-ai-obsolete.json")
 file(READ "${deleted_metadata_path}" deleted_metadata_json)
 string(FIND "${deleted_metadata_json}" "\"status\": \"deleted\"" deleted_metadata_position)
 if(deleted_metadata_position EQUAL -1)
@@ -1530,14 +1530,14 @@ if(failed_position EQUAL -1)
     message(FATAL_ERROR "Host report did not contain one timed-out step: ${report_output}")
 endif()
 
-set(result_root "${TEST_ROOT}/share/runs/integration_run/results/client/execute_fixture")
+set(result_root "${TEST_ROOT}/share/runs/integration_run/results/vm_01/execute_fixture")
 if(NOT EXISTS "${result_root}/execution.json" OR
    NOT EXISTS "${result_root}/stdout.log" OR
    NOT EXISTS "${result_root}/files/generated/result.json")
     message(FATAL_ERROR "Expected execution evidence was not created")
 endif()
 
-set(timeout_result "${TEST_ROOT}/share/runs/integration_run/results/client/timeout_fixture/execution.json")
+set(timeout_result "${TEST_ROOT}/share/runs/integration_run/results/vm_01/timeout_fixture/execution.json")
 if(NOT EXISTS "${timeout_result}")
     message(FATAL_ERROR "Timed-out execution evidence was not created")
 endif()

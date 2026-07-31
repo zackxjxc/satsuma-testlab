@@ -60,7 +60,7 @@ template <typename Predicate>
     const std::string& job_id) {
     const satsuma::StepClaimLease proposed = satsuma::make_step_claim_lease(
         "run_claim_renewal",
-        "client",
+        "vm_01",
         "execute",
         job_id,
         "session_claim_renewal",

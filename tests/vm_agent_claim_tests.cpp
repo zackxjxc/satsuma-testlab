@@ -57,7 +57,7 @@ void expect(const bool condition, const std::string& message) {
     const std::filesystem::path& local_work_root) {
     satsuma::AgentConfig config;
     config.lab_id = "vm_agent_claim_test";
-    config.vm_id = "client";
+    config.vm_id = "vm_01";
     config.agent_version = "0.1.0";
     config.shared_root = shared_root;
     config.local_work_root = local_work_root;
@@ -76,7 +76,7 @@ void write_execute_run(
     const std::filesystem::path run_directory =
         shared_root / L"runs" / satsuma::path_from_utf8(run_id);
     const std::filesystem::path artifact =
-        run_directory / L"artifacts" / L"client" / L"fixture.exe";
+        run_directory / L"artifacts" / L"vm_01" / L"fixture.exe";
     std::filesystem::create_directories(artifact.parent_path());
     std::filesystem::copy_file(
         fixture,
@@ -90,15 +90,15 @@ void write_execute_run(
     manifest.name = "active-claim-renewal";
     manifest.created_at = satsuma::utc_timestamp();
     manifest.artifacts.push_back({
-        "client",
-        satsuma::path_from_utf8("artifacts/client/fixture.exe"),
+        "vm_01",
+        satsuma::path_from_utf8("artifacts/vm_01/fixture.exe"),
         satsuma::sha256_file(artifact),
     });
     satsuma::TaskStep step;
     step.id = "execute";
-    step.vm = "client";
+    step.vm = "vm_01";
     step.type = "execute";
-    step.program = satsuma::path_from_utf8("artifacts/client/fixture.exe");
+    step.program = satsuma::path_from_utf8("artifacts/vm_01/fixture.exe");
     step.arguments = {
         "--ready-file", "ready.marker",
         "--sleep-ms", std::to_string(sleep_ms),
@@ -133,7 +133,7 @@ void write_echo_run(
     manifest.created_at = satsuma::utc_timestamp();
     satsuma::TaskStep step;
     step.id = "echo";
-    step.vm = "client";
+    step.vm = "vm_01";
     step.type = "echo";
     step.message = "single owner";
     step.retry_safe = true;
@@ -169,7 +169,7 @@ void test_long_execution_renews_claim(
 
     const std::filesystem::path run_directory = step_root(shared_root, run_id);
     const std::filesystem::path claim_path =
-        run_directory / L"state" / L"client" / L"execute.claim.json";
+        run_directory / L"state" / L"vm_01" / L"execute.claim.json";
     const satsuma::StepClaimLease effective =
         satsuma::vm::load_effective_step_claim(claim_path);
     expect(
@@ -183,7 +183,7 @@ void test_long_execution_renews_claim(
         "Agent renewal thread continued after canonical result publication");
 
     const std::filesystem::path result_directory =
-        run_directory / L"results" / L"client" / L"execute";
+        run_directory / L"results" / L"vm_01" / L"execute";
     const satsuma::ExecutionResult result = satsuma::load_json(
         result_directory / L"execution.json").get<satsuma::ExecutionResult>();
     expect(
@@ -230,11 +230,11 @@ void test_renewal_failure_and_recovery(
 
     const std::filesystem::path run_directory = step_root(shared_root, run_id);
     const std::filesystem::path claim_path =
-        run_directory / L"state" / L"client" / L"execute.claim.json";
+        run_directory / L"state" / L"vm_01" / L"execute.claim.json";
     const satsuma::StepClaimLease first_claim =
         satsuma::load_step_claim_lease(claim_path);
     const std::filesystem::path result_directory =
-        run_directory / L"results" / L"client" / L"execute";
+        run_directory / L"results" / L"vm_01" / L"execute";
     const std::filesystem::path stale_result =
         result_directory / L".jobs" / satsuma::path_from_utf8(first_claim.job_id) /
         L"stale-execution.json";
@@ -278,7 +278,7 @@ void test_renewal_failure_and_recovery(
     expect(
         !std::filesystem::exists(
             local_work_root / L"vm_agent_claim_test" / satsuma::path_from_utf8(run_id) /
-                L"client" / L"child-survived.marker"),
+                L"vm_01" / L"child-survived.marker"),
         "renewal cancellation left a child process outside the Job Object kill boundary");
 }
 
@@ -339,9 +339,9 @@ void test_concurrent_agents_execute_once(const std::filesystem::path& root) {
 
     const std::filesystem::path run_directory = step_root(shared_root, run_id);
     const satsuma::StepClaimLease claim = satsuma::load_step_claim_lease(
-        run_directory / L"state" / L"client" / L"echo.claim.json");
+        run_directory / L"state" / L"vm_01" / L"echo.claim.json");
     const satsuma::ExecutionResult result = satsuma::load_json(
-        run_directory / L"results" / L"client" / L"echo" / L"execution.json")
+        run_directory / L"results" / L"vm_01" / L"echo" / L"execution.json")
             .get<satsuma::ExecutionResult>();
     expect(
         result.job_id == claim.job_id && result.status == "exited",
@@ -356,7 +356,7 @@ void test_invalid_claim_enters_manual_gate(const std::filesystem::path& root) {
     write_echo_run(shared_root, run_id);
     const std::filesystem::path run_directory = step_root(shared_root, run_id);
     const std::filesystem::path claim_path =
-        run_directory / L"state" / L"client" / L"echo.claim.json";
+        run_directory / L"state" / L"vm_01" / L"echo.claim.json";
     satsuma::write_json_atomic(
         claim_path,
         {{"schema_version", 3}, {"job_id", "job_incomplete"}});
@@ -370,13 +370,13 @@ void test_invalid_claim_enters_manual_gate(const std::filesystem::path& root) {
     expect(agent.run_once() == 0, "Agent executed a step with an invalid persisted claim");
 
     const std::filesystem::path recovery_path =
-        run_directory / L"state" / L"client" / L"echo.claim-recovery.json";
+        run_directory / L"state" / L"vm_01" / L"echo.claim-recovery.json";
     const nlohmann::json recovery = satsuma::load_json(recovery_path);
     expect(
         recovery.value("status", std::string{}) == "manual_intervention_required" &&
             recovery.value("reason", std::string{}) == "claim state failed validation" &&
             !std::filesystem::exists(
-                run_directory / L"results" / L"client" / L"echo" / L"execution.json"),
+                run_directory / L"results" / L"vm_01" / L"echo" / L"execution.json"),
         "invalid claim did not preserve the manual recovery gate");
 }
 

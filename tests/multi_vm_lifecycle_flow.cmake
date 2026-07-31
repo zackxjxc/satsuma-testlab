@@ -58,27 +58,27 @@ function(require_cleanup_sequence log_text expected_cleanup context)
 endfunction()
 
 # 执行一个隔离场景并核对双 VM manifest、业务结果和逆序清理。
-function(run_multi_vm_scenario name expected_exit expected_status client_step gateway_step
-         expected_successful expected_failed expected_client_status expected_gateway_status
-         fail_gateway_cleanup fail_gateway_soft_stop fail_client_start)
+function(run_multi_vm_scenario name expected_exit expected_status vm_01_step vm_02_step
+         expected_successful expected_failed expected_vm_01_status expected_vm_02_status
+         fail_vm_02_cleanup fail_vm_02_soft_stop fail_vm_01_start)
     set(root "${TEST_ROOT}/${name}")
     set(share "${root}/share")
     set(archive "${root}/archive")
-    set(client_local "${root}/client-local")
-    set(gateway_local "${root}/gateway-local")
+    set(vm_01_local "${root}/vm_01-local")
+    set(vm_02_local "${root}/vm_02-local")
     file(MAKE_DIRECTORY
         "${share}"
         "${archive}"
-        "${client_local}"
-        "${gateway_local}")
+        "${vm_01_local}"
+        "${vm_02_local}")
     file(TO_CMAKE_PATH "${share}" share_path)
     file(TO_CMAKE_PATH "${archive}" archive_path)
-    file(TO_CMAKE_PATH "${client_local}" client_local_path)
-    file(TO_CMAKE_PATH "${gateway_local}" gateway_local_path)
-    file(TO_CMAKE_PATH "${root}/Client VM.vmx" client_vmx_path)
-    file(TO_CMAKE_PATH "${root}/Gateway VM.vmx" gateway_vmx_path)
-    file(WRITE "${client_vmx_path}" "# Client test VMX\n")
-    file(WRITE "${gateway_vmx_path}" "# Gateway test VMX\n")
+    file(TO_CMAKE_PATH "${vm_01_local}" vm_01_local_path)
+    file(TO_CMAKE_PATH "${vm_02_local}" vm_02_local_path)
+    file(TO_CMAKE_PATH "${root}/VM 01.vmx" vm_01_vmx_path)
+    file(TO_CMAKE_PATH "${root}/VM 02.vmx" vm_02_vmx_path)
+    file(WRITE "${vm_01_vmx_path}" "# VM 01 test VMX\n")
+    file(WRITE "${vm_02_vmx_path}" "# VM 02 test VMX\n")
 
     set(lab_json [=[
 {
@@ -89,14 +89,14 @@ function(run_multi_vm_scenario name expected_exit expected_status client_step ga
   "shared_folder": {"host_root": "@SHARE@"},
   "vms": [
     {
-      "id": "gateway",
-      "vmx": "@GATEWAY_VMX@",
+      "id": "vm_02",
+      "vmx": "@VM_02_VMX@",
       "agent_version": "0.1.0",
       "snapshots": {"base": "clean", "ai_prefix": "satsuma-ai-", "max_ai_snapshots": 8}
     },
     {
-      "id": "client",
-      "vmx": "@CLIENT_VMX@",
+      "id": "vm_01",
+      "vmx": "@VM_01_VMX@",
       "agent_version": "0.1.0",
       "snapshots": {"base": "clean", "ai_prefix": "satsuma-ai-", "max_ai_snapshots": 8}
     }
@@ -106,8 +106,8 @@ function(run_multi_vm_scenario name expected_exit expected_status client_step ga
     string(REPLACE "@VMRUN@" "${vmrun_path}" lab_json "${lab_json}")
     string(REPLACE "@ARCHIVE@" "${archive_path}" lab_json "${lab_json}")
     string(REPLACE "@SHARE@" "${share_path}" lab_json "${lab_json}")
-    string(REPLACE "@CLIENT_VMX@" "${client_vmx_path}" lab_json "${lab_json}")
-    string(REPLACE "@GATEWAY_VMX@" "${gateway_vmx_path}" lab_json "${lab_json}")
+    string(REPLACE "@VM_01_VMX@" "${vm_01_vmx_path}" lab_json "${lab_json}")
+    string(REPLACE "@VM_02_VMX@" "${vm_02_vmx_path}" lab_json "${lab_json}")
     file(WRITE "${root}/lab.json" "${lab_json}")
 
     set(agent_json [=[
@@ -123,14 +123,14 @@ function(run_multi_vm_scenario name expected_exit expected_status client_step ga
   "reconnect_interval_ms": 100
 }
 ]=])
-    string(REPLACE "@SHARE@" "${share_path}" client_agent_json "${agent_json}")
-    string(REPLACE "@LOCAL@" "${client_local_path}" client_agent_json "${client_agent_json}")
-    string(REPLACE "@VM_ID@" "client" client_agent_json "${client_agent_json}")
-    file(WRITE "${root}/client-agent.json" "${client_agent_json}")
-    string(REPLACE "@SHARE@" "${share_path}" gateway_agent_json "${agent_json}")
-    string(REPLACE "@LOCAL@" "${gateway_local_path}" gateway_agent_json "${gateway_agent_json}")
-    string(REPLACE "@VM_ID@" "gateway" gateway_agent_json "${gateway_agent_json}")
-    file(WRITE "${root}/gateway-agent.json" "${gateway_agent_json}")
+    string(REPLACE "@SHARE@" "${share_path}" vm_01_agent_json "${agent_json}")
+    string(REPLACE "@LOCAL@" "${vm_01_local_path}" vm_01_agent_json "${vm_01_agent_json}")
+    string(REPLACE "@VM_ID@" "vm_01" vm_01_agent_json "${vm_01_agent_json}")
+    file(WRITE "${root}/vm_01-agent.json" "${vm_01_agent_json}")
+    string(REPLACE "@SHARE@" "${share_path}" vm_02_agent_json "${agent_json}")
+    string(REPLACE "@LOCAL@" "${vm_02_local_path}" vm_02_agent_json "${vm_02_agent_json}")
+    string(REPLACE "@VM_ID@" "vm_02" vm_02_agent_json "${vm_02_agent_json}")
+    file(WRITE "${root}/vm_02-agent.json" "${vm_02_agent_json}")
 
     set(run_id "multi_vm_${name}")
     set(plan_json [=[
@@ -141,13 +141,13 @@ function(run_multi_vm_scenario name expected_exit expected_status client_step ga
   "artifacts": [
     {
       "source": "@FIXTURE@",
-      "vm": "client",
-      "shared_destination": "artifacts/client/SatsumaTestFixture.exe"
+      "vm": "vm_01",
+      "shared_destination": "artifacts/vm_01/SatsumaTestFixture.exe"
     },
     {
       "source": "@FIXTURE@",
-      "vm": "gateway",
-      "shared_destination": "artifacts/gateway/SatsumaTestFixture.exe"
+      "vm": "vm_02",
+      "shared_destination": "artifacts/vm_02/SatsumaTestFixture.exe"
     }
   ],
   "cleanup": {
@@ -155,25 +155,25 @@ function(run_multi_vm_scenario name expected_exit expected_status client_step ga
     "shared_run": {"on_success": "archive_then_delete", "on_failure": "retain"}
   },
   "steps": [
-    @CLIENT_STEP@,
-    @GATEWAY_STEP@
+    @VM_01_STEP@,
+    @VM_02_STEP@
   ],
   "lifecycle": {
     "vms": [
       {
-        "vm": "client",
+        "vm": "vm_01",
         "on_success": {"action": "stop"},
         "on_failure": {"action": "restore", "snapshot": "clean"}
       },
       {
-        "vm": "gateway",
+        "vm": "vm_02",
         "on_success": {"action": "stop"},
         "on_failure": {"action": "restore", "snapshot": "clean"}
       }
     ],
     "finally": [
-      {"id": "client_finally", "vm": "client", "type": "echo", "message": "client cleanup"},
-      {"id": "gateway_finally", "vm": "gateway", "type": "echo", "message": "gateway cleanup"}
+      {"id": "vm_01_finally", "vm": "vm_01", "type": "echo", "message": "vm_01 cleanup"},
+      {"id": "vm_02_finally", "vm": "vm_02", "type": "echo", "message": "vm_02 cleanup"}
     ]
   }
 }
@@ -181,37 +181,37 @@ function(run_multi_vm_scenario name expected_exit expected_status client_step ga
     string(REPLACE "@NAME@" "${name}" plan_json "${plan_json}")
     string(REPLACE "@RUN_ID@" "${run_id}" plan_json "${plan_json}")
     string(REPLACE "@FIXTURE@" "${fixture_path}" plan_json "${plan_json}")
-    string(REPLACE "@CLIENT_STEP@" "${client_step}" plan_json "${plan_json}")
-    string(REPLACE "@GATEWAY_STEP@" "${gateway_step}" plan_json "${plan_json}")
+    string(REPLACE "@VM_01_STEP@" "${vm_01_step}" plan_json "${plan_json}")
+    string(REPLACE "@VM_02_STEP@" "${vm_02_step}" plan_json "${plan_json}")
     file(WRITE "${root}/plan.json" "${plan_json}")
 
     set(lifecycle_state "${archive}/runs/${run_id}/lifecycle.json")
     set(vmrun_log "${root}/vmrun.log")
     set(ENV{SATSUMA_MULTI_VM_VMRUN_LOG} "${vmrun_log}")
-    if(fail_gateway_cleanup)
-        set(ENV{SATSUMA_MULTI_VM_FAIL_GATEWAY_REVERT} "1")
+    if(fail_vm_02_cleanup)
+        set(ENV{SATSUMA_MULTI_VM_FAIL_VM_02_REVERT} "1")
     else()
-        unset(ENV{SATSUMA_MULTI_VM_FAIL_GATEWAY_REVERT})
+        unset(ENV{SATSUMA_MULTI_VM_FAIL_VM_02_REVERT})
     endif()
-    if(fail_gateway_soft_stop)
-        set(ENV{SATSUMA_MULTI_VM_FAIL_GATEWAY_SOFT_STOP} "1")
-        set(ENV{SATSUMA_MULTI_VM_DELAYED_STOP_VMX} "${gateway_vmx_path}")
+    if(fail_vm_02_soft_stop)
+        set(ENV{SATSUMA_MULTI_VM_FAIL_VM_02_SOFT_STOP} "1")
+        set(ENV{SATSUMA_MULTI_VM_DELAYED_STOP_VMX} "${vm_02_vmx_path}")
     else()
-        unset(ENV{SATSUMA_MULTI_VM_FAIL_GATEWAY_SOFT_STOP})
+        unset(ENV{SATSUMA_MULTI_VM_FAIL_VM_02_SOFT_STOP})
         unset(ENV{SATSUMA_MULTI_VM_DELAYED_STOP_VMX})
     endif()
-    if(fail_client_start)
-        set(ENV{SATSUMA_MULTI_VM_FAIL_CLIENT_START} "1")
-        set(ENV{SATSUMA_MULTI_VM_DELAYED_START_VMX} "${client_vmx_path}")
+    if(fail_vm_01_start)
+        set(ENV{SATSUMA_MULTI_VM_FAIL_VM_01_START} "1")
+        set(ENV{SATSUMA_MULTI_VM_DELAYED_START_VMX} "${vm_01_vmx_path}")
     else()
-        unset(ENV{SATSUMA_MULTI_VM_FAIL_CLIENT_START})
+        unset(ENV{SATSUMA_MULTI_VM_FAIL_VM_01_START})
         unset(ENV{SATSUMA_MULTI_VM_DELAYED_START_VMX})
     endif()
     execute_process(
         COMMAND "${CMAKE_COMMAND}"
             "-DVM_EXE=${VM_EXE}"
-            "-DCLIENT_CONFIG=${root}/client-agent.json"
-            "-DGATEWAY_CONFIG=${root}/gateway-agent.json"
+            "-DVM_01_CONFIG=${root}/vm_01-agent.json"
+            "-DVM_02_CONFIG=${root}/vm_02-agent.json"
             "-DSHARED_ROOT=${share}"
             "-DRUN_ID=${run_id}"
             "-DLIFECYCLE_STATE=${lifecycle_state}"
@@ -251,23 +251,23 @@ function(run_multi_vm_scenario name expected_exit expected_status client_step ga
 
     set(main_evidence "${archive}/runs/${run_id}/evidence/main")
     if(NOT EXISTS "${main_evidence}/task.json" OR
-       NOT EXISTS "${main_evidence}/results/client/client_step/execution.json" OR
-       NOT EXISTS "${main_evidence}/results/gateway/gateway_step/execution.json")
+       NOT EXISTS "${main_evidence}/results/vm_01/vm_01_step/execution.json" OR
+       NOT EXISTS "${main_evidence}/results/vm_02/vm_02_step/execution.json")
         message(FATAL_ERROR "Multi-VM ${name} omitted main task evidence")
     endif()
-    file(READ "${main_evidence}/results/client/client_step/execution.json" client_execution)
-    file(READ "${main_evidence}/results/gateway/gateway_step/execution.json" gateway_execution)
-    string(JSON client_status GET "${client_execution}" status)
-    string(JSON gateway_status GET "${gateway_execution}" status)
-    if(NOT client_status STREQUAL expected_client_status OR
-       NOT gateway_status STREQUAL expected_gateway_status)
+    file(READ "${main_evidence}/results/vm_01/vm_01_step/execution.json" vm_01_execution)
+    file(READ "${main_evidence}/results/vm_02/vm_02_step/execution.json" vm_02_execution)
+    string(JSON vm_01_status GET "${vm_01_execution}" status)
+    string(JSON vm_02_status GET "${vm_02_execution}" status)
+    if(NOT vm_01_status STREQUAL expected_vm_01_status OR
+       NOT vm_02_status STREQUAL expected_vm_02_status)
         message(FATAL_ERROR
-            "Multi-VM ${name} result ownership is invalid: ${client_status}, ${gateway_status}")
+            "Multi-VM ${name} result ownership is invalid: ${vm_01_status}, ${vm_02_status}")
     endif()
     set(finally_evidence "${archive}/runs/${run_id}/evidence/finally")
     if(NOT EXISTS "${finally_evidence}/task.json" OR
-       NOT EXISTS "${finally_evidence}/results/client/client_finally/execution.json" OR
-       NOT EXISTS "${finally_evidence}/results/gateway/gateway_finally/execution.json")
+       NOT EXISTS "${finally_evidence}/results/vm_01/vm_01_finally/execution.json" OR
+       NOT EXISTS "${finally_evidence}/results/vm_02/vm_02_finally/execution.json")
         message(FATAL_ERROR "Multi-VM ${name} omitted finally evidence")
     endif()
     file(READ "${archive}/runs/${run_id}/orchestration.json" orchestration_identity)
@@ -283,8 +283,8 @@ function(run_multi_vm_scenario name expected_exit expected_status client_step ga
     string(JSON step_count LENGTH "${main_manifest}" steps)
     string(JSON first_vm GET "${main_manifest}" steps 0 vm)
     string(JSON second_vm GET "${main_manifest}" steps 1 vm)
-    if(NOT step_count EQUAL 2 OR NOT first_vm STREQUAL "client" OR
-       NOT second_vm STREQUAL "gateway")
+    if(NOT step_count EQUAL 2 OR NOT first_vm STREQUAL "vm_01" OR
+       NOT second_vm STREQUAL "vm_02")
         message(FATAL_ERROR "Multi-VM ${name} main manifest did not preserve both VM steps")
     endif()
     string(JSON expected_steps GET "${host_output}" report expected_steps)
@@ -321,43 +321,43 @@ function(run_multi_vm_scenario name expected_exit expected_status client_step ga
     file(READ "${vmrun_log}" vmrun_commands)
     require_log_order(
         "${vmrun_commands}"
-        "start|Client VM.vmx|nogui"
-        "start|Gateway VM.vmx|nogui"
+        "start|VM 01.vmx|nogui"
+        "start|VM 02.vmx|nogui"
         "${name} lifecycle startup")
     require_log_order(
         "${vmrun_commands}"
-        "checkToolsState|Client VM.vmx"
-        "checkToolsState|Gateway VM.vmx"
+        "checkToolsState|VM 01.vmx"
+        "checkToolsState|VM 02.vmx"
         "${name} Agent diagnostics")
     if(expected_status STREQUAL "COMPLETED")
         set(expected_cleanup
-            "stop|Gateway VM.vmx|soft;stop|Client VM.vmx|soft")
+            "stop|VM 02.vmx|soft;stop|VM 01.vmx|soft")
     else()
         set(expected_cleanup
-            "stop|Gateway VM.vmx|hard;revertToSnapshot|Gateway VM.vmx|clean"
-            "stop|Client VM.vmx|hard;revertToSnapshot|Client VM.vmx|clean")
+            "stop|VM 02.vmx|hard;revertToSnapshot|VM 02.vmx|clean"
+            "stop|VM 01.vmx|hard;revertToSnapshot|VM 01.vmx|clean")
     endif()
     require_cleanup_sequence(
         "${vmrun_commands}"
         "${expected_cleanup}"
         "${name}")
-    if(fail_gateway_soft_stop)
+    if(fail_vm_02_soft_stop)
         require_log_sequence(
             "${vmrun_commands}"
             "${name} delayed stop reconciliation"
-            "stop|Gateway VM.vmx|soft"
+            "stop|VM 02.vmx|soft"
             "list\n"
             "list\n"
-            "stop|Client VM.vmx|soft")
+            "stop|VM 01.vmx|soft")
     endif()
-    if(fail_client_start)
+    if(fail_vm_01_start)
         require_log_sequence(
             "${vmrun_commands}"
             "${name} delayed start reconciliation"
-            "start|Client VM.vmx|nogui"
+            "start|VM 01.vmx|nogui"
             "list\n"
             "list\n"
-            "start|Gateway VM.vmx|nogui")
+            "start|VM 02.vmx|nogui")
     endif()
 
     # 终态重入不得再次调用 VMware，且清理动作结构必须保持稳定。
@@ -422,64 +422,64 @@ function(run_multi_vm_scenario name expected_exit expected_status client_step ga
         message(FATAL_ERROR "Multi-VM ${name} terminal reentry called vmrun again")
     endif()
     unset(ENV{SATSUMA_MULTI_VM_VMRUN_LOG})
-    unset(ENV{SATSUMA_MULTI_VM_FAIL_GATEWAY_REVERT})
-    unset(ENV{SATSUMA_MULTI_VM_FAIL_GATEWAY_SOFT_STOP})
+    unset(ENV{SATSUMA_MULTI_VM_FAIL_VM_02_REVERT})
+    unset(ENV{SATSUMA_MULTI_VM_FAIL_VM_02_SOFT_STOP})
     unset(ENV{SATSUMA_MULTI_VM_DELAYED_STOP_VMX})
-    unset(ENV{SATSUMA_MULTI_VM_FAIL_CLIENT_START})
+    unset(ENV{SATSUMA_MULTI_VM_FAIL_VM_01_START})
     unset(ENV{SATSUMA_MULTI_VM_DELAYED_START_VMX})
 endfunction()
 
-set(client_success_step
-    [=[{"id": "client_step", "vm": "client", "type": "echo", "message": "client completed"}]=])
-set(client_failure_step [=[
+set(vm_01_success_step
+    [=[{"id": "vm_01_step", "vm": "vm_01", "type": "echo", "message": "vm_01 completed"}]=])
+set(vm_01_failure_step [=[
 {
-  "id": "client_step",
-  "vm": "client",
+  "id": "vm_01_step",
+  "vm": "vm_01",
   "type": "execute",
-  "program": "artifacts/client/SatsumaTestFixture.exe",
-  "arguments": ["--message", "client business failure"],
+  "program": "artifacts/vm_01/SatsumaTestFixture.exe",
+  "arguments": ["--message", "vm_01 business failure"],
   "timeout_seconds": 5,
-  "collect_files": ["missing-client-result.txt"]
+  "collect_files": ["missing-vm_01-result.txt"]
 }
 ]=])
-set(gateway_success_step
-    [=[{"id": "gateway_step", "vm": "gateway", "type": "echo", "message": "gateway completed"}]=])
-set(gateway_failure_step [=[
+set(vm_02_success_step
+    [=[{"id": "vm_02_step", "vm": "vm_02", "type": "echo", "message": "vm_02 completed"}]=])
+set(vm_02_failure_step [=[
 {
-  "id": "gateway_step",
-  "vm": "gateway",
+  "id": "vm_02_step",
+  "vm": "vm_02",
   "type": "execute",
-  "program": "artifacts/gateway/SatsumaTestFixture.exe",
-  "arguments": ["--message", "gateway business failure"],
+  "program": "artifacts/vm_02/SatsumaTestFixture.exe",
+  "arguments": ["--message", "vm_02 business failure"],
   "timeout_seconds": 5,
   "collect_files": ["missing-result.txt"]
 }
 ]=])
 
 run_multi_vm_scenario(
-    success 0 COMPLETED "${client_success_step}" "${gateway_success_step}"
+    success 0 COMPLETED "${vm_01_success_step}" "${vm_02_success_step}"
     2 0 exited exited FALSE FALSE FALSE)
 run_multi_vm_scenario(
-    stop_reconciled 0 COMPLETED "${client_success_step}" "${gateway_success_step}"
+    stop_reconciled 0 COMPLETED "${vm_01_success_step}" "${vm_02_success_step}"
     2 0 exited exited FALSE TRUE FALSE)
 run_multi_vm_scenario(
-    start_recon 0 COMPLETED "${client_success_step}" "${gateway_success_step}"
+    start_recon 0 COMPLETED "${vm_01_success_step}" "${vm_02_success_step}"
     2 0 exited exited FALSE FALSE TRUE)
 run_multi_vm_scenario(
-    gateway_failure 1 FAILED "${client_success_step}" "${gateway_failure_step}"
+    vm_02_failure 1 FAILED "${vm_01_success_step}" "${vm_02_failure_step}"
     1 1 exited failed FALSE FALSE FALSE)
 run_multi_vm_scenario(
-    client_failure 1 FAILED "${client_failure_step}" "${gateway_success_step}"
+    vm_01_failure 1 FAILED "${vm_01_failure_step}" "${vm_02_success_step}"
     1 1 failed exited FALSE FALSE FALSE)
 run_multi_vm_scenario(
-    cleanup_failure 4 RECOVERY_FAILED "${client_success_step}" "${gateway_failure_step}"
+    cleanup_failure 4 RECOVERY_FAILED "${vm_01_success_step}" "${vm_02_failure_step}"
     1 1 exited failed TRUE FALSE FALSE)
 
 unset(ENV{SATSUMA_MULTI_VM_VMRUN_LOG})
-unset(ENV{SATSUMA_MULTI_VM_FAIL_GATEWAY_REVERT})
-unset(ENV{SATSUMA_MULTI_VM_FAIL_GATEWAY_SOFT_STOP})
+unset(ENV{SATSUMA_MULTI_VM_FAIL_VM_02_REVERT})
+unset(ENV{SATSUMA_MULTI_VM_FAIL_VM_02_SOFT_STOP})
 unset(ENV{SATSUMA_MULTI_VM_DELAYED_STOP_VMX})
-unset(ENV{SATSUMA_MULTI_VM_FAIL_CLIENT_START})
+unset(ENV{SATSUMA_MULTI_VM_FAIL_VM_01_START})
 unset(ENV{SATSUMA_MULTI_VM_DELAYED_START_VMX})
 
 # 成功运行不保留大体积临时 VM/Artifact；失败会在到达此处前终止并保留证据。

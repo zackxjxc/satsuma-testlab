@@ -17,13 +17,13 @@
   "lifecycle": {
     "vms": [
       {
-        "vm": "gateway",
+        "vm": "vm_02",
         "restore_before": "clean",
         "on_success": {"action": "stop"},
         "on_failure": {"action": "restore", "snapshot": "clean"}
       },
       {
-        "vm": "client",
+        "vm": "vm_01",
         "restore_before": "clean",
         "on_success": {"action": "stop"},
         "on_failure": {"action": "restore", "snapshot": "clean"}
@@ -32,7 +32,7 @@
     "finally": [
       {
         "id": "final_probe",
-        "vm": "gateway",
+        "vm": "vm_02",
         "type": "echo",
         "message": "lifecycle cleanup probe",
         "timeout_seconds": 10
@@ -41,17 +41,17 @@
   },
   "steps": [
     {
-      "id": "gateway_ready",
-      "vm": "gateway",
+      "id": "vm_02_ready",
+      "vm": "vm_02",
       "type": "echo",
-      "message": "gateway ready",
+      "message": "vm_02 ready",
       "timeout_seconds": 10
     },
     {
-      "id": "client_ready",
-      "vm": "client",
+      "id": "vm_01_ready",
+      "vm": "vm_01",
       "type": "echo",
-      "message": "client ready",
+      "message": "vm_01 ready",
       "timeout_seconds": 10
     }
   ]

@@ -23,7 +23,7 @@ jobs:
           check-jsonschema --check-metaschema schemas/*.schema.json
           check-jsonschema --schemafile schemas/lab.schema.json lab.json
           check-jsonschema --schemafile schemas/lab.schema.json config/lab.template.json
-          check-jsonschema --schemafile schemas/agent.schema.json examples/agent-client.json
+          check-jsonschema --schemafile schemas/agent.schema.json examples/agent-vm-01.json
           check-jsonschema --schemafile schemas/agent.schema.json config/agent.template.json
           check-jsonschema --schemafile schemas/task.schema.json examples/hello-vm-task.json
           check-jsonschema --schemafile schemas/task.schema.json examples/multi-vm-task.json

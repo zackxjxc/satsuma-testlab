@@ -5,8 +5,8 @@
   "artifacts": [],
   "steps": [
     {
-      "id": "hello_client",
-      "vm": "client",
+      "id": "hello_vm_01",
+      "vm": "vm_01",
       "type": "echo",
       "message": "hello from Satsuma",
       "timeout_seconds": 10

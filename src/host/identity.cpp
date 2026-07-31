@@ -57,7 +57,7 @@ void validate_presence_common(
     }
 }
 
-// 汇总所有兼容别名中的硬件到业务身份映射，用于发现克隆冲突。
+// 汇总所有兼容别名中的硬件到 VM 标识映射，用于发现克隆冲突。
 [[nodiscard]] std::map<std::string, std::set<std::string>> collect_presence_identities(
     const LabConfig& config) {
     std::map<std::string, std::set<std::string>> identities;
@@ -90,7 +90,7 @@ void validate_presence_common(
     return identities;
 }
 
-// 会话 heartbeat 使无业务别名的未绑定 Agent 也能暴露重复硬件 UUID。
+// 会话 heartbeat 使没有 VM 标识别名的未绑定 Agent 也能暴露重复硬件 UUID。
 [[nodiscard]] std::map<std::string, std::set<std::string>> collect_active_sessions(
     const LabConfig& config) {
     std::map<std::string, std::set<std::string>> sessions;
@@ -130,7 +130,7 @@ void validate_presence_common(
     return sessions;
 }
 
-// 同一 UUID 同时声明多个业务身份时拒绝继续绑定或诊断。
+// 同一 UUID 同时声明多个 VM 标识时拒绝继续绑定或诊断。
 void reject_hardware_identity_conflict(
     const LabConfig& config,
     const std::string& hardware_id) {

@@ -78,7 +78,7 @@ void write_text(const std::filesystem::path& path, const std::string& content) {
     const bool retry_safe) {
     return satsuma::make_step_claim_lease(
         "run_claim_store",
-        "client",
+        "vm_01",
         "execute",
         job_id,
         "session_claim_store",
@@ -481,7 +481,7 @@ void test_mismatched_claim_scope_gate(const std::filesystem::path& root) {
         claim.run_id = "run_other";
     });
     expect_mismatch("vm", [](satsuma::StepClaimLease& claim) {
-        claim.vm_id = "gateway";
+        claim.vm_id = "vm_02";
     });
     expect_mismatch("step", [](satsuma::StepClaimLease& claim) {
         claim.step_id = "other_step";

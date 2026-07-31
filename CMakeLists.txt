@@ -172,23 +172,23 @@ set(SATSUMA_DEMO_TASK [=[
   "artifacts": [
     {
       "source": "$<TARGET_FILE:SatsumaDemoApp>",
-      "vm": "client",
-      "shared_destination": "artifacts/client/SatsumaDemoApp.exe"
+      "vm": "vm_01",
+      "shared_destination": "artifacts/vm_01/SatsumaDemoApp.exe"
     },
     {
       "source": "@DEMO_INPUT@",
-      "vm": "client",
-      "shared_destination": "artifacts/client/demo-input.txt"
+      "vm": "vm_01",
+      "shared_destination": "artifacts/vm_01/demo-input.txt"
     }
   ],
   "steps": [
     {
       "id": "run_demo_app",
-      "vm": "client",
+      "vm": "vm_01",
       "type": "execute",
-      "program": "artifacts/client/SatsumaDemoApp.exe",
+      "program": "artifacts/vm_01/SatsumaDemoApp.exe",
       "arguments": [
-        "--input", "artifacts/client/demo-input.txt",
+        "--input", "artifacts/vm_01/demo-input.txt",
         "--result", "output/demo-result.json",
         "--transformed", "output/transformed.txt",
         "--label", "real-vm-artifact-test",

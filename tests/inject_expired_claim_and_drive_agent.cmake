@@ -8,16 +8,16 @@ if(NOT DEFINED VM_EXE OR
 endif()
 
 set(run_directory "${SHARED_ROOT}/runs/${RUN_ID}")
-set(claim_path "${run_directory}/state/client/main_echo.claim.json")
+set(claim_path "${run_directory}/state/vm_01/main_echo.claim.json")
 set(claim_injected FALSE)
 foreach(attempt RANGE 1 300)
     if(EXISTS "${run_directory}/task.json" AND NOT claim_injected)
-        file(MAKE_DIRECTORY "${run_directory}/state/client")
+        file(MAKE_DIRECTORY "${run_directory}/state/vm_01")
         file(WRITE "${claim_path}" [=[
 {
   "schema_version": 2,
   "run_id": "@RUN_ID@",
-  "vm_id": "client",
+  "vm_id": "vm_01",
   "step_id": "main_echo",
   "job_id": "job_old",
   "session_id": "session_old",

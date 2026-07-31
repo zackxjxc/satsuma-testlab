@@ -14,8 +14,8 @@
   },
   "vms": [
     {
-      "id": "client",
-      "vmx": "D:\\VM\\Client\\Client.vmx",
+      "id": "vm_01",
+      "vmx": "D:\\VM\\VM-01\\VM-01.vmx",
       "agent_version": "0.2.0",
       "snapshots": {
         "base": "clean",

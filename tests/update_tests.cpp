@@ -64,7 +64,7 @@ struct UpdateFixture {
     const std::filesystem::path bin_root = install_root / L"bin";
     const std::filesystem::path shared_root = fixture.root / L"shared";
     const std::filesystem::path update_directory =
-        shared_root / L"updates" / L"client" / L"update_001";
+        shared_root / L"updates" / L"vm_01" / L"update_001";
     std::filesystem::create_directories(update_directory);
     std::filesystem::create_directories(install_root / L"work");
     write_text(bin_root / L"SatsumaVM.exe", "old-binary");
@@ -75,7 +75,7 @@ struct UpdateFixture {
         {"schema_version", 1},
         {"protocol_version", 1},
         {"lab_id", "test_lab"},
-        {"vm_id", "client"},
+        {"vm_id", "vm_01"},
         {"agent_version", "0.1.0"},
         {"shared_root", satsuma::path_to_utf8(shared_root)},
         {"local_work_root", satsuma::path_to_utf8(install_root / L"work")},
@@ -84,7 +84,7 @@ struct UpdateFixture {
     });
 
     fixture.manifest.lab_id = "test_lab";
-    fixture.manifest.vm_id = "client";
+    fixture.manifest.vm_id = "vm_01";
     fixture.manifest.update_id = "update_001";
     fixture.manifest.version = "0.1.1";
     fixture.manifest.binary = L"SatsumaVM.exe";
@@ -109,10 +109,10 @@ struct UpdateFixture {
     return fixture;
 }
 
-// 将普通更新测试夹具切换为 client 到 gateway 的身份迁移。
+// 将普通更新测试夹具切换为 vm_01 到 vm_02 的身份迁移。
 void enable_rebind(UpdateFixture& fixture) {
     fixture.manifest.protocol_version = 2;
-    fixture.manifest.next_vm_id = "gateway";
+    fixture.manifest.next_vm_id = "vm_02";
     satsuma::write_json_atomic(fixture.paths.manifest, fixture.manifest);
 }
 
@@ -188,7 +188,7 @@ void test_successful_rebind(const std::filesystem::path& root) {
             ++presence_calls;
             const satsuma::AgentConfig config =
                 satsuma::load_agent_config(fixture.paths.config);
-            expect(config.vm_id == "gateway", "rebind presence used the source identity");
+            expect(config.vm_id == "vm_02", "rebind presence used the source identity");
             expect(process_id == 4401 && version == "0.1.1" && update_id == "update_001",
                 "rebind presence used the wrong update identity");
         },
@@ -200,13 +200,13 @@ void test_successful_rebind(const std::filesystem::path& root) {
             fixture.manifest,
             "0.1.1",
             operations);
-    expect(result.status == "succeeded" && result.vm_id == "client",
+    expect(result.status == "succeeded" && result.vm_id == "vm_01",
         "valid rebind did not report success through its source identity");
     expect(stop_calls == 1 && start_calls == 1 && presence_calls == 1,
         "successful rebind operation count changed");
     const satsuma::AgentConfig config =
         satsuma::load_agent_config(fixture.paths.config);
-    expect(config.vm_id == "gateway" &&
+    expect(config.vm_id == "vm_02" &&
            config.protocol_version == satsuma::kRunManifestProtocolVersion &&
            config.agent_version == "0.1.1" &&
            config.last_update_id == "update_001",
@@ -220,8 +220,8 @@ void test_rebind_target_collision(const std::filesystem::path& root) {
     const satsuma::AgentConfig config =
         satsuma::load_agent_config(fixture.paths.config);
     satsuma::write_json_atomic(
-        config.shared_root / L"agents" / L"gateway.json",
-        {{"vm_id", "gateway"}});
+        config.shared_root / L"agents" / L"vm_02.json",
+        {{"vm_id", "vm_02"}});
     bool service_called = false;
     const satsuma::vm::AgentUpdateOperations operations{
         [&service_called] { service_called = true; },
@@ -243,7 +243,7 @@ void test_rebind_target_collision(const std::filesystem::path& root) {
     expect(result.status == "failed" && result.rollback_status == "none",
         "rebind target collision entered the update transaction");
     expect(!service_called, "rebind target collision touched the Service");
-    expect(satsuma::load_agent_config(fixture.paths.config).vm_id == "client",
+    expect(satsuma::load_agent_config(fixture.paths.config).vm_id == "vm_01",
         "rebind target collision changed the source identity");
 }
 
@@ -268,9 +268,9 @@ void test_rebind_presence_failure_rollback(const std::filesystem::path& root) {
             const satsuma::AgentConfig config =
                 satsuma::load_agent_config(fixture.paths.config);
             if (presence_calls == 1) {
-                expect(config.vm_id == "gateway", "rebind did not start with target config");
+                expect(config.vm_id == "vm_02", "rebind did not start with target config");
                 satsuma::write_json_atomic(
-                    config.shared_root / L"agents" / L"gateway.json",
+                    config.shared_root / L"agents" / L"vm_02.json",
                     {
                         {"schema_version", 1},
                         {"protocol_version", config.protocol_version},
@@ -286,7 +286,7 @@ void test_rebind_presence_failure_rollback(const std::filesystem::path& root) {
                     });
                 throw std::runtime_error("injected rebind presence timeout");
             }
-            expect(config.vm_id == "client" && version == "0.1.0" && update_id.empty(),
+            expect(config.vm_id == "vm_01" && version == "0.1.0" && update_id.empty(),
                 "rebind rollback did not restore the source identity");
         },
     };
@@ -301,10 +301,10 @@ void test_rebind_presence_failure_rollback(const std::filesystem::path& root) {
         "rebind presence failure did not roll back");
     expect(stop_calls == 2 && start_calls == 2 && presence_calls == 2,
         "rebind rollback operation count changed");
-    expect(satsuma::load_agent_config(fixture.paths.config).vm_id == "client",
+    expect(satsuma::load_agent_config(fixture.paths.config).vm_id == "vm_01",
         "rebind rollback retained the target identity");
     expect(!std::filesystem::exists(
-            fixture.root / L"shared" / L"agents" / L"gateway.json"),
+            fixture.root / L"shared" / L"agents" / L"vm_02.json"),
         "rebind rollback retained its candidate target presence");
 }
 
@@ -318,7 +318,7 @@ void test_rebind_cross_identity_recovery(const std::filesystem::path& root) {
 
     nlohmann::json config = satsuma::load_json(fixture.paths.config);
     config["protocol_version"] = satsuma::kRunManifestProtocolVersion;
-    config["vm_id"] = "gateway";
+    config["vm_id"] = "vm_02";
     config["agent_version"] = fixture.manifest.version;
     config["last_update_id"] = fixture.manifest.update_id;
     satsuma::write_json_atomic(fixture.paths.config, config);
@@ -726,7 +726,7 @@ void test_presence_identity(const std::filesystem::path& root) {
         {"schema_version", 1},
         {"protocol_version", 1},
         {"lab_id", "test_lab"},
-        {"vm_id", "client"},
+        {"vm_id", "vm_01"},
         {"agent_version", "0.1.1"},
         {"update_id", "update_001"},
         {"session_id", "session-test"},

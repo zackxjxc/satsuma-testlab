@@ -47,9 +47,9 @@ void expect_error(const std::function<void()>& operation, const std::string& mes
 
 // 验证路径边界、原子 JSON 和 SHA-256。
 void test_file_primitives(const std::filesystem::path& root) {
-    satsuma::validate_identifier("client_01", "test identifier");
+    satsuma::validate_identifier("vm_01_01", "test identifier");
     expect_error(
-        [] { satsuma::validate_identifier("../client", "test identifier"); },
+        [] { satsuma::validate_identifier("../vm_01", "test identifier"); },
         "unsafe identifier was accepted");
 
     std::filesystem::create_directories(root);
@@ -151,8 +151,8 @@ void test_snapshot_configuration(const std::filesystem::path& root) {
         {"host", {{"archive_root", "C:/archive"}}},
         {"shared_folder", {{"host_root", "C:/share"}}},
         {"vms", {{{
-            "id", "client"},
-            {"vmx", "C:/Client.vmx"},
+            "id", "vm_01"},
+            {"vmx", "C:/VM-01.vmx"},
             {"agent_version", "0.1.0"},
             {"snapshots", {
                 {"base", "clean"},
@@ -182,8 +182,8 @@ void test_absolute_configuration_paths(const std::filesystem::path& root) {
         {"host", {{"archive_root", "C:/archive"}}},
         {"shared_folder", {{"host_root", "C:/share"}}},
         {"vms", {{
-            {"id", "client"},
-            {"vmx", "C:/Client.vmx"},
+            {"id", "vm_01"},
+            {"vmx", "C:/VM-01.vmx"},
             {"agent_version", "0.1.0"},
             {"snapshots", {
                 {"base", "clean"},
@@ -213,7 +213,7 @@ void test_absolute_configuration_paths(const std::filesystem::path& root) {
     invalid_lab["shared_folder"]["host_root"] = "share";
     expect_lab_rejected(invalid_lab, "relative shared folder root was accepted");
     invalid_lab = lab;
-    invalid_lab["vms"][0]["vmx"] = "Client.vmx";
+    invalid_lab["vms"][0]["vmx"] = "VM-01.vmx";
     expect_lab_rejected(invalid_lab, "relative VMX path was accepted");
     invalid_lab = lab;
     invalid_lab["host"]["listen"] = "127.0.0.1:37100";
@@ -223,7 +223,7 @@ void test_absolute_configuration_paths(const std::filesystem::path& root) {
         {"schema_version", 1},
         {"protocol_version", 2},
         {"lab_id", "absolute_path_test"},
-        {"vm_id", "client"},
+        {"vm_id", "vm_01"},
         {"agent_version", "0.1.0"},
         {"shared_root", "C:/share"},
         {"local_work_root", "C:/work"},
@@ -291,11 +291,11 @@ void test_hardware_identity_configuration(const std::filesystem::path& root) {
     expect(
         !config.vm_id_configured && config.vm_id.empty() && config.legacy_storage_layout,
         "Agent config without vm_id was not accepted as unbound");
-    agent["vm_id"] = "client";
+    agent["vm_id"] = "vm_01";
     satsuma::write_json_atomic(agent_path, agent);
     config = satsuma::load_agent_config(agent_path);
     expect(
-        config.vm_id_configured && config.vm_id == "client",
+        config.vm_id_configured && config.vm_id == "vm_01",
         "legacy Agent vm_id was not preserved");
 }
 
@@ -374,15 +374,15 @@ void test_protocol_round_trip() {
     manifest.name = "round-trip";
     manifest.created_at = "2026-07-23T00:00:00.000Z";
     manifest.artifacts.push_back({
-        "client",
-        satsuma::path_from_utf8("artifacts/client/test.exe"),
+        "vm_01",
+        satsuma::path_from_utf8("artifacts/vm_01/test.exe"),
         "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
     });
     satsuma::TaskStep step;
     step.id = "execute";
-    step.vm = "client";
+    step.vm = "vm_01";
     step.type = "execute";
-    step.program = satsuma::path_from_utf8("artifacts/client/test.exe");
+    step.program = satsuma::path_from_utf8("artifacts/vm_01/test.exe");
     step.arguments = {"argument with spaces", "quote\"value"};
     step.run_as = satsuma::TaskRunAs::InteractiveUser;
     step.retry_safe = true;
@@ -405,15 +405,15 @@ void test_protocol_round_trip() {
 
     satsuma::ExecutionResult result;
     result.run_id = "run_1";
-    result.vm_id = "client";
+    result.vm_id = "vm_01";
     result.job_id = "job_1";
     result.step_id = "execute";
     result.status = "exited";
     result.run_as = satsuma::TaskRunAs::InteractiveUser;
     result.interactive_session_id = 23;
     result.exit_code = 0;
-    result.stdout_path = "results/client/execute/stdout.log";
-    result.stderr_path = "results/client/execute/stderr.log";
+    result.stdout_path = "results/vm_01/execute/stdout.log";
+    result.stderr_path = "results/vm_01/execute/stderr.log";
     result.started_at = "2026-07-23T00:00:00.000Z";
     result.finished_at = "2026-07-23T00:00:01.000Z";
     const nlohmann::json encoded_result = result;
@@ -466,9 +466,9 @@ void test_protocol_round_trip() {
 void test_task_run_as_protocol(const std::filesystem::path& root) {
     nlohmann::json execute_step = {
         {"id", "execute"},
-        {"vm", "client"},
+        {"vm", "vm_01"},
         {"type", "execute"},
-        {"program", "artifacts/client/test.exe"},
+        {"program", "artifacts/vm_01/test.exe"},
     };
     nlohmann::json plan_value = {
         {"schema_version", 1},
@@ -496,7 +496,7 @@ void test_task_run_as_protocol(const std::filesystem::path& root) {
 
     plan_value["steps"][0] = {
         {"id", "echo"},
-        {"vm", "client"},
+        {"vm", "vm_01"},
         {"type", "echo"},
         {"message", "hello"},
         {"run_as", "system"},
@@ -514,9 +514,9 @@ void test_task_run_as_protocol(const std::filesystem::path& root) {
     manifest.created_at = "2026-07-27T00:00:00.000Z";
     satsuma::TaskStep step;
     step.id = "execute";
-    step.vm = "client";
+    step.vm = "vm_01";
     step.type = "execute";
-    step.program = satsuma::path_from_utf8("artifacts/client/test.exe");
+    step.program = satsuma::path_from_utf8("artifacts/vm_01/test.exe");
     manifest.steps.push_back(step);
 
     const nlohmann::json version_two = manifest;
@@ -562,7 +562,7 @@ void test_task_run_as_protocol(const std::filesystem::path& root) {
     manifest.protocol_version = satsuma::kRunManifestProtocolVersion;
     satsuma::TaskStep echo_step;
     echo_step.id = "echo";
-    echo_step.vm = "client";
+    echo_step.vm = "vm_01";
     echo_step.type = "echo";
     echo_step.message = "hello";
     manifest.steps = {echo_step};
@@ -580,15 +580,15 @@ void test_script_step_protocol(const std::filesystem::path& root) {
         {"name", "script-protocol"},
         {"artifacts", {{
             {"source", "C:/scripts/configure.ps1"},
-            {"vm", "client"},
-            {"shared_destination", "artifacts/client/configure.ps1"},
+            {"vm", "vm_01"},
+            {"shared_destination", "artifacts/vm_01/configure.ps1"},
         }}},
         {"steps", {{
             {"id", "configure"},
-            {"vm", "client"},
+            {"vm", "vm_01"},
             {"type", "script"},
             {"engine", "windows_powershell"},
-            {"script", "artifacts/client/configure.ps1"},
+            {"script", "artifacts/vm_01/configure.ps1"},
             {"arguments", {"", "space value", "中文", "quote\"value", "C:\\tail\\"}},
             {"run_as", "system"},
             {"collect_files", {"results/configuration.json"}},
@@ -600,7 +600,7 @@ void test_script_step_protocol(const std::filesystem::path& root) {
     expect(
         plan.schema_version == 2 &&
             plan.steps.at(0).engine == satsuma::ScriptEngine::WindowsPowerShell &&
-            plan.steps.at(0).script == L"artifacts/client/configure.ps1" &&
+            plan.steps.at(0).script == L"artifacts/vm_01/configure.ps1" &&
             !plan.steps.at(0).retry_safe,
         "task schema 2 script step changed during parsing");
 
@@ -639,15 +639,15 @@ void test_task_lifecycle_policy(const std::filesystem::path& root) {
     nlohmann::json value = {
         {"schema_version", 1},
         {"name", "lifecycle-policy"},
-        {"steps", {{{"id", "execute"}, {"vm", "client"}, {"type", "echo"}, {"message", "run"}}}},
+        {"steps", {{{"id", "execute"}, {"vm", "vm_01"}, {"type", "echo"}, {"message", "run"}}}},
         {"lifecycle", {
             {"vms", {{
-                {"vm", "client"},
+                {"vm", "vm_01"},
                 {"restore_before", "satsuma-ai-ready"},
                 {"on_success", {{"action", "restore"}, {"snapshot", "satsuma-ai-ready"}}},
                 {"on_failure", {{"action", "stop"}}},
             }}},
-            {"finally", {{{"id", "cleanup"}, {"vm", "client"}, {"type", "echo"}, {"message", "done"}}}},
+            {"finally", {{{"id", "cleanup"}, {"vm", "vm_01"}, {"type", "echo"}, {"message", "done"}}}},
         }},
     };
     const std::filesystem::path plan_path = root / L"lifecycle-plan.json";
@@ -683,7 +683,7 @@ void test_task_cleanup_policy(const std::filesystem::path& root) {
     nlohmann::json value = {
         {"schema_version", 2},
         {"name", "task-cleanup-policy"},
-        {"steps", {{{"id", "echo"}, {"vm", "client"}, {"type", "echo"}, {"message", "run"}}}},
+        {"steps", {{{"id", "echo"}, {"vm", "vm_01"}, {"type", "echo"}, {"message", "run"}}}},
         {"cleanup", {
             {"guest_work", {{"on_success", "delete"}, {"on_failure", "retain"}}},
             {"shared_run", {{"on_success", "archive_then_delete"}, {"on_failure", "retain"}}},
@@ -725,14 +725,14 @@ void test_task_input_validation(const std::filesystem::path& root) {
         {"name", "strict-task-input"},
         {"artifacts", {{
             {"source", "C:/fixture.exe"},
-            {"vm", "client"},
-            {"shared_destination", "artifacts/client/fixture.exe"},
+            {"vm", "vm_01"},
+            {"shared_destination", "artifacts/vm_01/fixture.exe"},
         }}},
         {"steps", {{
             {"id", "execute"},
-            {"vm", "client"},
+            {"vm", "vm_01"},
             {"type", "execute"},
-            {"program", "artifacts/client/fixture.exe"},
+            {"program", "artifacts/vm_01/fixture.exe"},
             {"collect_files", {"output/result.json"}},
         }}},
     };
@@ -765,7 +765,7 @@ void test_task_input_validation(const std::filesystem::path& root) {
     invalid = plan;
     invalid["lifecycle"] = {
         {"vms", {{
-            {"vm", "client"},
+            {"vm", "vm_01"},
             {"on_success", {{"action", "leave_running"}}},
             {"on_failure", {{"action", "stop"}, {"snapshpt", "clean"}}},
         }}},
@@ -834,7 +834,7 @@ void test_run_lifecycle(const std::filesystem::path& root) {
 void test_claim_recovery_decision(const std::filesystem::path& root) {
     const satsuma::StepClaimLease safe = satsuma::make_step_claim_lease(
         "run_claim",
-        "client",
+        "vm_01",
         "echo",
         "job_claim",
         "session_old",
@@ -922,7 +922,7 @@ void test_claim_recovery_decision(const std::filesystem::path& root) {
 void test_agent_update_protocol(const std::filesystem::path& root) {
     satsuma::AgentUpdateManifest manifest;
     manifest.lab_id = "test_lab";
-    manifest.vm_id = "client";
+    manifest.vm_id = "vm_01";
     manifest.update_id = "update_001";
     manifest.version = "0.1.1";
     manifest.binary = L"SatsumaVM.exe";
@@ -939,7 +939,7 @@ void test_agent_update_protocol(const std::filesystem::path& root) {
 
     satsuma::AgentUpdateManifest rebind = manifest;
     rebind.protocol_version = 2;
-    rebind.next_vm_id = "gateway";
+    rebind.next_vm_id = "vm_02";
     const nlohmann::json encoded_rebind = rebind;
     const satsuma::AgentUpdateManifest decoded_rebind =
         encoded_rebind.get<satsuma::AgentUpdateManifest>();
@@ -974,12 +974,12 @@ void test_agent_update_protocol(const std::filesystem::path& root) {
         [&invalid] { static_cast<void>(invalid.get<satsuma::AgentUpdateManifest>()); },
         "protocol 2 update without next_vm_id was accepted");
     invalid = encoded;
-    invalid["next_vm_id"] = "gateway";
+    invalid["next_vm_id"] = "vm_02";
     expect_error(
         [&invalid] { static_cast<void>(invalid.get<satsuma::AgentUpdateManifest>()); },
         "protocol 1 update with next_vm_id was accepted");
     invalid = encoded_rebind;
-    invalid["next_vm_id"] = "client";
+    invalid["next_vm_id"] = "vm_01";
     expect_error(
         [&invalid] { static_cast<void>(invalid.get<satsuma::AgentUpdateManifest>()); },
         "update rebind accepted its current identity as next_vm_id");

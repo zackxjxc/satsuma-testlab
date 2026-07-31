@@ -17,7 +17,7 @@ void prepare_agent_hardware_identity(
     AgentConfig& config,
     const std::string& hardware_id = {});
 
-// 检查 Host 是否为未绑定 Agent 发布了新的业务身份。
+// 检查 Host 是否为未绑定 Agent 发布了新的 VM 标识。
 [[nodiscard]] bool refresh_agent_binding(AgentConfig& config);
 
 // 返回硬件维度的规范 presence 路径。

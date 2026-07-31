@@ -68,7 +68,7 @@ void write_echo_run(const std::filesystem::path& shared_root) {
     manifest.created_at = satsuma::utc_timestamp();
     satsuma::TaskStep step;
     step.id = "echo_success";
-    step.vm = "client";
+    step.vm = "vm_01";
     step.type = "echo";
     step.message = "file channel completed without Host";
     step.retry_safe = true;
@@ -83,7 +83,7 @@ void write_cancellable_run(
     const std::filesystem::path& shared_root,
     const std::filesystem::path& fixture) {
     const std::filesystem::path run_directory = shared_root / L"runs" / L"run_stop_execution";
-    const std::filesystem::path artifact = run_directory / L"artifacts" / L"client" / L"fixture.exe";
+    const std::filesystem::path artifact = run_directory / L"artifacts" / L"vm_01" / L"fixture.exe";
     std::filesystem::create_directories(artifact.parent_path());
     std::filesystem::copy_file(fixture, artifact, std::filesystem::copy_options::overwrite_existing);
 
@@ -94,15 +94,15 @@ void write_cancellable_run(
     manifest.name = "agent-stop-execution";
     manifest.created_at = satsuma::utc_timestamp();
     manifest.artifacts.push_back({
-        "client",
-        satsuma::path_from_utf8("artifacts/client/fixture.exe"),
+        "vm_01",
+        satsuma::path_from_utf8("artifacts/vm_01/fixture.exe"),
         satsuma::sha256_file(artifact),
     });
     satsuma::TaskStep step;
     step.id = "execute_until_stopped";
-    step.vm = "client";
+    step.vm = "vm_01";
     step.type = "execute";
-    step.program = satsuma::path_from_utf8("artifacts/client/fixture.exe");
+    step.program = satsuma::path_from_utf8("artifacts/vm_01/fixture.exe");
     step.arguments = {
         "--ready-file", "ready.marker",
         "--sleep-ms", "30000",
@@ -122,7 +122,7 @@ void write_interactive_run(
     const std::filesystem::path run_directory =
         shared_root / L"runs" / satsuma::path_from_utf8(run_id);
     const std::filesystem::path artifact =
-        run_directory / L"artifacts" / L"client" / L"fixture.exe";
+        run_directory / L"artifacts" / L"vm_01" / L"fixture.exe";
     std::filesystem::create_directories(artifact.parent_path());
     std::filesystem::copy_file(
         fixture,
@@ -136,15 +136,15 @@ void write_interactive_run(
     manifest.name = "interactive-user-execution";
     manifest.created_at = satsuma::utc_timestamp();
     manifest.artifacts.push_back({
-        "client",
-        satsuma::path_from_utf8("artifacts/client/fixture.exe"),
+        "vm_01",
+        satsuma::path_from_utf8("artifacts/vm_01/fixture.exe"),
         satsuma::sha256_file(artifact),
     });
     satsuma::TaskStep execute;
     execute.id = "interactive_execute";
-    execute.vm = "client";
+    execute.vm = "vm_01";
     execute.type = "execute";
-    execute.program = satsuma::path_from_utf8("artifacts/client/fixture.exe");
+    execute.program = satsuma::path_from_utf8("artifacts/vm_01/fixture.exe");
     execute.arguments = {
         "--message", "interactive Agent argument with spaces",
         "--output", "collected/result.json",
@@ -161,7 +161,7 @@ void write_interactive_run(
     if (append_echo) {
         satsuma::TaskStep echo;
         echo.id = "after_interactive_failure";
-        echo.vm = "client";
+        echo.vm = "vm_01";
         echo.type = "echo";
         echo.message = "Agent continued";
         manifest.steps.push_back(std::move(echo));
@@ -176,7 +176,7 @@ void write_powershell_run(const std::filesystem::path& shared_root) {
     const std::filesystem::path run_directory =
         shared_root / L"runs" / L"run_powershell_script";
     const std::filesystem::path artifact =
-        run_directory / L"artifacts" / L"client" / L"script.ps1";
+        run_directory / L"artifacts" / L"vm_01" / L"script.ps1";
     std::filesystem::create_directories(artifact.parent_path());
     std::ofstream script(artifact, std::ios::binary);
     script
@@ -197,16 +197,16 @@ void write_powershell_run(const std::filesystem::path& shared_root) {
     manifest.name = "powershell-script";
     manifest.created_at = satsuma::utc_timestamp();
     manifest.artifacts.push_back({
-        "client",
-        satsuma::path_from_utf8("artifacts/client/script.ps1"),
+        "vm_01",
+        satsuma::path_from_utf8("artifacts/vm_01/script.ps1"),
         satsuma::sha256_file(artifact),
     });
     satsuma::TaskStep step;
     step.id = "powershell";
-    step.vm = "client";
+    step.vm = "vm_01";
     step.type = "script";
     step.engine = satsuma::ScriptEngine::WindowsPowerShell;
-    step.script = satsuma::path_from_utf8("artifacts/client/script.ps1");
+    step.script = satsuma::path_from_utf8("artifacts/vm_01/script.ps1");
     step.arguments = {"", "argument with spaces", "中文", "quote\"value", "C:\\tail\\"};
     step.collect_files = {satsuma::path_from_utf8("results/script.txt")};
     manifest.steps.push_back(std::move(step));
@@ -217,7 +217,7 @@ void write_powershell_run(const std::filesystem::path& shared_root) {
 void write_cmd_run(const std::filesystem::path& shared_root) {
     const std::filesystem::path run_directory = shared_root / L"runs" / L"run_cmd_script";
     const std::filesystem::path artifact =
-        run_directory / L"artifacts" / L"client" / L"script.cmd";
+        run_directory / L"artifacts" / L"vm_01" / L"script.cmd";
     std::filesystem::create_directories(artifact.parent_path());
     std::ofstream script(artifact, std::ios::binary);
     script
@@ -235,16 +235,16 @@ void write_cmd_run(const std::filesystem::path& shared_root) {
     manifest.name = "cmd-script";
     manifest.created_at = satsuma::utc_timestamp();
     manifest.artifacts.push_back({
-        "client",
-        satsuma::path_from_utf8("artifacts/client/script.cmd"),
+        "vm_01",
+        satsuma::path_from_utf8("artifacts/vm_01/script.cmd"),
         satsuma::sha256_file(artifact),
     });
     satsuma::TaskStep step;
     step.id = "cmd";
-    step.vm = "client";
+    step.vm = "vm_01";
     step.type = "script";
     step.engine = satsuma::ScriptEngine::Cmd;
-    step.script = satsuma::path_from_utf8("artifacts/client/script.cmd");
+    step.script = satsuma::path_from_utf8("artifacts/vm_01/script.cmd");
     step.arguments = {"percent%PATH% bang! amp& pipe| caret^"};
     step.collect_files = {satsuma::path_from_utf8("results/cmd.txt")};
     manifest.steps.push_back(std::move(step));
@@ -328,7 +328,7 @@ void test_file_watch_and_agent_stop(
 
     satsuma::AgentConfig config;
     config.lab_id = "vm_agent_test";
-    config.vm_id = "client";
+    config.vm_id = "vm_01";
     config.agent_version = "0.1.0";
     config.shared_root = shared_root;
     config.local_work_root = root / L"work";
@@ -347,10 +347,10 @@ void test_file_watch_and_agent_stop(
     });
 
     const std::filesystem::path echo_result =
-        shared_root / L"runs" / L"run_file_success" / L"results" / L"client" /
+        shared_root / L"runs" / L"run_file_success" / L"results" / L"vm_01" /
         L"echo_success" / L"execution.json";
     const std::filesystem::path execute_ready =
-        root / L"work" / L"vm_agent_test" / L"run_stop_execution" / L"client" /
+        root / L"work" / L"vm_agent_test" / L"run_stop_execution" / L"vm_01" /
         L"ready.marker";
     const bool echo_completed = wait_for_file(echo_result, 5s);
     const bool execute_started = wait_for_file(execute_ready, 5s);
@@ -366,17 +366,17 @@ void test_file_watch_and_agent_stop(
     expect(execute_started, "Agent did not start the cancellable file task");
     expect(stop_duration < 5s, "Agent stop exceeded five seconds");
     expect(
-        std::filesystem::is_regular_file(shared_root / L"agents" / L"client.json"),
+        std::filesystem::is_regular_file(shared_root / L"agents" / L"vm_01.json"),
         "Agent did not publish presence through the file channel");
     const nlohmann::json presence = satsuma::load_json(
-        shared_root / L"agents" / L"client.json");
+        shared_root / L"agents" / L"vm_01.json");
     expect(
         presence.value("agent_version", std::string{}) == "0.1.0" &&
             presence.value("update_id", std::string{}).empty() &&
             presence.at("inventory").value("sha256", std::string{}).size() == 64,
         "Agent presence did not publish its version and update identity");
     expect(
-        std::filesystem::is_regular_file(shared_root / L"agents" / L"client.inventory.json"),
+        std::filesystem::is_regular_file(shared_root / L"agents" / L"vm_01.inventory.json"),
         "Agent did not publish its environment inventory");
 
     const satsuma::ExecutionResult echo =
@@ -384,7 +384,7 @@ void test_file_watch_and_agent_stop(
     expect(echo.status == "exited" && echo.exit_code == 0, "file-only echo task did not succeed");
 
     const std::filesystem::path stopped_result =
-        shared_root / L"runs" / L"run_stop_execution" / L"results" / L"client" /
+        shared_root / L"runs" / L"run_stop_execution" / L"results" / L"vm_01" /
         L"execute_until_stopped" / L"execution.json";
     expect(std::filesystem::is_regular_file(stopped_result), "Agent stop did not publish execution.json");
     const satsuma::ExecutionResult stopped =
@@ -400,13 +400,13 @@ void test_file_watch_and_agent_stop(
 void test_inventory_cache_and_refresh(const std::filesystem::path& root) {
     satsuma::AgentConfig config;
     config.lab_id = "vm_agent_test";
-    config.vm_id = "client";
+    config.vm_id = "vm_01";
     config.shared_root = root / L"inventory-share";
     satsuma::vm::InventoryPublisher publisher(config, "boot_inventory_test");
     publisher.synchronize();
 
     const std::filesystem::path inventory_path =
-        config.shared_root / L"agents" / L"client.inventory.json";
+        config.shared_root / L"agents" / L"vm_01.inventory.json";
     const nlohmann::json original = satsuma::load_json(inventory_path);
     const std::string original_digest = publisher.digest();
     satsuma::write_json_atomic(inventory_path, {{"tampered", true}});
@@ -416,7 +416,7 @@ void test_inventory_cache_and_refresh(const std::filesystem::path& root) {
         "Agent inventory cache did not restore the original snapshot");
 
     satsuma::write_json_atomic(
-        config.shared_root / L"agents" / L"client.inventory-refresh.json",
+        config.shared_root / L"agents" / L"vm_01.inventory-refresh.json",
         {
             {"schema_version", 1},
             {"lab_id", config.lab_id},
@@ -437,14 +437,14 @@ void test_powershell_script_execution(const std::filesystem::path& root) {
     write_powershell_run(shared_root);
     satsuma::AgentConfig config;
     config.lab_id = "vm_agent_test";
-    config.vm_id = "client";
+    config.vm_id = "vm_01";
     config.shared_root = shared_root;
     config.local_work_root = root / L"work";
     satsuma::vm::Agent agent(std::move(config));
     expect(agent.run_once() == 1, "Agent did not execute the PowerShell script step");
 
     const std::filesystem::path result_root = shared_root / L"runs" /
-        L"run_powershell_script" / L"results" / L"client" / L"powershell";
+        L"run_powershell_script" / L"results" / L"vm_01" / L"powershell";
     const satsuma::ExecutionResult result =
         satsuma::load_json(result_root / L"execution.json").get<satsuma::ExecutionResult>();
     expect(
@@ -456,16 +456,16 @@ void test_powershell_script_execution(const std::filesystem::path& root) {
         "PowerShell script argument changed during execution");
 
     const std::filesystem::path local_run_directory =
-        root / L"work" / L"vm_agent_test" / L"run_powershell_script" / L"client";
+        root / L"work" / L"vm_agent_test" / L"run_powershell_script" / L"vm_01";
     expect(std::filesystem::is_directory(local_run_directory),
         "Agent deleted Guest work before an explicit cleanup request");
     const std::filesystem::path state_directory =
         shared_root / L"runs" / L"run_powershell_script" / L"state";
-    satsuma::write_json_atomic(state_directory / L"client-cleanup-request.json", {
+    satsuma::write_json_atomic(state_directory / L"vm_01-cleanup-request.json", {
         {"schema_version", 1},
         {"lab_id", "vm_agent_test"},
         {"run_id", "run_powershell_script"},
-        {"vm_id", "client"},
+        {"vm_id", "vm_01"},
         {"request_id", "cleanup_test"},
         {"target", "guest_work"},
         {"requested_at", "2026-07-29T00:00:00.000Z"},
@@ -473,7 +473,7 @@ void test_powershell_script_execution(const std::filesystem::path& root) {
     expect(agent.run_once() == 0, "Agent re-executed a completed step during Guest cleanup");
     expect(!std::filesystem::exists(local_run_directory),
         "Agent did not delete Guest work after the cleanup request");
-    const nlohmann::json cleanup = satsuma::load_json(state_directory / L"client-cleanup.json");
+    const nlohmann::json cleanup = satsuma::load_json(state_directory / L"vm_01-cleanup.json");
     expect(
         cleanup.at("status") == "deleted" && cleanup.at("request_id") == "cleanup_test" &&
             cleanup.at("failed_path_count") == 0,
@@ -486,14 +486,14 @@ void test_cmd_script_execution(const std::filesystem::path& root) {
     write_cmd_run(shared_root);
     satsuma::AgentConfig config;
     config.lab_id = "vm_agent_test";
-    config.vm_id = "client";
+    config.vm_id = "vm_01";
     config.shared_root = shared_root;
     config.local_work_root = root / L"work";
     satsuma::vm::Agent agent(std::move(config));
     expect(agent.run_once() == 1, "Agent did not execute the CMD script step");
 
     const std::filesystem::path result_root = shared_root / L"runs" / L"run_cmd_script" /
-        L"results" / L"client" / L"cmd";
+        L"results" / L"vm_01" / L"cmd";
     const satsuma::ExecutionResult result =
         satsuma::load_json(result_root / L"execution.json").get<satsuma::ExecutionResult>();
     expect(
@@ -516,7 +516,7 @@ void test_file_cancellation(
     write_cancellable_run(shared_root, fixture);
     satsuma::AgentConfig config;
     config.lab_id = "vm_agent_test";
-    config.vm_id = "client";
+    config.vm_id = "vm_01";
     config.agent_version = "0.1.0";
     config.shared_root = shared_root;
     config.local_work_root = root / L"work";
@@ -527,7 +527,7 @@ void test_file_cancellation(
     std::stop_source stop_source;
     std::thread worker([&] { agent.run_watch(stop_source.get_token()); });
     const std::filesystem::path ready =
-        root / L"work" / L"vm_agent_test" / L"run_stop_execution" / L"client" /
+        root / L"work" / L"vm_agent_test" / L"run_stop_execution" / L"vm_01" /
         L"ready.marker";
     expect(wait_for_file(ready, 5s), "cancellable task did not start");
     const std::filesystem::path run_directory =
@@ -538,7 +538,7 @@ void test_file_cancellation(
         {"reason", "test cancellation"},
     });
     const std::filesystem::path result_path =
-        run_directory / L"results" / L"client" / L"execute_until_stopped" / L"execution.json";
+        run_directory / L"results" / L"vm_01" / L"execute_until_stopped" / L"execution.json";
     const bool completed = wait_for_file(result_path, 5s);
     stop_source.request_stop();
     worker.join();
@@ -561,7 +561,7 @@ void test_agent_interactive_execution(
 
     satsuma::AgentConfig config;
     config.lab_id = "vm_agent_test";
-    config.vm_id = "client";
+    config.vm_id = "vm_01";
     config.agent_version = "0.1.0";
     config.shared_root = shared_root;
     config.local_work_root = root / L"system-work";
@@ -570,7 +570,7 @@ void test_agent_interactive_execution(
 
     const std::filesystem::path result_path =
         shared_root / L"runs" / satsuma::path_from_utf8(run_id) /
-        L"results" / L"client" / L"interactive_execute" / L"execution.json";
+        L"results" / L"vm_01" / L"interactive_execute" / L"execution.json";
     const satsuma::ExecutionResult result =
         satsuma::load_json(result_path).get<satsuma::ExecutionResult>();
     if (result.status == "failed" &&
@@ -620,7 +620,7 @@ void test_agent_no_interactive_session(
 
     satsuma::AgentConfig config;
     config.lab_id = "vm_agent_test";
-    config.vm_id = "client";
+    config.vm_id = "vm_01";
     config.agent_version = "0.1.0";
     config.shared_root = shared_root;
     config.local_work_root = root / L"system-work";
@@ -639,7 +639,7 @@ void test_agent_no_interactive_session(
 
     const std::filesystem::path results =
         shared_root / L"runs" / satsuma::path_from_utf8(run_id) /
-        L"results" / L"client";
+        L"results" / L"vm_01";
     const satsuma::ExecutionResult failed = satsuma::load_json(
         results / L"interactive_execute" / L"execution.json")
             .get<satsuma::ExecutionResult>();
@@ -672,7 +672,7 @@ void test_invalid_run_is_isolated(const std::filesystem::path& root) {
 
     satsuma::AgentConfig config;
     config.lab_id = "vm_agent_test";
-    config.vm_id = "client";
+    config.vm_id = "vm_01";
     config.agent_version = "0.1.0";
     config.shared_root = shared_root;
     config.local_work_root = root / L"work";
@@ -681,12 +681,12 @@ void test_invalid_run_is_isolated(const std::filesystem::path& root) {
     expect(agent.run_once() == 1, "invalid run blocked a later valid run");
     expect(
         std::filesystem::is_regular_file(
-            invalid_run / L"state" / L"client-agent-error.json"),
+            invalid_run / L"state" / L"vm_01-agent-error.json"),
         "invalid run did not receive a stable Agent error record");
     expect(
         std::filesystem::is_regular_file(
             shared_root / L"runs" / L"run_file_success" / L"results" /
-            L"client" / L"echo_success" / L"execution.json"),
+            L"vm_01" / L"echo_success" / L"execution.json"),
         "valid run after an invalid run did not complete");
 }
 
@@ -695,7 +695,7 @@ void test_agent_rejects_legacy_file_protocol(const std::filesystem::path& root) 
     satsuma::AgentConfig config;
     config.protocol_version = satsuma::kLegacyRunManifestProtocolVersion;
     config.lab_id = "vm_agent_test";
-    config.vm_id = "client";
+    config.vm_id = "vm_01";
     config.agent_version = "0.1.0";
     config.shared_root = root / L"share";
     config.local_work_root = root / L"work";
@@ -730,11 +730,11 @@ void test_agent_hardware_identity(const std::filesystem::path& root) {
             {"schema_version", 1},
             {"lab_id", config.lab_id},
             {"hardware_id", first_hardware},
-            {"vm_id", "client"},
+            {"vm_id", "vm_01"},
         });
     expect(
         satsuma::vm::refresh_agent_binding(config) &&
-            !config.identity_unbound && config.vm_id == "client",
+            !config.identity_unbound && config.vm_id == "vm_01",
         "Host hardware binding was not applied without rewriting agent.json");
 
     satsuma::AgentConfig migrated;
@@ -745,7 +745,7 @@ void test_agent_hardware_identity(const std::filesystem::path& root) {
     satsuma::vm::prepare_agent_hardware_identity(migrated, second_hardware);
     expect(
         migrated.identity_unbound && migrated.previous_hardware_id == first_hardware &&
-            migrated.previous_vm_id == "client",
+            migrated.previous_vm_id == "vm_01",
         "hardware change did not preserve the previous identity evidence");
     satsuma::vm::write_hardware_migration_marker(migrated);
     expect(
@@ -755,13 +755,13 @@ void test_agent_hardware_identity(const std::filesystem::path& root) {
         "hardware change did not publish its migration marker");
 
     satsuma::AgentConfig legacy = migrated;
-    legacy.vm_id = "gateway";
+    legacy.vm_id = "vm_02";
     legacy.vm_id_configured = true;
     satsuma::vm::prepare_agent_hardware_identity(
         legacy,
         "564d9999-abcd-4321-9876-001122334455");
     expect(
-        !legacy.identity_unbound && legacy.vm_id == "gateway",
+        !legacy.identity_unbound && legacy.vm_id == "vm_02",
         "legacy configured vm_id did not retain priority");
 }
 

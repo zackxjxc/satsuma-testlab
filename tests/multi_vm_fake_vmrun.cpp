@@ -47,7 +47,7 @@ void log_invocation(const int argc, wchar_t* argv[]) {
 // 返回 VMX 是否属于当前双 VM 测试。
 [[nodiscard]] bool is_test_vmx(const std::filesystem::path& path) {
     const std::filesystem::path filename = path.filename();
-    return filename == L"Client VM.vmx" || filename == L"Gateway VM.vmx";
+    return filename == L"VM 01.vmx" || filename == L"VM 02.vmx";
 }
 
 // 记录隔离场景内的 Tools 查询次数，模拟 Agent 上线后 heartbeat 继续延迟一次。
@@ -164,9 +164,9 @@ int wmain(const int argc, wchar_t* argv[]) {
     }
     if (argc == 4 && command == L"start" && is_test_vmx(argv[2]) &&
         std::wstring(argv[3]) == L"nogui") {
-        const bool fail_client_start =
-            read_environment(L"SATSUMA_MULTI_VM_FAIL_CLIENT_START") == L"1";
-        if (fail_client_start && std::filesystem::path(argv[2]).filename() == L"Client VM.vmx") {
+        const bool fail_vm_01_start =
+            read_environment(L"SATSUMA_MULTI_VM_FAIL_VM_01_START") == L"1";
+        if (fail_vm_01_start && std::filesystem::path(argv[2]).filename() == L"VM 01.vmx") {
             std::ofstream marker(
                 delayed_start_marker(argv[2], L".start-reconcile-pending"),
                 std::ios::binary | std::ios::trunc);
@@ -175,16 +175,16 @@ int wmain(const int argc, wchar_t* argv[]) {
                 std::cerr << "cannot create delayed start marker\n";
                 return 3;
             }
-            std::cerr << "injected reconciled client start failure\n";
+            std::cerr << "injected reconciled vm_01 start failure\n";
             return 9;
         }
         return 0;
     }
     if (argc == 4 && command == L"stop" && is_test_vmx(argv[2]) &&
         (std::wstring(argv[3]) == L"soft" || std::wstring(argv[3]) == L"hard")) {
-        const bool fail_gateway_soft_stop =
-            read_environment(L"SATSUMA_MULTI_VM_FAIL_GATEWAY_SOFT_STOP") == L"1";
-        if (fail_gateway_soft_stop && std::filesystem::path(argv[2]).filename() == L"Gateway VM.vmx" &&
+        const bool fail_vm_02_soft_stop =
+            read_environment(L"SATSUMA_MULTI_VM_FAIL_VM_02_SOFT_STOP") == L"1";
+        if (fail_vm_02_soft_stop && std::filesystem::path(argv[2]).filename() == L"VM 02.vmx" &&
             std::wstring(argv[3]) == L"soft") {
             std::ofstream marker(delayed_stop_marker(argv[2]), std::ios::binary | std::ios::trunc);
             marker << "pending\n";
@@ -192,17 +192,17 @@ int wmain(const int argc, wchar_t* argv[]) {
                 std::cerr << "cannot create delayed stop marker\n";
                 return 3;
             }
-            std::cerr << "injected reconciled gateway stop failure\n";
+            std::cerr << "injected reconciled vm_02 stop failure\n";
             return 8;
         }
         return 0;
     }
     if (argc == 4 && command == L"revertToSnapshot" && is_test_vmx(argv[2]) &&
         std::wstring(argv[3]) == L"clean") {
-        const bool fail_gateway =
-            read_environment(L"SATSUMA_MULTI_VM_FAIL_GATEWAY_REVERT") == L"1";
-        if (fail_gateway && std::filesystem::path(argv[2]).filename() == L"Gateway VM.vmx") {
-            std::cerr << "injected gateway cleanup failure\n";
+        const bool fail_vm_02 =
+            read_environment(L"SATSUMA_MULTI_VM_FAIL_VM_02_REVERT") == L"1";
+        if (fail_vm_02 && std::filesystem::path(argv[2]).filename() == L"VM 02.vmx") {
+            std::cerr << "injected vm_02 cleanup failure\n";
             return 7;
         }
         return 0;

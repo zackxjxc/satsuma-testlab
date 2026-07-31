@@ -41,7 +41,7 @@ void expect_error(Operation operation, const std::string& message) {
     config.lab_id = "host_controller_test";
     config.shared_folder.host_root = root / L"share";
     satsuma::VmConfig vm;
-    vm.id = "client";
+    vm.id = "vm_01";
     config.vms.push_back(std::move(vm));
     return config;
 }
@@ -54,7 +54,7 @@ void expect_error(Operation operation, const std::string& message) {
     for (const std::string& step_id : {"first", "second"}) {
         satsuma::TaskStep step;
         step.id = step_id;
-        step.vm = "client";
+        step.vm = "vm_01";
         step.type = "echo";
         step.message = step_id;
         step.retry_safe = true;
@@ -102,7 +102,7 @@ void test_report_uses_canonical_result_paths(const std::filesystem::path& root) 
     const std::filesystem::path run_root =
         config.shared_folder.host_root / L"runs" / L"report_paths";
     const std::filesystem::path collected =
-        run_root / L"results" / L"client" / L"first" /
+        run_root / L"results" / L"vm_01" / L"first" /
         L"files" / L"nested" / L"execution.json";
     satsuma::write_json_atomic(collected, {
         {"status", "exited"},
@@ -193,7 +193,7 @@ void test_report_rejects_mismatched_identity(const std::filesystem::path& root) 
         manifest,
         manifest.steps.front(),
         "job_report_mismatch");
-    mismatched.vm_id = "gateway";
+    mismatched.vm_id = "vm_02";
     satsuma::write_json_atomic(
         result_path(config, manifest.run_id, manifest.steps.front()),
         mismatched);
@@ -255,8 +255,8 @@ void test_agent_hardware_discovery_and_binding(const std::filesystem::path& root
         {"host", {{"archive_root", satsuma::path_to_utf8(root / L"archive")}}},
         {"shared_folder", {{"host_root", satsuma::path_to_utf8(shared_root)}}},
         {"vms", nlohmann::json::array({{
-            {"id", "client"},
-            {"vmx", satsuma::path_to_utf8(root / L"client.vmx")},
+            {"id", "vm_01"},
+            {"vmx", satsuma::path_to_utf8(root / L"vm_01.vmx")},
             {"agent_version", "0.1.0"},
             {"snapshots", {
                 {"base", "clean"},
@@ -287,12 +287,12 @@ void test_agent_hardware_discovery_and_binding(const std::filesystem::path& root
         "Host discovery did not expose the unbound hardware presence");
 
     satsuma::write_json_atomic(
-        shared_root / L"agents" / L"gateway.json",
+        shared_root / L"agents" / L"vm_02.json",
         {
             {"schema_version", 1},
             {"protocol_version", 2},
             {"lab_id", "host_identity_test"},
-            {"vm_id", "gateway"},
+            {"vm_id", "vm_02"},
             {"hardware_id", hardware_id},
             {"status", "idle"},
         });
@@ -306,13 +306,13 @@ void test_agent_hardware_discovery_and_binding(const std::filesystem::path& root
         static_cast<void>(satsuma::host::bind_agent_hardware(
             config_path,
             config,
-            "client",
+            "vm_01",
             hardware_id));
     } catch (const satsuma::Error&) {
         conflict_rejected = true;
     }
     expect(conflict_rejected, "Host binding accepted a duplicated SMBIOS UUID");
-    std::filesystem::remove(shared_root / L"agents" / L"gateway.json");
+    std::filesystem::remove(shared_root / L"agents" / L"vm_02.json");
 
     const std::filesystem::path sessions =
         shared_root / L"agents" / L"sessions" /
@@ -340,7 +340,7 @@ void test_agent_hardware_discovery_and_binding(const std::filesystem::path& root
     const nlohmann::json bound = satsuma::host::bind_agent_hardware(
         config_path,
         config,
-        "client",
+        "vm_01",
         hardware_id);
     expect(bound.at("status") == "bound", "Host hardware binding did not succeed");
     const satsuma::LabConfig updated = satsuma::load_lab_config(config_path);

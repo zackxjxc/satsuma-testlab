@@ -18,7 +18,7 @@ Artifact 原子发布到 VMware Shared Folder；每台 Guest 中的 Windows Serv
 - 步骤 claim、租约续期、结果 fencing、崩溃恢复和人工介入门禁。
 - 文件取消、运行列表与安全保留策略；失败运行不会阻塞其他运行。
 - Agent Windows Service 安装、自更新和 VM 身份迁移。
-- SMBIOS UUID 自动发现、Host 业务角色绑定和克隆身份冲突检测。
+- SMBIOS UUID 自动发现、Host VM 标识绑定和克隆身份冲突检测。
 - Artifact、日志和结果文件容量上限，防止测试耗尽共享盘。
 - Windows Debug/Release CI、JSON Schema、便携发行目录和 UTF-8 ZIP 发布包。
 
@@ -44,7 +44,7 @@ cmake --build --preset windows-release --target SatsumaPackage
 
 ```powershell
 bin\SatsumaHost.exe discover --config config\lab.local.json
-bin\SatsumaHost.exe agent rebind --config config\lab.local.json --vm client --hardware-id <uuid>
+bin\SatsumaHost.exe agent rebind --config config\lab.local.json --vm vm_01 --hardware-id <uuid>
 bin\SatsumaHost.exe check --config config\lab.local.json --timeout-seconds 180
 bin\SatsumaHost.exe lab status --config config\lab.local.json
 bin\SatsumaHost.exe orchestrate --config config\lab.local.json --plan examples\multi-vm-task.json --timeout-seconds 900

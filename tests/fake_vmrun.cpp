@@ -32,8 +32,8 @@ int wmain(const int argc, wchar_t* argv[]) {
     if (argc == 2 && std::wstring(argv[1]) == L"list") {
         std::cout
             << "Total running VMs: 2\n"
-            << "C:\\VM Space\\Client.vmx\n"
-            << "D:\\Gateway\\Gateway.vmx\n";
+            << "C:\\VM Space\\VM-01.vmx\n"
+            << "D:\\VM-02\\VM-02.vmx\n";
         return 0;
     }
     if (argc == 3 &&
@@ -43,12 +43,12 @@ int wmain(const int argc, wchar_t* argv[]) {
             << "Total snapshots: 3\n"
             << "clean\n"
             << "satsuma-ai-network-ready\n"
-            << "satsuma-ai-client-ready\n";
+            << "satsuma-ai-vm_01-ready\n";
         return 0;
     }
     if (argc == 3 &&
         std::wstring(argv[1]) == L"listSnapshots" &&
-        std::filesystem::path(argv[2]).filename() == L"Client VM.vmx") {
+        std::filesystem::path(argv[2]).filename() == L"VM 01.vmx") {
         std::cout
             << "Total snapshots: 3\n"
             << "clean\n"
@@ -71,7 +71,7 @@ int wmain(const int argc, wchar_t* argv[]) {
     }
     if (argc == 3 && std::wstring(argv[1]) == L"checkToolsState") {
         const std::filesystem::path filename = std::filesystem::path(argv[2]).filename();
-        if (filename == L"Client VM.vmx" || filename == L"Tools Running VM.vmx") {
+        if (filename == L"VM 01.vmx" || filename == L"Tools Running VM.vmx") {
             std::cout << "running\n";
             return 0;
         }
@@ -86,7 +86,7 @@ int wmain(const int argc, wchar_t* argv[]) {
     }
     if (argc == 4 &&
         std::wstring(argv[1]) == L"start" &&
-        std::filesystem::path(argv[2]).filename() == L"Client VM.vmx" &&
+        std::filesystem::path(argv[2]).filename() == L"VM 01.vmx" &&
         std::wstring(argv[3]) == L"nogui") {
         return 0;
     }
@@ -96,7 +96,7 @@ int wmain(const int argc, wchar_t* argv[]) {
           std::wstring(argv[3]) == L"soft") ||
          (std::filesystem::path(argv[2]).filename() == L"Hard VM.vmx" &&
           std::wstring(argv[3]) == L"hard") ||
-         (std::filesystem::path(argv[2]).filename() == L"Client VM.vmx" &&
+         (std::filesystem::path(argv[2]).filename() == L"VM 01.vmx" &&
           (std::wstring(argv[3]) == L"soft" || std::wstring(argv[3]) == L"hard")))) {
         return 0;
     }
@@ -104,7 +104,7 @@ int wmain(const int argc, wchar_t* argv[]) {
         std::wstring(argv[1]) == L"revertToSnapshot" &&
         ((std::filesystem::path(argv[2]).filename() == L"Snapshot VM.vmx" &&
           std::wstring(argv[3]) == L"Clean Base") ||
-         (std::filesystem::path(argv[2]).filename() == L"Client VM.vmx" &&
+         (std::filesystem::path(argv[2]).filename() == L"VM 01.vmx" &&
           std::wstring(argv[3]) == L"clean"))) {
         return 0;
     }
@@ -112,7 +112,7 @@ int wmain(const int argc, wchar_t* argv[]) {
         std::wstring(argv[1]) == L"snapshot" &&
         ((std::filesystem::path(argv[2]).filename() == L"Create VM.vmx" &&
           std::wstring(argv[3]) == L"satsuma-ai-network-ready") ||
-         (std::filesystem::path(argv[2]).filename() == L"Client VM.vmx" &&
+         (std::filesystem::path(argv[2]).filename() == L"VM 01.vmx" &&
           is_generated_ai_snapshot(argv[3])))) {
         return 0;
     }
@@ -127,7 +127,7 @@ int wmain(const int argc, wchar_t* argv[]) {
         std::wstring(argv[1]) == L"deleteSnapshot" &&
         ((std::filesystem::path(argv[2]).filename() == L"Delete VM.vmx" &&
           std::wstring(argv[3]) == L"satsuma-ai-obsolete") ||
-         (std::filesystem::path(argv[2]).filename() == L"Client VM.vmx" &&
+         (std::filesystem::path(argv[2]).filename() == L"VM 01.vmx" &&
           std::wstring(argv[3]) == L"satsuma-ai-obsolete"))) {
         return 0;
     }

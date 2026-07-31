@@ -27,7 +27,7 @@ public:
         directory_ = std::filesystem::temp_directory_path() /
                      satsuma::path_from_utf8(satsuma::make_id("vmrun-start-test"));
         std::filesystem::create_directories(directory_);
-        start_path_ = create_vmx(L"Client VM.vmx");
+        start_path_ = create_vmx(L"VM 01.vmx");
         soft_stop_path_ = create_vmx(L"Soft VM.vmx");
         hard_stop_path_ = create_vmx(L"Hard VM.vmx");
         snapshot_path_ = create_vmx(L"Snapshot VM.vmx");
@@ -136,13 +136,13 @@ int wmain(const int argc, wchar_t* argv[]) {
             std::chrono::seconds(5));
         const auto paths = provider.list_running();
         expect(paths.size() == 2, "vmrun list did not return two VM paths");
-        expect(paths.at(0) == L"C:\\VM Space\\Client.vmx", "VM path with spaces changed");
-        expect(paths.at(1) == L"D:\\Gateway\\Gateway.vmx", "second VM path changed");
+        expect(paths.at(0) == L"C:\\VM Space\\VM-01.vmx", "VM path with spaces changed");
+        expect(paths.at(1) == L"D:\\VM-02\\VM-02.vmx", "second VM path changed");
         const TemporaryVmx vmx;
         const auto snapshots = provider.list_snapshots(vmx.list_snapshots_path());
         expect(snapshots.size() == 3, "vmrun listSnapshots did not return three snapshots");
         expect(snapshots.at(0) == "clean", "base snapshot name changed");
-        expect(snapshots.at(2) == "satsuma-ai-client-ready", "AI snapshot name changed");
+        expect(snapshots.at(2) == "satsuma-ai-vm_01-ready", "AI snapshot name changed");
         expect(provider.check_tools_state(vmx.tools_running_path()) == "running",
             "vmrun checkToolsState did not preserve the running state");
         expect(provider.check_tools_state(vmx.tools_installed_path()) == "installed",

@@ -44,7 +44,7 @@ foreach ($name in 'Write-JsonFile', 'New-CrashPlan') {
     Set-Item -LiteralPath "Function:\$name" -Value $definition.Body.GetScriptBlock()
 }
 $script:utf8NoBom = [Text.UTF8Encoding]::new($false)
-$script:VmId = 'client'
+$script:VmId = 'vm_01'
 $script:resolvedFixtureExe = 'C:\Satsuma Test\SatsumaTestFixture.exe'
 $script:validationRoot = $env:SATSUMA_REAL_CRASH_SCRIPT_TEST_ROOT
 $script:AgentCrashDelayMs = 35000

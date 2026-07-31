@@ -1,7 +1,7 @@
 # 轮询驱动两台测试 Agent，并禁止主任务早于两台诊断结果发布。
 if(NOT DEFINED VM_EXE OR
-   NOT DEFINED CLIENT_CONFIG OR
-   NOT DEFINED GATEWAY_CONFIG OR
+   NOT DEFINED VM_01_CONFIG OR
+   NOT DEFINED VM_02_CONFIG OR
    NOT DEFINED SHARED_ROOT OR
    NOT DEFINED RUN_ID OR
    NOT DEFINED LIFECYCLE_STATE)
@@ -63,74 +63,74 @@ function(require_file_order first_path second_path context)
     endif()
 endfunction()
 
-# 第一阶段只允许 Host 发布并完成 Client 诊断。
-run_agent_once(Client "${CLIENT_CONFIG}")
-set(client_diagnostic_manifest "")
+# 第一阶段只允许 Host 发布并完成 VM 01 诊断。
+run_agent_once(VM01 "${VM_01_CONFIG}")
+set(vm_01_diagnostic_manifest "")
 foreach(attempt RANGE 1 300)
     if(EXISTS "${main_manifest}")
-        message(FATAL_ERROR "Main manifest was published before the Client diagnostic")
+        message(FATAL_ERROR "Main manifest was published before the VM 01 diagnostic")
     endif()
-    find_diagnostic(client client_diagnostic_manifest client_diagnostic_execution)
-    find_diagnostic(gateway gateway_diagnostic_manifest gateway_diagnostic_execution)
-    if(NOT gateway_diagnostic_manifest STREQUAL "")
-        message(FATAL_ERROR "Gateway diagnostic was published before the Client was ready")
+    find_diagnostic(vm_01 vm_01_diagnostic_manifest vm_01_diagnostic_execution)
+    find_diagnostic(vm_02 vm_02_diagnostic_manifest vm_02_diagnostic_execution)
+    if(NOT vm_02_diagnostic_manifest STREQUAL "")
+        message(FATAL_ERROR "VM 02 diagnostic was published before the VM 01 was ready")
     endif()
-    if(NOT client_diagnostic_manifest STREQUAL "")
+    if(NOT vm_01_diagnostic_manifest STREQUAL "")
         break()
     endif()
     execute_process(COMMAND "${CMAKE_COMMAND}" -E sleep 0.05)
 endforeach()
-if(client_diagnostic_manifest STREQUAL "")
-    message(FATAL_ERROR "Host did not publish the Client diagnostic manifest")
+if(vm_01_diagnostic_manifest STREQUAL "")
+    message(FATAL_ERROR "Host did not publish the VM 01 diagnostic manifest")
 endif()
 
-# 暂不运行 Client，让越过生命周期顺序的发布有确定窗口暴露出来。
+# 暂不运行 VM 01，让越过生命周期顺序的发布有确定窗口暴露出来。
 foreach(attempt RANGE 1 5)
-    find_diagnostic(gateway gateway_diagnostic_manifest gateway_diagnostic_execution)
-    if(NOT gateway_diagnostic_manifest STREQUAL "" OR EXISTS "${main_manifest}")
-        message(FATAL_ERROR "Host advanced beyond the pending Client diagnostic")
+    find_diagnostic(vm_02 vm_02_diagnostic_manifest vm_02_diagnostic_execution)
+    if(NOT vm_02_diagnostic_manifest STREQUAL "" OR EXISTS "${main_manifest}")
+        message(FATAL_ERROR "Host advanced beyond the pending VM 01 diagnostic")
     endif()
     execute_process(COMMAND "${CMAKE_COMMAND}" -E sleep 0.05)
 endforeach()
-run_agent_once(Client "${CLIENT_CONFIG}")
-if(NOT EXISTS "${client_diagnostic_execution}")
-    message(FATAL_ERROR "Client Agent omitted its diagnostic result")
+run_agent_once(VM01 "${VM_01_CONFIG}")
+if(NOT EXISTS "${vm_01_diagnostic_execution}")
+    message(FATAL_ERROR "VM 01 Agent omitted its diagnostic result")
 endif()
 if(EXISTS "${main_manifest}")
-    message(FATAL_ERROR "Main manifest was published before the Gateway diagnostic")
+    message(FATAL_ERROR "Main manifest was published before the VM 02 diagnostic")
 endif()
 
-# 第二阶段必须等待 Client Ready 后才允许发布 Gateway 诊断。
-run_agent_once(Gateway "${GATEWAY_CONFIG}")
-set(gateway_diagnostic_manifest "")
+# 第二阶段必须等待 VM 01 Ready 后才允许发布 VM 02 诊断。
+run_agent_once(VM02 "${VM_02_CONFIG}")
+set(vm_02_diagnostic_manifest "")
 foreach(attempt RANGE 1 300)
     if(EXISTS "${main_manifest}")
-        message(FATAL_ERROR "Main manifest was published before the Gateway was ready")
+        message(FATAL_ERROR "Main manifest was published before the VM 02 was ready")
     endif()
-    find_diagnostic(gateway gateway_diagnostic_manifest gateway_diagnostic_execution)
-    if(NOT gateway_diagnostic_manifest STREQUAL "")
+    find_diagnostic(vm_02 vm_02_diagnostic_manifest vm_02_diagnostic_execution)
+    if(NOT vm_02_diagnostic_manifest STREQUAL "")
         break()
     endif()
     execute_process(COMMAND "${CMAKE_COMMAND}" -E sleep 0.05)
 endforeach()
-if(gateway_diagnostic_manifest STREQUAL "")
-    message(FATAL_ERROR "Host did not publish the Gateway diagnostic manifest")
+if(vm_02_diagnostic_manifest STREQUAL "")
+    message(FATAL_ERROR "Host did not publish the VM 02 diagnostic manifest")
 endif()
 require_file_order(
-    "${client_diagnostic_execution}"
-    "${gateway_diagnostic_manifest}"
-    "Client Ready to Gateway diagnostic")
+    "${vm_01_diagnostic_execution}"
+    "${vm_02_diagnostic_manifest}"
+    "VM 01 Ready to VM 02 diagnostic")
 
-# 暂不运行 Gateway，验证主任务确实受第二台 Ready 结果约束。
+# 暂不运行 VM 02，验证主任务确实受第二台 Ready 结果约束。
 foreach(attempt RANGE 1 5)
     if(EXISTS "${main_manifest}")
-        message(FATAL_ERROR "Host advanced beyond the pending Gateway diagnostic")
+        message(FATAL_ERROR "Host advanced beyond the pending VM 02 diagnostic")
     endif()
     execute_process(COMMAND "${CMAKE_COMMAND}" -E sleep 0.05)
 endforeach()
-run_agent_once(Gateway "${GATEWAY_CONFIG}")
-if(NOT EXISTS "${gateway_diagnostic_execution}")
-    message(FATAL_ERROR "Gateway Agent omitted its diagnostic result")
+run_agent_once(VM02 "${VM_02_CONFIG}")
+if(NOT EXISTS "${vm_02_diagnostic_execution}")
+    message(FATAL_ERROR "VM 02 Agent omitted its diagnostic result")
 endif()
 
 # 两台 Ready 后等待主任务完整发布，避免 Agent 扫描 Host 的暂存目录。
@@ -144,11 +144,11 @@ if(NOT EXISTS "${main_manifest}")
     message(FATAL_ERROR "Host did not publish the main manifest after both Agents were ready")
 endif()
 require_file_order(
-    "${gateway_diagnostic_execution}"
+    "${vm_02_diagnostic_execution}"
     "${main_manifest}"
-    "Gateway Ready to main manifest")
-run_agent_once(Client "${CLIENT_CONFIG}")
-run_agent_once(Gateway "${GATEWAY_CONFIG}")
+    "VM 02 Ready to main manifest")
+run_agent_once(VM01 "${VM_01_CONFIG}")
+run_agent_once(VM02 "${VM_02_CONFIG}")
 
 # 主任务完成后等待 finally 原子发布，再允许两台 Agent 扫描。
 set(finally_manifest "")
@@ -180,13 +180,13 @@ endforeach()
 if(finally_manifest STREQUAL "")
     message(FATAL_ERROR "Host did not publish the finally manifest")
 endif()
-run_agent_once(Client "${CLIENT_CONFIG}")
-run_agent_once(Gateway "${GATEWAY_CONFIG}")
+run_agent_once(VM01 "${VM_01_CONFIG}")
+run_agent_once(VM02 "${VM_02_CONFIG}")
 
 # finally 完成后继续轮询 Agent，以处理 Host 在归档后发布的 Guest 清理请求。
 foreach(attempt RANGE 1 300)
-    run_agent_once(Client "${CLIENT_CONFIG}")
-    run_agent_once(Gateway "${GATEWAY_CONFIG}")
+    run_agent_once(VM01 "${VM_01_CONFIG}")
+    run_agent_once(VM02 "${VM_02_CONFIG}")
     if(EXISTS "${LIFECYCLE_STATE}")
         execute_process(
             COMMAND "${CMAKE_COMMAND}" -E cat "${LIFECYCLE_STATE}"

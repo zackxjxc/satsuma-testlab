@@ -40,11 +40,11 @@ void expect_error(Function&& function, const std::string& message) {
     config.lab_id = "test_lab";
     config.shared_folder.host_root = root / L"share";
     satsuma::VmConfig vm;
-    vm.id = "client";
+    vm.id = "vm_01";
     config.vms.push_back(std::move(vm));
-    satsuma::VmConfig gateway;
-    gateway.id = "gateway";
-    config.vms.push_back(std::move(gateway));
+    satsuma::VmConfig vm_02;
+    vm_02.id = "vm_02";
+    config.vms.push_back(std::move(vm_02));
     return config;
 }
 
@@ -61,9 +61,9 @@ void test_host_rebind_publish(const std::filesystem::path& root) {
     const satsuma::host::Controller controller(config);
 
     const satsuma::AgentUpdateManifest manifest =
-        controller.publish_agent_update("client", candidate, "0.1.1", "gateway");
+        controller.publish_agent_update("vm_01", candidate, "0.1.1", "vm_02");
     expect(manifest.protocol_version == 2, "Host rebind did not use update protocol 2");
-    expect(manifest.next_vm_id == "gateway", "Host rebind lost its target identity");
+    expect(manifest.next_vm_id == "vm_02", "Host rebind lost its target identity");
     const std::filesystem::path directory =
         update_directory(config.shared_folder.host_root, manifest);
     const satsuma::AgentUpdateManifest published =
@@ -74,24 +74,24 @@ void test_host_rebind_publish(const std::filesystem::path& root) {
     expect_error(
         [&controller, &candidate] {
             static_cast<void>(controller.publish_agent_update(
-                "client", candidate, "0.1.1", "client"));
+                "vm_01", candidate, "0.1.1", "vm_01"));
         },
         "Host accepted a rebind to the current identity");
     expect_error(
         [&controller, &candidate] {
             static_cast<void>(controller.publish_agent_update(
-                "client", candidate, "0.1.1", "missing"));
+                "vm_01", candidate, "0.1.1", "missing"));
         },
         "Host accepted an unknown rebind target");
 
     const std::filesystem::path target_presence =
-        config.shared_folder.host_root / L"agents" / L"gateway.json";
+        config.shared_folder.host_root / L"agents" / L"vm_02.json";
     std::filesystem::create_directories(target_presence.parent_path());
     std::ofstream(target_presence, std::ios::binary) << "{}";
     expect_error(
         [&controller, &candidate] {
             static_cast<void>(controller.publish_agent_update(
-                "client", candidate, "0.1.1", "gateway"));
+                "vm_01", candidate, "0.1.1", "vm_02"));
         },
         "Host accepted a rebind target with an existing presence");
 }
@@ -114,7 +114,7 @@ void test_host_update_flow(const std::filesystem::path& root) {
     const satsuma::host::Controller controller(config);
 
     const satsuma::AgentUpdateManifest failed_manifest =
-        controller.publish_agent_update("client", candidate, "0.1.1");
+        controller.publish_agent_update("vm_01", candidate, "0.1.1");
     const std::filesystem::path failed_directory =
         update_directory(config.shared_folder.host_root, failed_manifest);
     expect(std::filesystem::is_regular_file(failed_directory / L"update.json"),
@@ -137,7 +137,7 @@ void test_host_update_flow(const std::filesystem::path& root) {
     satsuma::write_json_atomic(failed_directory / L"result.json", failed_result);
     const satsuma::AgentUpdateResult observed_failure =
         controller.wait_agent_update(
-            "client",
+            "vm_01",
             failed_manifest.update_id,
             std::chrono::seconds(1));
     expect(observed_failure.status == "failed",
@@ -146,7 +146,7 @@ void test_host_update_flow(const std::filesystem::path& root) {
         "Host deleted failed update evidence");
 
     const satsuma::AgentUpdateManifest success_manifest =
-        controller.publish_agent_update("client", candidate, "0.1.2");
+        controller.publish_agent_update("vm_01", candidate, "0.1.2");
     const std::filesystem::path success_directory =
         update_directory(config.shared_folder.host_root, success_manifest);
     satsuma::AgentUpdateResult success_result;
@@ -163,7 +163,7 @@ void test_host_update_flow(const std::filesystem::path& root) {
     bool mismatched_version_rejected = false;
     try {
         static_cast<void>(controller.wait_agent_update(
-            "client",
+            "vm_01",
             success_manifest.update_id,
             std::chrono::seconds(1)));
     } catch (const std::exception&) {
@@ -178,7 +178,7 @@ void test_host_update_flow(const std::filesystem::path& root) {
     satsuma::write_json_atomic(success_directory / L"result.json", success_result);
     const satsuma::AgentUpdateResult observed_success =
         controller.wait_agent_update(
-            "client",
+            "vm_01",
             success_manifest.update_id,
             std::chrono::seconds(1));
     expect(observed_success.status == "succeeded",
@@ -187,7 +187,7 @@ void test_host_update_flow(const std::filesystem::path& root) {
         "Host retained a successful shared update directory");
 
     for (const auto& entry : std::filesystem::directory_iterator(
-             config.shared_folder.host_root / L"updates" / L"client")) {
+             config.shared_folder.host_root / L"updates" / L"vm_01")) {
         expect(!entry.path().filename().native().starts_with(L".preparing-"),
             "Host retained an update staging directory");
     }

@@ -43,7 +43,7 @@ foreach ($name in 'Write-JsonFile', 'New-FaultPlan') {
     Set-Item -LiteralPath "Function:\$name" -Value $definition.Body.GetScriptBlock()
 }
 $script:utf8NoBom = [Text.UTF8Encoding]::new($false)
-$script:VmId = 'client'
+$script:VmId = 'vm_01'
 $script:resolvedFixtureExe = 'C:\Satsuma Test\SatsumaTestFixture.exe'
 $script:validationRoot = $env:SATSUMA_REAL_FAULT_SCRIPT_TEST_ROOT
 $script:TaskSleepMs = 90000
@@ -80,7 +80,7 @@ execute_process(
         -HostExe "missing-host.exe"
         -FixtureExe "missing-fixture.exe"
         -LabConfig "missing-lab.json"
-        -VmId client
+        -VmId vm_01
         -Confirm NOT_CONFIRMED
     RESULT_VARIABLE gate_result
     OUTPUT_VARIABLE gate_output
