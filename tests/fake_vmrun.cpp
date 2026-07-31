@@ -1,10 +1,13 @@
 // VmrunProvider 测试使用的无害 vmrun 替身。
 #include <algorithm>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 namespace {
 
@@ -36,24 +39,57 @@ namespace {
     return std::filesystem::temp_directory_path() / L"satsuma-fake-vmrun-running-vm.txt";
 }
 
+// 读取测试替身维护的额外运行 VM 状态。
+[[nodiscard]] std::pair<std::string, std::string> read_running_vm_state() {
+    std::ifstream state(running_vm_state_path(), std::ios::binary);
+    std::string mode;
+    std::string path;
+    std::getline(state, mode);
+    std::getline(state, path);
+    return {mode, path};
+}
+
+// 写入测试替身维护的额外运行 VM 状态。
+void write_running_vm_state(const std::string& mode, const std::string& path) {
+    std::ofstream state(running_vm_state_path(), std::ios::binary | std::ios::trunc);
+    state << mode << '\n' << path << '\n';
+}
+
+// 读取 Host 集成测试显式声明的基础运行 VM。
+[[nodiscard]] std::wstring read_environment(const wchar_t* name) {
+    std::size_t required = 0;
+    if (_wgetenv_s(&required, nullptr, 0, name) != 0 || required <= 1) {
+        return {};
+    }
+    std::vector<wchar_t> buffer(required);
+    if (_wgetenv_s(&required, buffer.data(), buffer.size(), name) != 0) {
+        return {};
+    }
+    return std::wstring(buffer.data());
+}
+
 }  // namespace
 
 // 模拟 VmrunProvider 当前支持的结构化命令。
 int wmain(const int argc, wchar_t* argv[]) {
     if (argc == 2 && std::wstring(argv[1]) == L"list") {
-        std::ifstream state(running_vm_state_path());
-        std::string running_path;
-        std::getline(state, running_path);
-        std::cout
-            << "Total running VMs: " << (running_path.empty() ? 2 : 3) << "\n"
-            << "C:\\VM Space\\VM-01.vmx\n"
-            << "D:\\VM-02\\VM-02.vmx\n";
-        if (!running_path.empty()) {
-            std::cout << running_path << '\n';
+        const std::string running_path = read_running_vm_state().second;
+        std::vector<std::string> paths = {
+            "C:\\VM Space\\VM-01.vmx",
+            "D:\\VM-02\\VM-02.vmx",
+        };
+        const std::wstring configured = read_environment(L"SATSUMA_FAKE_VMRUN_RUNNING_VMX");
+        if (!configured.empty()) {
+            paths.push_back(std::filesystem::path(configured).string());
         }
-        state.close();
-        std::error_code error;
-        std::filesystem::remove(running_vm_state_path(), error);
+        if (!running_path.empty() &&
+            std::find(paths.begin(), paths.end(), running_path) == paths.end()) {
+            paths.push_back(running_path);
+        }
+        std::cout << "Total running VMs: " << paths.size() << '\n';
+        for (const std::string& path : paths) {
+            std::cout << path << '\n';
+        }
         return 0;
     }
     if (argc == 3 &&
@@ -91,7 +127,11 @@ int wmain(const int argc, wchar_t* argv[]) {
     }
     if (argc == 3 && std::wstring(argv[1]) == L"checkToolsState") {
         const std::filesystem::path filename = std::filesystem::path(argv[2]).filename();
-        if (filename == L"VM 01.vmx" || filename == L"Tools Running VM.vmx") {
+        if (filename == L"VM 01.vmx") {
+            std::cout << "installed\n";
+            return 0;
+        }
+        if (filename == L"Tools Running VM.vmx") {
             std::cout << "running\n";
             return 0;
         }
@@ -105,9 +145,18 @@ int wmain(const int argc, wchar_t* argv[]) {
         }
     }
     if (argc == 4 &&
+        std::wstring(argv[1]) == L"getGuestIPAddress" &&
+        (std::filesystem::path(argv[2]).filename() == L"VM 01.vmx" ||
+         std::filesystem::path(argv[2]).filename() == L"Tools Installed VM.vmx") &&
+        std::wstring(argv[3]) == L"-wait") {
+        std::cout << "192.0.2.10\n";
+        return 0;
+    }
+    if (argc == 4 &&
         std::wstring(argv[1]) == L"start" &&
         std::filesystem::path(argv[2]).filename() == L"VM 01.vmx" &&
         std::wstring(argv[3]) == L"nogui") {
+        write_running_vm_state("persistent", std::filesystem::path(argv[2]).string());
         return 0;
     }
     if (argc == 4 &&
@@ -118,6 +167,11 @@ int wmain(const int argc, wchar_t* argv[]) {
           std::wstring(argv[3]) == L"hard") ||
          (std::filesystem::path(argv[2]).filename() == L"VM 01.vmx" &&
           (std::wstring(argv[3]) == L"soft" || std::wstring(argv[3]) == L"hard")))) {
+        const auto [mode, path] = read_running_vm_state();
+        if (mode == "persistent" && path == std::filesystem::path(argv[2]).string()) {
+            std::error_code error;
+            std::filesystem::remove(running_vm_state_path(), error);
+        }
         return 0;
     }
     if (argc == 4 &&
@@ -130,9 +184,13 @@ int wmain(const int argc, wchar_t* argv[]) {
         std::wstring(argv[1]) == L"stop" &&
         std::filesystem::path(argv[2]).filename() == L"Stop Failed VM.vmx" &&
         std::wstring(argv[3]) == L"hard") {
-        std::ofstream state(running_vm_state_path(), std::ios::binary | std::ios::trunc);
-        state << std::filesystem::path(argv[2]).string();
-        return state ? 7 : 3;
+        const auto [mode, path] = read_running_vm_state();
+        if (mode == "persistent" && path == std::filesystem::path(argv[2]).string()) {
+            std::error_code error;
+            return std::filesystem::remove(running_vm_state_path(), error) && !error ? 0 : 3;
+        }
+        write_running_vm_state("persistent", std::filesystem::path(argv[2]).string());
+        return 7;
     }
     if (argc == 4 &&
         std::wstring(argv[1]) == L"revertToSnapshot" &&
@@ -186,6 +244,10 @@ int wmain(const int argc, wchar_t* argv[]) {
         const bool removed = std::filesystem::remove(reconciliation_state_path(argv[2]), error);
         return removed && !error ? 7 : 3;
     }
-    std::cerr << "unsupported fake vmrun command\n";
+    std::cerr << "unsupported fake vmrun command:";
+    for (int index = 1; index < argc; ++index) {
+        std::wcerr << L" [" << argv[index] << L"]";
+    }
+    std::cerr << '\n';
     return 2;
 }

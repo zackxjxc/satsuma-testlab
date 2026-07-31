@@ -46,8 +46,6 @@ struct OrchestrationArchive {
     bool resumed{false}; // 是否从已有归档恢复
 };
 
-constexpr std::chrono::seconds kVmStateReconciliationTimeout{5}; // 启停报错后的状态收敛等待上限
-constexpr std::chrono::milliseconds kVmStateReconciliationDelay{100}; // 状态对账轮询间隔
 constexpr std::chrono::seconds kSharedRunDeleteTimeout{5}; // 等待 Agent 释放共享目录句柄的上限
 constexpr std::chrono::milliseconds kSharedRunDeleteDelay{100}; // 共享目录删除重试间隔
 constexpr std::chrono::seconds kEvidenceArchiveStabilityTimeout{5}; // 等待运行证据停止变化的上限
@@ -250,92 +248,6 @@ void validate_managed_snapshot(
     }
     if (std::find(existing.begin(), existing.end(), snapshot) == existing.end()) {
         throw Error("Lifecycle snapshot does not exist: " + snapshot);
-    }
-}
-
-// 判断 vmrun 返回的运行列表是否包含目标 VMX。
-[[nodiscard]] bool is_vm_running(
-    const vmware::VmrunProvider& provider,
-    const std::filesystem::path& vmx) {
-    const std::filesystem::path expected = std::filesystem::absolute(vmx).lexically_normal();
-    for (const std::filesystem::path& running : provider.list_running()) {
-        const std::filesystem::path candidate = std::filesystem::absolute(running).lexically_normal();
-        if (_wcsicmp(expected.native().c_str(), candidate.native().c_str()) == 0) {
-            return true;
-        }
-    }
-    return false;
-}
-
-// 在有限时间内等待 vmrun 运行列表收敛到目标电源状态。
-[[nodiscard]] bool wait_for_vm_running_state(
-    const vmware::VmrunProvider& provider,
-    const std::filesystem::path& vmx,
-    const bool expected_running) {
-    const auto deadline = std::chrono::steady_clock::now() + kVmStateReconciliationTimeout;
-    std::string last_error; // 最后一次运行列表查询错误
-    for (;;) {
-        try {
-            if (is_vm_running(provider, vmx) == expected_running) {
-                return true;
-            }
-            last_error.clear();
-        } catch (const std::exception& error) {
-            last_error = error.what();
-        }
-        if (std::chrono::steady_clock::now() >= deadline) {
-            break;
-        }
-        std::this_thread::sleep_for(kVmStateReconciliationDelay);
-    }
-    if (!last_error.empty()) {
-        throw Error("VM state reconciliation failed: " + last_error);
-    }
-    return false;
-}
-
-// vmrun 启动报错后以运行列表对账，避免晚到成功被误判为失败。
-void start_vm_with_reconciliation(
-    const vmware::VmrunProvider& provider,
-    const std::filesystem::path& vmx) {
-    try {
-        provider.start(vmx);
-    } catch (const std::exception& operation_error) {
-        try {
-            if (wait_for_vm_running_state(provider, vmx, true)) {
-                return;
-            }
-        } catch (const std::exception& reconciliation_error) {
-            throw Error(
-                std::string(operation_error.what()) +
-                "; cannot reconcile VM start: " + reconciliation_error.what());
-        }
-        throw Error(
-            std::string(operation_error.what()) +
-            "; VM remained stopped after start reconciliation");
-    }
-}
-
-// vmrun 关闭报错后以运行列表对账，确认已关机时继续清理流程。
-void stop_vm_with_reconciliation(
-    const vmware::VmrunProvider& provider,
-    const std::filesystem::path& vmx,
-    const vmware::VmStopMode mode) {
-    try {
-        provider.stop(vmx, mode);
-    } catch (const std::exception& operation_error) {
-        try {
-            if (wait_for_vm_running_state(provider, vmx, false)) {
-                return;
-            }
-        } catch (const std::exception& reconciliation_error) {
-            throw Error(
-                std::string(operation_error.what()) +
-                "; cannot reconcile VM stop: " + reconciliation_error.what());
-        }
-        throw Error(
-            std::string(operation_error.what()) +
-            "; VM remained running after stop reconciliation");
     }
 }
 
@@ -733,12 +645,12 @@ void apply_terminal_state_output(
     }
     if (policy.action == VmCleanupAction::Stop) {
         if (assumed_running) {
-            stop_vm_with_reconciliation(provider, vm.vmx, vmware::VmStopMode::Soft);
+            provider.stop(vm.vmx, vmware::VmStopMode::Soft);
         }
         return false;
     }
     if (assumed_running) {
-        stop_vm_with_reconciliation(provider, vm.vmx, vmware::VmStopMode::Hard);
+        provider.stop(vm.vmx, vmware::VmStopMode::Hard);
     }
     provider.revert_to_snapshot(vm.vmx, *policy.snapshot);
     return false;
@@ -808,7 +720,7 @@ nlohmann::json Orchestrator::execute(
         if (policy.on_failure.action == VmCleanupAction::Restore) {
             validate_managed_snapshot(vm, snapshots, *policy.on_failure.snapshot);
         }
-        initially_running.push_back(is_vm_running(provider, vm.vmx));
+        initially_running.push_back(provider.is_running(vm.vmx));
     }
 
     if (!archive.has_value()) {
@@ -887,10 +799,7 @@ nlohmann::json Orchestrator::execute(
                     }
                     const VmConfig& vm = *vms[index];
                     if (assumed_running[index]) {
-                        stop_vm_with_reconciliation(
-                            provider,
-                            vm.vmx,
-                            vmware::VmStopMode::Hard);
+                        provider.stop(vm.vmx, vmware::VmStopMode::Hard);
                         assumed_running[index] = false;
                     }
                     provider.revert_to_snapshot(vm.vmx, *policy.restore_before);
@@ -905,7 +814,7 @@ nlohmann::json Orchestrator::execute(
                 "start target VMs in lifecycle order");
             for (std::size_t index = 0; index < vms.size(); ++index) {
                 if (!assumed_running[index]) {
-                    start_vm_with_reconciliation(provider, vms[index]->vmx);
+                    provider.start(vms[index]->vmx);
                     assumed_running[index] = true;
                 }
             }

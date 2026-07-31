@@ -153,9 +153,13 @@ int wmain(const int argc, wchar_t* argv[]) {
         if (argc != 2) {
             throw std::runtime_error("fake vmrun path is required");
         }
+        std::error_code stale_state_error;
+        std::filesystem::remove(
+            std::filesystem::temp_directory_path() / L"satsuma-fake-vmrun-running-vm.txt",
+            stale_state_error);
         satsuma::vmware::VmrunProvider provider(
             std::filesystem::path(argv[1]),
-            std::chrono::seconds(5));
+            std::chrono::milliseconds(500));
         const auto paths = provider.list_running();
         expect(paths.size() == 2, "vmrun list did not return two VM paths");
         expect(paths.at(0) == L"C:\\VM Space\\VM-01.vmx", "VM path with spaces changed");
@@ -171,7 +175,10 @@ int wmain(const int argc, wchar_t* argv[]) {
             "vmrun checkToolsState did not preserve the installed state");
         expect(provider.check_tools_state(vmx.tools_unknown_path()) == "unknown",
             "vmrun checkToolsState did not preserve the unknown state");
+        expect(provider.get_guest_ip_address(vmx.tools_installed_path()) == "192.0.2.10",
+            "vmrun getGuestIPAddress did not preserve the Guest address");
         provider.start(vmx.start_path());
+        provider.stop(vmx.start_path(), satsuma::vmware::VmStopMode::Hard);
         provider.stop(vmx.soft_stop_path(), satsuma::vmware::VmStopMode::Soft);
         provider.stop(vmx.hard_stop_path(), satsuma::vmware::VmStopMode::Hard);
         provider.stop(vmx.reconciled_stop_path(), satsuma::vmware::VmStopMode::Hard);
@@ -182,6 +189,7 @@ int wmain(const int argc, wchar_t* argv[]) {
             stop_failed = true;
         }
         expect(stop_failed, "vmrun stop failure was hidden while the VM remained running");
+        provider.stop(vmx.failed_stop_path(), satsuma::vmware::VmStopMode::Hard);
         provider.revert_to_snapshot(vmx.snapshot_path(), "Clean Base");
         provider.revert_to_snapshot(vmx.snapshot_retry_path(), "Clean Base");
         provider.create_snapshot(vmx.create_snapshot_path(), "satsuma-ai-network-ready");

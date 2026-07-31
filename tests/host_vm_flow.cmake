@@ -1209,6 +1209,7 @@ if(pending_wait_status_position EQUAL -1)
     message(FATAL_ERROR "Report wait omitted timeout status: ${pending_wait_output}")
 endif()
 
+set(ENV{SATSUMA_FAKE_VMRUN_RUNNING_VMX} "${vmx_path}")
 execute_process(
     COMMAND "${CMAKE_COMMAND}"
         "-DVM_EXE=${VM_EXE}"
@@ -1324,6 +1325,7 @@ if(NOT blocked_archive_output STREQUAL "")
     message(FATAL_ERROR "Blocked archive check published unexpected output: ${blocked_archive_output}")
 endif()
 
+unset(ENV{SATSUMA_FAKE_VMRUN_RUNNING_VMX})
 execute_process(
     COMMAND "${HOST_EXE}" vm start --config "${TEST_ROOT}/lab.json" --id vm_01
     WORKING_DIRECTORY "${TEST_ROOT}"
@@ -1535,6 +1537,18 @@ if(NOT reconcile_deleted_status STREQUAL "deleted" OR
    NOT stale_reconciliation_error_position EQUAL -1)
     message(FATAL_ERROR
         "Late snapshot deletion metadata was not finalized: ${reconcile_deleted_metadata_json}")
+endif()
+
+execute_process(
+    COMMAND "${HOST_EXE}" vm start --config "${TEST_ROOT}/lab.json" --id vm_01
+    WORKING_DIRECTORY "${TEST_ROOT}"
+    RESULT_VARIABLE task_vm_start_result
+    OUTPUT_VARIABLE task_vm_start_output
+    ERROR_VARIABLE task_vm_start_error
+)
+if(NOT task_vm_start_result EQUAL 0)
+    message(FATAL_ERROR
+        "SatsumaHost could not start the task VM: ${task_vm_start_error}\n${task_vm_start_output}")
 endif()
 
 execute_process(

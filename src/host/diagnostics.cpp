@@ -14,6 +14,8 @@
 #include <utility>
 #include <vector>
 
+#include <windows.h>
+
 #include "satsuma/core/errors.hpp"
 #include "satsuma/core/id.hpp"
 #include "satsuma/core/json_io.hpp"
@@ -28,7 +30,6 @@ namespace {
 
 constexpr std::chrono::seconds kEnvironmentRecheckTimeout{30}; // Agent 上线后的环境收敛等待上限
 constexpr std::chrono::seconds kEnvironmentRecheckDelay{1}; // 环境复检间隔
-constexpr std::chrono::seconds kToolsStartupWait{30}; // VM 已运行但 Tools 尚未上线时的等待上限
 
 // 向机器可读报告追加一项独立检查。
 void add_check(
@@ -93,14 +94,18 @@ void probe_writable_directory(const std::filesystem::path& root) {
     return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
 }
 
-// 返回环境报告中指定检查是否已通过。
-[[nodiscard]] bool check_passed(const nlohmann::json& report, const std::string_view name) {
+// 返回环境报告中同名检查是否全部通过。
+[[nodiscard]] bool check_group_passed(const nlohmann::json& report, const std::string_view name) {
+    bool found = false;
     for (const auto& check : report.at("checks")) {
         if (check.at("name").get<std::string>() == name) {
-            return check.at("status") == "passed";
+            found = true;
+            if (check.at("status") != "passed") {
+                return false;
+            }
         }
     }
-    return false;
+    return found;
 }
 
 // 仅在 VMware Tools 是唯一未通过项时等待冷启动状态收敛。
@@ -154,6 +159,7 @@ nlohmann::json Diagnostics::inspect_environment(const std::optional<std::string>
     inspect_directory("archive", config_.host.archive_root);
 
     std::unique_ptr<vmware::VmrunProvider> provider;
+    std::optional<std::vector<std::filesystem::path>> running_vms;
     try {
         provider = std::make_unique<vmware::VmrunProvider>(config_.provider.vmrun);
         add_check(checks, "vmrun", "passed", "vmrun executable is available", {
@@ -167,9 +173,9 @@ nlohmann::json Diagnostics::inspect_environment(const std::optional<std::string>
 
     if (provider != nullptr) {
         try {
-            const std::vector<std::filesystem::path> running = provider->list_running();
+            running_vms = provider->list_running();
             nlohmann::json paths = nlohmann::json::array();
-            for (const auto& path : running) {
+            for (const auto& path : *running_vms) {
                 paths.push_back(path_to_utf8(path));
             }
             add_check(checks, "vmware_control", "passed", "vmrun list completed", {
@@ -194,6 +200,10 @@ nlohmann::json Diagnostics::inspect_environment(const std::optional<std::string>
         }
 
         if (provider == nullptr || !std::filesystem::is_regular_file(vm->vmx)) {
+            add_check(checks, "vm_power", "skipped", "VMware control or VMX check failed", {
+                {"vm_id", vm->id},
+                {"state", "unknown"},
+            });
             add_check(checks, "snapshots", "skipped", "VMware control or VMX check failed", {
                 {"vm_id", vm->id},
             });
@@ -201,6 +211,31 @@ nlohmann::json Diagnostics::inspect_environment(const std::optional<std::string>
                 {"vm_id", vm->id},
             });
             continue;
+        }
+
+        bool vm_running = false;
+        if (running_vms.has_value()) {
+            const std::filesystem::path expected =
+                std::filesystem::absolute(vm->vmx).lexically_normal();
+            vm_running = std::any_of(
+                running_vms->begin(),
+                running_vms->end(),
+                [&expected](const std::filesystem::path& candidate) {
+                    const std::filesystem::path actual =
+                        std::filesystem::absolute(candidate).lexically_normal();
+                    return _wcsicmp(expected.native().c_str(), actual.native().c_str()) == 0;
+                });
+            add_check(
+                checks,
+                "vm_power",
+                vm_running ? "passed" : "failed",
+                vm_running ? "VM is running" : "VM is stopped",
+                {{"vm_id", vm->id}, {"state", vm_running ? "running" : "stopped"}});
+        } else {
+            add_check(checks, "vm_power", "skipped", "VMware running list is unavailable", {
+                {"vm_id", vm->id},
+                {"state", "unknown"},
+            });
         }
         try {
             const std::vector<std::string> snapshots = provider->list_snapshots(vm->vmx);
@@ -221,15 +256,52 @@ nlohmann::json Diagnostics::inspect_environment(const std::optional<std::string>
             add_check(checks, "snapshots", "failed", error.what(), {{"vm_id", vm->id}});
         }
 
+        if (!running_vms.has_value() || !vm_running) {
+            add_check(
+                checks,
+                "vmware_tools",
+                "skipped",
+                running_vms.has_value()
+                    ? "VMware Tools cannot run while the VM is stopped"
+                    : "VMware running list is unavailable",
+                {
+                    {"vm_id", vm->id},
+                    {"state", "not_checked"},
+                    {"power_state", running_vms.has_value() ? "stopped" : "unknown"},
+                });
+            continue;
+        }
         try {
             const std::string tools_state = provider->check_tools_state(vm->vmx);
-            const bool running = tools_state == "running";
+            bool running = tools_state == "running";
+            std::string tools_message = running
+                ? "VMware Tools is running"
+                : "VMware Tools is installed but its Guest service is not ready";
+            nlohmann::json tools_details = {
+                {"vm_id", vm->id},
+                {"state", tools_state},
+                {"power_state", "running"},
+            };
+            if (tools_state == "installed") {
+                try {
+                    static_cast<void>(provider->get_guest_ip_address(vm->vmx));
+                    running = true;
+                    tools_message =
+                        "VMware Tools responded to the Guest IP probe";
+                    tools_details["guest_ip_probe"] = "passed";
+                } catch (const std::exception& error) {
+                    tools_message =
+                        "VMware Tools is installed but its Guest channel is not ready";
+                    tools_details["guest_ip_probe"] = "failed";
+                    tools_details["guest_ip_probe_error"] = error.what();
+                }
+            }
             add_check(
                 checks,
                 "vmware_tools",
                 running ? "passed" : "failed",
-                running ? "VMware Tools is running" : "VMware Tools is not running",
-                {{"vm_id", vm->id}, {"state", tools_state}});
+                tools_message,
+                std::move(tools_details));
         } catch (const std::exception& error) {
             add_check(checks, "vmware_tools", "failed", error.what(), {{"vm_id", vm->id}});
         }
@@ -271,7 +343,7 @@ nlohmann::json Diagnostics::run_probe(
         {"checks", report.at("checks")},
     }; // 冷启动复检时保留最初的机器可读证据
 
-    if (!check_passed(report, "shared_folder")) {
+    if (!check_group_passed(report, "shared_folder")) {
         nlohmann::json agents = nlohmann::json::array();
         for (const VmConfig* vm : targets) {
             agents.push_back({
@@ -295,8 +367,31 @@ nlohmann::json Diagnostics::run_probe(
         return report;
     }
 
-    const std::chrono::seconds diagnostic_timeout =
-        only_vmware_tools_pending(report) ? std::min(timeout, kToolsStartupWait) : timeout;
+    if (!check_group_passed(report, "vm_power")) {
+        nlohmann::json agents = nlohmann::json::array();
+        for (const VmConfig* vm : targets) {
+            agents.push_back({
+                {"vm_id", vm->id},
+                {"status", "skipped"},
+                {"message", "Agent diagnostic was skipped because the VM is not running"},
+            });
+        }
+        report["mode"] = "full";
+        report["environment_status"] = environment_status;
+        report["status"] = "failed";
+        report["run_id"] = nullptr;
+        report["finished_at"] = utc_timestamp();
+        report["probe_summary"] = {
+            {"expected_agents", targets.size()},
+            {"passed", 0},
+            {"failed", 0},
+            {"skipped", targets.size()},
+        };
+        report["agents"] = std::move(agents);
+        return report;
+    }
+
+    const std::chrono::seconds diagnostic_timeout = timeout;
 
     nlohmann::json inventories = nlohmann::json::array();
     for (const VmConfig* vm : targets) {
@@ -356,6 +451,7 @@ nlohmann::json Diagnostics::run_probe(
         config_.shared_folder.host_root,
         std::filesystem::path(L"runs") / path_from_utf8(manifest.run_id));
     nlohmann::json agents = nlohmann::json::array();
+    std::map<std::string, nlohmann::json> latest_presence; // 与本次 echo 对应的 Agent 会话证据
     std::set<std::string> reported;
     std::map<std::string, std::string> validation_errors; // 瞬断期间保留最近一次读取错误
     const auto deadline = std::chrono::steady_clock::now() + diagnostic_timeout;
@@ -370,6 +466,7 @@ nlohmann::json Diagnostics::run_probe(
             if (std::filesystem::is_regular_file(presence_path, presence_error)) {
                 try {
                     const nlohmann::json presence = load_vm_presence(config_, *vm);
+                    latest_presence[vm->id] = presence;
                     validation_errors.erase(vm->id);
                     static_cast<void>(presence);
                 } catch (const JsonIoError& error) {
@@ -443,6 +540,18 @@ nlohmann::json Diagnostics::run_probe(
                     : "Agent result or stdout did not match the diagnostic task";
                 if (!result.error.empty()) {
                     agent["error"] = result.error;
+                }
+                const auto presence_it = latest_presence.find(vm->id);
+                if (presence_it != latest_presence.end()) {
+                    const nlohmann::json& presence = presence_it->second;
+                    agent["presence"] = {
+                        {"agent_version", presence.value("agent_version", std::string{})},
+                        {"binary_sha256", presence.value("binary_sha256", std::string{})},
+                        {"boot_id", presence.value("boot_id", std::string{})},
+                        {"process_id", presence.value("process_id", 0)},
+                        {"runtime", presence.value("runtime", nlohmann::json(nullptr))},
+                        {"updated_at", presence.value("updated_at", std::string{})},
+                    };
                 }
             } catch (const std::exception& error) {
                 validation_errors[vm->id] = error.what();

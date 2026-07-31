@@ -28,6 +28,8 @@ namespace {
 
 constexpr std::chrono::seconds kSnapshotRestoreRetryTimeout{30}; // 停机后等待 VMware 释放 VM 文件锁
 constexpr std::chrono::seconds kSnapshotRestoreRetryDelay{1}; // 快照恢复重试间隔
+constexpr std::chrono::seconds kPowerStateReconciliationTimeout{30}; // 等待运行列表收敛的上限
+constexpr std::chrono::milliseconds kPowerStateReconciliationDelay{100}; // 电源状态轮询间隔
 
 // 只重试 VMware 明确报告的瞬时文件锁冲突。
 [[nodiscard]] bool snapshot_restore_error_is_retryable(const Error& error) {
@@ -236,6 +238,20 @@ std::vector<std::filesystem::path> VmrunProvider::list_running() const {
     return paths;
 }
 
+bool VmrunProvider::is_running(const std::filesystem::path& vmx) const {
+    validate_vmx_file(vmx);
+    const std::filesystem::path expected = std::filesystem::absolute(vmx).lexically_normal();
+    const std::vector<std::filesystem::path> running = list_running();
+    return std::any_of(
+        running.begin(),
+        running.end(),
+        [&expected](const std::filesystem::path& candidate) {
+            const std::filesystem::path actual =
+                std::filesystem::absolute(candidate).lexically_normal();
+            return _wcsicmp(expected.native().c_str(), actual.native().c_str()) == 0;
+        });
+}
+
 std::vector<std::string> VmrunProvider::list_snapshots(const std::filesystem::path& vmx) const {
     validate_vmx_file(vmx);
     const std::string output = invoke({"listSnapshots", path_to_utf8(vmx)});
@@ -297,9 +313,44 @@ std::string VmrunProvider::check_tools_state(const std::filesystem::path& vmx) c
     return state;
 }
 
+std::string VmrunProvider::get_guest_ip_address(const std::filesystem::path& vmx) const {
+    validate_vmx_file(vmx);
+    const std::string output = invoke({"getGuestIPAddress", path_to_utf8(vmx), "-wait"});
+    std::istringstream lines(output);
+    std::string address;
+    if (!std::getline(lines, address)) {
+        throw Error("vmrun getGuestIPAddress returned an empty response");
+    }
+    trim_carriage_return(address);
+    if (address.empty()) {
+        throw Error("vmrun getGuestIPAddress returned an empty address");
+    }
+    std::string extra;
+    while (std::getline(lines, extra)) {
+        trim_carriage_return(extra);
+        if (!extra.empty()) {
+            throw Error("vmrun getGuestIPAddress returned multiple addresses");
+        }
+    }
+    return address;
+}
+
 void VmrunProvider::start(const std::filesystem::path& vmx) const {
     validate_vmx_file(vmx);
-    static_cast<void>(invoke({"start", path_to_utf8(vmx), "nogui"}));
+    std::string operation_error;
+    try {
+        static_cast<void>(invoke({"start", path_to_utf8(vmx), "nogui"}));
+    } catch (const std::exception& error) {
+        operation_error = error.what();
+    }
+    try {
+        wait_for_running_state(vmx, true);
+    } catch (const std::exception& error) {
+        throw Error(
+            operation_error.empty()
+                ? error.what()
+                : operation_error + "; start reconciliation failed: " + error.what());
+    }
 }
 
 void VmrunProvider::stop(const std::filesystem::path& vmx, const VmStopMode mode) const {
@@ -315,24 +366,51 @@ void VmrunProvider::stop(const std::filesystem::path& vmx, const VmStopMode mode
         default:
             throw Error("Unsupported vmrun stop mode");
     }
+    std::string operation_error;
     try {
         static_cast<void>(invoke({"stop", path_to_utf8(vmx), power_mode}));
-    } catch (...) {
-        const std::filesystem::path normalized = std::filesystem::absolute(vmx).lexically_normal();
-        const std::wstring expected = normalized.native();
-        const std::vector<std::filesystem::path> running = list_running();
-        const bool still_running = std::any_of(
-            running.begin(),
-            running.end(),
-            [&expected](const std::filesystem::path& candidate) {
-                const std::wstring actual =
-                    std::filesystem::absolute(candidate).lexically_normal().native();
-                return _wcsicmp(actual.c_str(), expected.c_str()) == 0;
-            });
-        if (still_running) {
-            throw;
-        }
+    } catch (const std::exception& error) {
+        operation_error = error.what();
     }
+    try {
+        wait_for_running_state(vmx, false);
+    } catch (const std::exception& error) {
+        throw Error(
+            operation_error.empty()
+                ? error.what()
+                : operation_error + "; stop reconciliation failed: " + error.what());
+    }
+}
+
+void VmrunProvider::wait_for_running_state(
+    const std::filesystem::path& vmx,
+    const bool expected_running) const {
+    const std::chrono::milliseconds reconciliation_timeout = std::min(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            kPowerStateReconciliationTimeout),
+        timeout_);
+    const auto deadline = std::chrono::steady_clock::now() +
+        reconciliation_timeout;
+    std::string last_error;
+    for (;;) {
+        try {
+            if (is_running(vmx) == expected_running) {
+                return;
+            }
+            last_error.clear();
+        } catch (const std::exception& error) {
+            last_error = error.what();
+        }
+        if (std::chrono::steady_clock::now() >= deadline) {
+            break;
+        }
+        std::this_thread::sleep_for(kPowerStateReconciliationDelay);
+    }
+    throw Error(
+        std::string("VM did not reach power state ") +
+        (expected_running ? "running" : "stopped") +
+        " before the reconciliation deadline" +
+        (last_error.empty() ? "" : "; last vmrun list error: " + last_error));
 }
 
 void VmrunProvider::revert_to_snapshot(
