@@ -117,6 +117,18 @@ Host 崩溃后先读取 `lab status`。仅当持久状态明确允许同一 `run
 进程退出视为实验室空闲。`lab unlock --force true` 只能在人已确认原 Host 进程死亡、Guest/外部系统状态和
 证据保留情况后执行。
 
+恢复快照前必须把 Guest、Shared Folder 和 Host 归档视为三个独立恢复域，并遵守以下门禁：
+
+1. 先保存报告、生命周期、租约和错误证据，确认原 Host 进程已退出或完成同一 `run_id` 的恢复。
+2. 在整理共享状态前硬停止目标 VM，避免旧 Agent 与 Host 继续写协议文件。
+3. 只归档和移走目标 VM 已明确放弃的 `updates`、旧 presence、inventory 和请求；不得清空共享根，不得删除
+   pending、人工门禁、未归档运行、claim 或其他 VM 的状态。
+4. 恢复并启动 VM 后，必须观察到恢复后生成的新 boot/session/presence；旧文件存在不能作为上线证据。
+5. 完整 `check` 通过后才能继续任务。失败时保留现场并停止自动重试。
+
+Host 不需要随 VM 重启宿主操作系统。需要的是确认旧 Host PID 已死亡、持久租约已恢复或人工解锁，然后启动
+新的 Host CLI 进程；禁止两个 Host 并发接管同一实验室。
+
 ## 禁止事项
 
 - 不在 Host 直接运行业务 Artifact。

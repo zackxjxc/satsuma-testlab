@@ -25,6 +25,24 @@ set(SATSUMA_REAL_LAB_CONFIG "" CACHE FILEPATH "lab.json used by real VMware targ
 set(SATSUMA_REAL_VM_ID "" CACHE STRING "VM ID used by real VMware targets")
 set(SATSUMA_REAL_SNAPSHOT "" CACHE STRING "Snapshot restored by the real VMware smoke target")
 set(SATSUMA_REAL_VMWARE_CONFIRM "" CACHE STRING "Explicit confirmation for destructive VMware smoke")
+set(
+    SATSUMA_REAL_VMWARE_SMOKE_ITERATIONS
+    3
+    CACHE STRING
+    "Restore/start/check iterations for the real VMware smoke target"
+)
+set(
+    SATSUMA_REAL_VMWARE_SMOKE_TIMEOUT_SECONDS
+    180
+    CACHE STRING
+    "Agent readiness timeout for each real VMware smoke iteration"
+)
+set(
+    SATSUMA_REAL_VMWARE_SMOKE_UPDATE_TIMEOUT_SECONDS
+    300
+    CACHE STRING
+    "Agent update timeout for each real VMware smoke iteration"
+)
 set(SATSUMA_REAL_CRASH_SCENARIO "All" CACHE STRING "Real crash recovery scenario")
 set_property(
     CACHE SATSUMA_REAL_CRASH_SCENARIO

@@ -322,8 +322,13 @@ if(SATSUMA_ENABLE_REAL_VMWARE_SMOKE)
             "-DVM_ID=${SATSUMA_REAL_VM_ID}"
             "-DSNAPSHOT=${SATSUMA_REAL_SNAPSHOT}"
             "-DCONFIRM=${SATSUMA_REAL_VMWARE_CONFIRM}"
+            "-DAGENT_BINARY=$<TARGET_FILE:SatsumaVM>"
+            "-DITERATIONS=${SATSUMA_REAL_VMWARE_SMOKE_ITERATIONS}"
+            "-DCHECK_TIMEOUT_SECONDS=${SATSUMA_REAL_VMWARE_SMOKE_TIMEOUT_SECONDS}"
+            "-DUPDATE_TIMEOUT_SECONDS=${SATSUMA_REAL_VMWARE_SMOKE_UPDATE_TIMEOUT_SECONDS}"
+            "-DOUTPUT_ROOT=${CMAKE_CURRENT_BINARY_DIR}/real-vmware-smoke"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/real_vmware_smoke.cmake"
-        DEPENDS SatsumaHost
+        DEPENDS SatsumaHost SatsumaVM
         USES_TERMINAL
         COMMENT "Run explicitly confirmed real VMware lifecycle smoke"
     )
