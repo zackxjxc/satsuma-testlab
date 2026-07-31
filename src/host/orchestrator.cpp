@@ -50,6 +50,8 @@ constexpr std::chrono::seconds kVmStateReconciliationTimeout{5}; // 启停报错
 constexpr std::chrono::milliseconds kVmStateReconciliationDelay{100}; // 状态对账轮询间隔
 constexpr std::chrono::seconds kSharedRunDeleteTimeout{5}; // 等待 Agent 释放共享目录句柄的上限
 constexpr std::chrono::milliseconds kSharedRunDeleteDelay{100}; // 共享目录删除重试间隔
+constexpr std::chrono::seconds kEvidenceArchiveStabilityTimeout{5}; // 等待运行证据停止变化的上限
+constexpr std::chrono::milliseconds kEvidenceArchiveStabilityDelay{100}; // 证据稳定性重试间隔
 
 // 返回指定编排在 Host 归档中的稳定根目录。
 [[nodiscard]] std::filesystem::path orchestration_archive_root(
@@ -482,10 +484,25 @@ void archive_run_evidence(
         archive_root,
         path_from_utf8("." + label + "-" + make_id("archive")));
     try {
-        const nlohmann::json source_files = build_evidence_file_manifest(source);
-        copy_tree_without_reparse_points(source, staging);
-        if (source_files != build_evidence_file_manifest(staging)) {
-            throw Error("Run evidence changed while it was being archived");
+        nlohmann::json source_files;
+        const auto deadline =
+            std::chrono::steady_clock::now() + kEvidenceArchiveStabilityTimeout;
+        for (;;) {
+            source_files = build_evidence_file_manifest(source);
+            copy_tree_without_reparse_points(source, staging);
+            const bool stable =
+                source_files == build_evidence_file_manifest(staging) &&
+                source_files == build_evidence_file_manifest(source);
+            if (stable) {
+                break;
+            }
+
+            std::error_code cleanup_error;
+            std::filesystem::remove_all(staging, cleanup_error);
+            if (cleanup_error || std::chrono::steady_clock::now() >= deadline) {
+                throw Error("Run evidence did not become stable before the archive deadline");
+            }
+            std::this_thread::sleep_for(kEvidenceArchiveStabilityDelay);
         }
         write_json_atomic(staging / L".archive-complete.json", {
             {"schema_version", 1},

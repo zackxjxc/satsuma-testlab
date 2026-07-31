@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <charconv>
+#include <cctype>
 #include <cstdint>
 #include <fstream>
 #include <iterator>
@@ -11,6 +12,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -23,6 +25,21 @@
 
 namespace satsuma::vmware {
 namespace {
+
+constexpr std::chrono::seconds kSnapshotRestoreRetryTimeout{30}; // 停机后等待 VMware 释放 VM 文件锁
+constexpr std::chrono::seconds kSnapshotRestoreRetryDelay{1}; // 快照恢复重试间隔
+
+// 只重试 VMware 明确报告的瞬时文件锁冲突。
+[[nodiscard]] bool snapshot_restore_error_is_retryable(const Error& error) {
+    std::string message = error.what();
+    std::transform(message.begin(), message.end(), message.begin(), [](const unsigned char character) {
+        return static_cast<char>(std::tolower(character));
+    });
+    return message.find("busy") != std::string::npos ||
+           message.find("locked") != std::string::npos ||
+           message.find("in use") != std::string::npos ||
+           message.find("being used") != std::string::npos;
+}
 
 // 负责自动关闭 Win32 HANDLE。
 class UniqueHandle {
@@ -323,7 +340,23 @@ void VmrunProvider::revert_to_snapshot(
     const std::string_view snapshot_name) const {
     validate_vmx_file(vmx);
     validate_snapshot_name(snapshot_name);
-    static_cast<void>(invoke({"revertToSnapshot", path_to_utf8(vmx), std::string(snapshot_name)}));
+    const auto deadline = std::chrono::steady_clock::now() + kSnapshotRestoreRetryTimeout;
+    for (;;) {
+        try {
+            static_cast<void>(invoke({
+                "revertToSnapshot",
+                path_to_utf8(vmx),
+                std::string(snapshot_name),
+            }));
+            return;
+        } catch (const Error& error) {
+            if (!snapshot_restore_error_is_retryable(error) ||
+                std::chrono::steady_clock::now() >= deadline) {
+                throw;
+            }
+            std::this_thread::sleep_for(kSnapshotRestoreRetryDelay);
+        }
+    }
 }
 
 void VmrunProvider::create_snapshot(

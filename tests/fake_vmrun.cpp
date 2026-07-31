@@ -25,6 +25,12 @@ namespace {
     return vmx.parent_path() / L"snapshot-reconciliation.state";
 }
 
+// 返回快照恢复瞬时失败场景使用的跨进程状态文件。
+[[nodiscard]] std::filesystem::path snapshot_restore_retry_state_path(
+    const std::filesystem::path& vmx) {
+    return vmx.parent_path() / L"snapshot-restore-retry.state";
+}
+
 // 返回电源关闭失败场景使用的跨进程运行状态文件。
 [[nodiscard]] std::filesystem::path running_vm_state_path() {
     return std::filesystem::temp_directory_path() / L"satsuma-fake-vmrun-running-vm.txt";
@@ -135,6 +141,20 @@ int wmain(const int argc, wchar_t* argv[]) {
          (std::filesystem::path(argv[2]).filename() == L"VM 01.vmx" &&
           std::wstring(argv[3]) == L"clean"))) {
         return 0;
+    }
+    if (argc == 4 &&
+        std::wstring(argv[1]) == L"revertToSnapshot" &&
+        std::filesystem::path(argv[2]).filename() == L"Snapshot Retry VM.vmx" &&
+        std::wstring(argv[3]) == L"Clean Base") {
+        const std::filesystem::path state_path = snapshot_restore_retry_state_path(argv[2]);
+        if (!std::filesystem::is_regular_file(state_path)) {
+            std::ofstream state(state_path, std::ios::binary | std::ios::trunc);
+            state << "retry";
+            std::cerr << "Error: The virtual machine is busy.\n";
+            return state ? 7 : 3;
+        }
+        std::error_code error;
+        return std::filesystem::remove(state_path, error) && !error ? 0 : 3;
     }
     if (argc == 4 &&
         std::wstring(argv[1]) == L"snapshot" &&

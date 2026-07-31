@@ -107,6 +107,7 @@ foreach(required_text IN ITEMS
     "ArgumentList.Add"
     "disableSharedFolders"
     "enableSharedFolders"
+    "'runs', 'finalize'"
     "finally"
     "claim schema 3"
     "summary.json")

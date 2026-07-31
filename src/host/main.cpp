@@ -503,10 +503,8 @@ int wmain(const int argc, wchar_t* argv[]) {
                 timeout);
             nlohmann::json output = result;
             output["manifest"] = manifest;
+            operation_lease->release(result.status == "succeeded" ? "released" : "failed");
             std::cout << output.dump(2) << '\n';
-            if (result.status == "succeeded") {
-                operation_lease->release("released");
-            }
             return result.status == "succeeded" ? 0 : 1;
         }
 

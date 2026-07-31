@@ -170,6 +170,42 @@ if(NOT host_version_result EQUAL 0 OR NOT host_version_output STREQUAL "0.2.0")
         "${host_version_error}\n${host_version_output}")
 endif()
 
+# Agent 返回失败终态后，Host 必须释放短操作租约并保留失败证据。
+execute_process(
+    COMMAND "${CMAKE_COMMAND}"
+        "-DUPDATE_ROOT=${share_path}/updates"
+        -DVM_ID=vm_01
+        -P "${CMAKE_CURRENT_LIST_DIR}/write_failed_update_result_after_publish.cmake"
+    COMMAND "${HOST_EXE}" agent update
+        --config "${TEST_ROOT}/lab.json"
+        --vm vm_01
+        --binary "${VM_EXE}"
+        --version 0.2.1
+        --timeout-seconds 10
+    RESULTS_VARIABLE failed_update_results
+    OUTPUT_VARIABLE failed_update_output
+    ERROR_VARIABLE failed_update_error
+)
+if(NOT failed_update_results STREQUAL "0;1" OR
+   NOT failed_update_output MATCHES "\"status\": \"failed\"")
+    message(FATAL_ERROR
+        "Failed Agent update did not return its terminal result (${failed_update_results}): "
+        "${failed_update_error}\n${failed_update_output}")
+endif()
+execute_process(
+    COMMAND "${HOST_EXE}" lab status --config "${TEST_ROOT}/lab.json"
+    RESULT_VARIABLE failed_update_status_result
+    OUTPUT_VARIABLE failed_update_status_output
+    ERROR_VARIABLE failed_update_status_error
+)
+if(NOT failed_update_status_result EQUAL 0 OR
+   NOT failed_update_status_output MATCHES "\"status\": \"available\"" OR
+   NOT failed_update_status_output MATCHES "\"state\": \"failed\"")
+    message(FATAL_ERROR
+        "Failed Agent update retained its lab lease: "
+        "${failed_update_status_error}\n${failed_update_status_output}")
+endif()
+
 # 命令结构和选项拼写错误必须在读取配置或调用 VMware 前失败。
 execute_process(
     COMMAND "${HOST_EXE}" unknown-command

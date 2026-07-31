@@ -552,6 +552,20 @@ try {
         throw 'Host report did not preserve exactly one successful fault step.'
     }
 
+    # 普通 run 的持久租约必须在终态报告确认后显式释放。
+    $finalizeResult = Invoke-HostCommand `
+        -ProcessArguments @(
+            'runs', 'finalize', '--config', $resolvedLabConfig,
+            '--run', $plan.RunId
+        ) `
+        -ExpectedExitCodes @(0) `
+        -Label "$($plan.RunId).finalize" `
+        -TimeoutSeconds 30
+    $finalized = ConvertFrom-HostOutput -Result $finalizeResult
+    if ($finalized.status -cne 'finalized' -or $finalized.run_id -cne $plan.RunId) {
+        throw 'Host did not finalize the completed Shared Folder fault run.'
+    }
+
     $summary.run = [ordered]@{
         status = 'passed'
         run_id = $plan.RunId
@@ -571,6 +585,7 @@ try {
         presence_write_during_outage = $presenceDuringOutage.ToString('o')
         canonical_result = $resultPath
         report = $reportResult.StdoutPath
+        finalize_report = $finalizeResult.StdoutPath
     }
     Write-JsonFile -Path $summaryPath -Value $summary
 

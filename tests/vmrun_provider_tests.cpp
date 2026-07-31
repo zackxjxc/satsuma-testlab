@@ -34,6 +34,7 @@ public:
         reconciled_stop_path_ = create_vmx(L"Stop Reconciled VM.vmx");
         failed_stop_path_ = create_vmx(L"Stop Failed VM.vmx");
         snapshot_path_ = create_vmx(L"Snapshot VM.vmx");
+        snapshot_retry_path_ = create_vmx(L"Snapshot Retry VM.vmx");
         create_snapshot_path_ = create_vmx(L"Create VM.vmx");
         list_snapshots_path_ = create_vmx(L"List Snapshots VM.vmx");
         delete_snapshot_path_ = create_vmx(L"Delete VM.vmx");
@@ -79,6 +80,11 @@ public:
     // 返回快照恢复测试使用的 VMX 路径。
     [[nodiscard]] const std::filesystem::path& snapshot_path() const noexcept {
         return snapshot_path_;
+    }
+
+    // 返回快照恢复瞬时失败重试测试使用的 VMX 路径。
+    [[nodiscard]] const std::filesystem::path& snapshot_retry_path() const noexcept {
+        return snapshot_retry_path_;
     }
 
     // 返回快照创建测试使用的 VMX 路径。
@@ -130,6 +136,7 @@ private:
     std::filesystem::path reconciled_stop_path_; // 已达到关机状态的非零退出路径
     std::filesystem::path failed_stop_path_; // 未达到关机状态的非零退出路径
     std::filesystem::path snapshot_path_;   // 快照恢复测试路径
+    std::filesystem::path snapshot_retry_path_; // 快照恢复瞬时失败重试测试路径
     std::filesystem::path create_snapshot_path_;  // 快照创建测试路径
     std::filesystem::path list_snapshots_path_;  // 快照列表测试路径
     std::filesystem::path delete_snapshot_path_;  // 快照删除测试路径
@@ -176,6 +183,7 @@ int wmain(const int argc, wchar_t* argv[]) {
         }
         expect(stop_failed, "vmrun stop failure was hidden while the VM remained running");
         provider.revert_to_snapshot(vmx.snapshot_path(), "Clean Base");
+        provider.revert_to_snapshot(vmx.snapshot_retry_path(), "Clean Base");
         provider.create_snapshot(vmx.create_snapshot_path(), "satsuma-ai-network-ready");
         provider.delete_snapshot(vmx.delete_snapshot_path(), "satsuma-ai-obsolete");
         std::cout << "SatsumaVmrunProviderTests passed\n";
