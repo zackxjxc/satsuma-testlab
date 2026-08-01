@@ -317,6 +317,38 @@ void test_agent_hardware_discovery_and_binding(const std::filesystem::path& root
     const std::filesystem::path sessions =
         shared_root / L"agents" / L"sessions" /
             L"564d1234-abcd-4321-9876-001122334455";
+    satsuma::write_json_atomic(
+        sessions / L"session-before-restart.json",
+        {
+            {"schema_version", 1},
+            {"protocol_version", 2},
+            {"lab_id", "host_identity_test"},
+            {"vm_id", hardware_id},
+            {"hardware_id", hardware_id},
+            {"session_id", "session-before-restart"},
+            {"status", "unbound"},
+            {"runtime", {{"started_at", "2026-08-01T00:00:00.000Z"}}},
+            {"updated_at", "2026-08-01T00:01:00.000Z"},
+        });
+    satsuma::write_json_atomic(
+        sessions / L"session-after-restart.json",
+        {
+            {"schema_version", 1},
+            {"protocol_version", 2},
+            {"lab_id", "host_identity_test"},
+            {"vm_id", hardware_id},
+            {"hardware_id", hardware_id},
+            {"session_id", "session-after-restart"},
+            {"status", "unbound"},
+            {"runtime", {{"started_at", "2026-08-01T00:01:01.000Z"}}},
+            {"updated_at", "2026-08-01T00:02:00.000Z"},
+        });
+    const nlohmann::json restarted = satsuma::host::discover_agents(config);
+    expect(
+        restarted.at("status") == "discovered" && restarted.at("collisions").empty(),
+        "Host treated sequential Agent sessions as a duplicated SMBIOS UUID");
+    std::filesystem::remove_all(sessions);
+
     for (const std::string& session_id : {"session-one", "session-two"}) {
         satsuma::write_json_atomic(
             sessions / satsuma::path_from_utf8(session_id + ".json"),

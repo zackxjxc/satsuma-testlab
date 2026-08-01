@@ -9,6 +9,7 @@
 #include <set>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include <nlohmann/json.hpp>
 
@@ -90,14 +91,19 @@ void validate_presence_common(
     return identities;
 }
 
-// 会话 heartbeat 使没有 VM 标识别名的未绑定 Agent 也能暴露重复硬件 UUID。
+// 会话 heartbeat 使没有 VM 标识别名的未绑定 Agent 也能暴露同时运行的重复硬件 UUID。
 [[nodiscard]] std::map<std::string, std::set<std::string>> collect_active_sessions(
     const LabConfig& config) {
-    std::map<std::string, std::set<std::string>> sessions;
+    struct SessionWindow {
+        std::string session_id;
+        std::string started_at;
+        std::string updated_at;
+    };
+    std::map<std::string, std::vector<SessionWindow>> windows;
     const std::filesystem::path sessions_root =
         config.shared_folder.host_root / L"agents" / L"sessions";
     if (!std::filesystem::is_directory(sessions_root)) {
-        return sessions;
+        return {};
     }
     for (const auto& hardware_entry : std::filesystem::directory_iterator(sessions_root)) {
         if (!hardware_entry.is_directory()) {
@@ -122,9 +128,44 @@ void validate_presence_common(
                 validate_presence_common(presence, config, hardware_id);
                 const std::string session_id = presence.value("session_id", std::string{});
                 validate_identifier(session_id, "presence session_id");
-                sessions[hardware_id].insert(session_id);
+                windows[hardware_id].push_back({
+                    session_id,
+                    presence.value("runtime", nlohmann::json::object())
+                        .value("started_at", std::string{}),
+                    presence.value("updated_at", std::string{}),
+                });
             } catch (...) {
             }
+        }
+    }
+
+    std::map<std::string, std::set<std::string>> sessions;
+    for (const auto& [hardware_id, candidates] : windows) {
+        std::set<std::string>& active = sessions[hardware_id];
+        for (std::size_t left = 0; left < candidates.size(); ++left) {
+            for (std::size_t right = left + 1; right < candidates.size(); ++right) {
+                const SessionWindow& first = candidates[left];
+                const SessionWindow& second = candidates[right];
+                const bool missing_timestamps =
+                    first.started_at.empty() || first.updated_at.empty() ||
+                    second.started_at.empty() || second.updated_at.empty();
+                const bool overlaps = missing_timestamps ||
+                    (first.started_at <= second.updated_at &&
+                     second.started_at <= first.updated_at);
+                if (overlaps) {
+                    active.insert(first.session_id);
+                    active.insert(second.session_id);
+                }
+            }
+        }
+        if (active.empty() && !candidates.empty()) {
+            const auto latest = std::max_element(
+                candidates.begin(),
+                candidates.end(),
+                [](const SessionWindow& left, const SessionWindow& right) {
+                    return left.updated_at < right.updated_at;
+                });
+            active.insert(latest->session_id);
         }
     }
     return sessions;
