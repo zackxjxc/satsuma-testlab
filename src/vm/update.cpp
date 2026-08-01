@@ -212,6 +212,17 @@ void remove_update_file_best_effort(const std::filesystem::path& path) noexcept 
     std::filesystem::remove(path, error);
 }
 
+// 停服后移除该 Service 拥有的旧 presence，避免 HGFS 拒绝新进程覆盖旧文件。
+void remove_service_presence(const AgentConfig& config) {
+    const std::filesystem::path canonical = hardware_presence_path(config);
+    remove_update_file(canonical);
+    const std::filesystem::path legacy =
+        config.shared_root / L"agents" / path_from_utf8(config.vm_id + ".json");
+    if (legacy != canonical) {
+        remove_update_file(legacy);
+    }
+}
+
 // 返回 presence 是否证明指定版本已经从目标 Service PID 上线。
 [[nodiscard]] bool presence_matches(
     const std::filesystem::path& presence_path,
@@ -496,7 +507,7 @@ void cleanup_committed_update(const UpdatePaths& paths) {
                 " does not match manifest version " + manifest.version);
         }
         verify_update_binary(paths.new_binary, manifest);
-        static_cast<void>(validate_update_source(paths, manifest));
+        const AgentConfig source_config = validate_update_source(paths, manifest);
         if (!std::filesystem::is_regular_file(paths.formal_binary) ||
             std::filesystem::file_size(paths.formal_binary) == 0) {
             throw Error("Current formal SatsumaVM.exe cannot be used as an update backup");
@@ -511,6 +522,7 @@ void cleanup_committed_update(const UpdatePaths& paths) {
             std::filesystem::copy_options::overwrite_existing);
         stop_attempted = true;
         operations.stop_service();
+        remove_service_presence(source_config);
         write_update_state(paths, manifest, "service_stopped");
 
         remove_update_file_best_effort(paths.backup_binary);
@@ -583,6 +595,7 @@ void cleanup_committed_update(const UpdatePaths& paths) {
                 operations.stop_service();
             } catch (...) {
             }
+            remove_service_presence(load_runtime_agent_config(paths.config));
             remove_update_file_best_effort(paths.new_binary);
             std::filesystem::rename(paths.formal_binary, paths.new_binary);
             candidate_is_formal = false;

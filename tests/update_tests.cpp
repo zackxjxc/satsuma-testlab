@@ -119,12 +119,19 @@ void enable_rebind(UpdateFixture& fixture) {
 // 验证成功更新严格清理 new、bak、manifest 和状态文件。
 void test_successful_update(const std::filesystem::path& root) {
     UpdateFixture fixture = make_fixture(root, "success");
+    const satsuma::AgentConfig original_config =
+        satsuma::load_agent_config(fixture.paths.config);
+    const std::filesystem::path canonical_presence =
+        original_config.shared_root / L"agents" / L"vm_01.json";
+    satsuma::write_json_atomic(canonical_presence, {{"status", "idle"}});
     int stop_calls = 0;
     int start_calls = 0;
     int presence_calls = 0;
     const satsuma::vm::AgentUpdateOperations operations{
         [&stop_calls] { ++stop_calls; },
-        [&start_calls] {
+        [&start_calls, &canonical_presence] {
+            expect(!std::filesystem::exists(canonical_presence),
+                "candidate Service started before stale presence cleanup");
             ++start_calls;
             return std::uint32_t{4321};
         },
@@ -611,21 +618,29 @@ void test_switch_failure_rollback(const std::filesystem::path& root) {
 // 验证新版本 presence 超时会停止候选并恢复旧版本。
 void test_presence_failure_rollback(const std::filesystem::path& root) {
     UpdateFixture fixture = make_fixture(root, "presence-failure");
+    const satsuma::AgentConfig original_config =
+        satsuma::load_agent_config(fixture.paths.config);
+    const std::filesystem::path canonical_presence =
+        original_config.shared_root / L"agents" / L"vm_01.json";
+    satsuma::write_json_atomic(canonical_presence, {{"status", "idle"}});
     int stop_calls = 0;
     int start_calls = 0;
     int presence_calls = 0;
     const satsuma::vm::AgentUpdateOperations operations{
         [&stop_calls] { ++stop_calls; },
-        [&start_calls] {
+        [&start_calls, &canonical_presence] {
+            expect(!std::filesystem::exists(canonical_presence),
+                "Service started before stale presence cleanup");
             ++start_calls;
             return start_calls == 1 ? std::uint32_t{6201} : std::uint32_t{6202};
         },
-        [&presence_calls](
+        [&presence_calls, &canonical_presence](
             const std::uint32_t,
             const std::string& version,
             const std::string& update_id) {
             ++presence_calls;
             if (presence_calls == 1) {
+                satsuma::write_json_atomic(canonical_presence, {{"status", "idle"}});
                 throw std::runtime_error("injected presence timeout");
             }
             expect(version == "0.1.0" && update_id.empty(),
