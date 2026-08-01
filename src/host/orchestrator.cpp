@@ -399,20 +399,29 @@ void archive_run_evidence(
         nlohmann::json source_files;
         const auto deadline =
             std::chrono::steady_clock::now() + kEvidenceArchiveStabilityTimeout;
+        std::string last_archive_error;
         for (;;) {
-            source_files = build_evidence_file_manifest(source);
-            copy_tree_without_reparse_points(source, staging);
-            const bool stable =
-                source_files == build_evidence_file_manifest(staging) &&
-                source_files == build_evidence_file_manifest(source);
-            if (stable) {
-                break;
+            try {
+                source_files = build_evidence_file_manifest(source);
+                copy_tree_without_reparse_points(source, staging);
+                const bool stable =
+                    source_files == build_evidence_file_manifest(staging) &&
+                    source_files == build_evidence_file_manifest(source);
+                if (stable) {
+                    break;
+                }
+                last_archive_error = "Run evidence changed while it was being archived";
+            } catch (const std::exception& error) {
+                // Agent 可能仍短暂持有 claim.lock；在稳定窗口内清理 staging 后重试。
+                last_archive_error = error.what();
             }
 
             std::error_code cleanup_error;
             std::filesystem::remove_all(staging, cleanup_error);
             if (cleanup_error || std::chrono::steady_clock::now() >= deadline) {
-                throw Error("Run evidence did not become stable before the archive deadline");
+                throw Error(
+                    "Run evidence did not become stable before the archive deadline" +
+                    (last_archive_error.empty() ? "" : ": " + last_archive_error));
             }
             std::this_thread::sleep_for(kEvidenceArchiveStabilityDelay);
         }

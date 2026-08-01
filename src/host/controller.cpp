@@ -92,6 +92,80 @@ void validate_artifact_destination(const std::filesystem::path& destination) {
         (attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
 }
 
+// 发布新版本前收敛已结束更新，并阻止未结束或损坏的旧更新被新请求越过。
+void prepare_agent_update_queue(
+    const std::filesystem::path& updates_root,
+    const std::string& lab_id,
+    const std::string& vm_id) {
+    std::vector<std::filesystem::path> update_directories;
+    for (const auto& entry : std::filesystem::directory_iterator(updates_root)) {
+        if (entry.path().filename().native().starts_with(L".")) {
+            continue;
+        }
+        if (entry.is_directory()) {
+            update_directories.push_back(entry.path());
+        }
+    }
+    std::sort(update_directories.begin(), update_directories.end());
+
+    for (const std::filesystem::path& update_directory : update_directories) {
+        const std::string directory_id = path_to_utf8(update_directory.filename());
+        if (is_reparse_point(update_directory)) {
+            throw Error("Agent update queue contains a reparse point: " + directory_id);
+        }
+
+        AgentUpdateManifest previous;
+        try {
+            previous = load_agent_update_manifest(update_directory / L"update.json");
+        } catch (const std::exception& error) {
+            throw Error(
+                "Agent update queue contains an invalid update " + directory_id +
+                ": " + error.what());
+        }
+        if (previous.lab_id != lab_id ||
+            previous.vm_id != vm_id ||
+            previous.update_id != directory_id) {
+            throw Error(
+                "Agent update queue manifest identity does not match directory: " +
+                directory_id);
+        }
+
+        const std::filesystem::path result_path = update_directory / L"result.json";
+        if (!std::filesystem::is_regular_file(result_path)) {
+            throw Error(
+                "Agent update is still pending; wait for or resolve it before publishing another: " +
+                previous.update_id);
+        }
+
+        AgentUpdateResult result;
+        try {
+            result = load_agent_update_result(result_path);
+        } catch (const std::exception& error) {
+            throw Error(
+                "Agent update queue contains an invalid result for " + previous.update_id +
+                ": " + error.what());
+        }
+        if (result.vm_id != vm_id ||
+            result.update_id != previous.update_id ||
+            result.version != previous.version) {
+            throw Error(
+                "Agent update result identity does not match its directory: " +
+                previous.update_id);
+        }
+        if (result.status == "failed") {
+            continue;
+        }
+
+        std::error_code cleanup_error;
+        std::filesystem::remove_all(update_directory, cleanup_error);
+        if (cleanup_error || std::filesystem::exists(update_directory)) {
+            throw Error(
+                "Successful agent update could not clean its shared directory before publishing another: " +
+                previous.update_id + ": " + cleanup_error.message());
+        }
+    }
+}
+
 }  // namespace
 
 Controller::Controller(LabConfig config) : config_(std::move(config)) {}
@@ -209,6 +283,7 @@ AgentUpdateManifest Controller::publish_agent_update(
         config_.shared_folder.host_root,
         std::filesystem::path(L"updates") / path_from_utf8(vm_id));
     std::filesystem::create_directories(updates_root);
+    prepare_agent_update_queue(updates_root, config_.lab_id, vm_id);
     const std::filesystem::path final_directory = resolve_under_root(
         updates_root,
         path_from_utf8(manifest.update_id));

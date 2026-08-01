@@ -34,6 +34,21 @@ void expect_error(Function&& function, const std::string& message) {
     throw std::runtime_error(message);
 }
 
+// 验证指定调用抛出的异常包含现场诊断信息。
+template <typename Function>
+void expect_error_contains(
+    Function&& function,
+    const std::string& expected,
+    const std::string& message) {
+    try {
+        function();
+    } catch (const std::exception& error) {
+        expect(std::string(error.what()).find(expected) != std::string::npos, message);
+        return;
+    }
+    throw std::runtime_error(message);
+}
+
 // 创建仅包含更新发布所需字段的实验室配置。
 [[nodiscard]] satsuma::LabConfig make_config(const std::filesystem::path& root) {
     satsuma::LabConfig config;
@@ -193,6 +208,73 @@ void test_host_update_flow(const std::filesystem::path& root) {
     }
 }
 
+// 验证旧更新队列不会让 Host 等待一个尚未被 Agent 处理的新请求。
+void test_host_update_queue_guard(const std::filesystem::path& root) {
+    const satsuma::LabConfig config = make_config(root / L"queue-guard");
+    std::filesystem::create_directories(config.shared_folder.host_root);
+    const std::filesystem::path candidate = root / L"queue-guard-candidate.exe";
+    std::ofstream(candidate, std::ios::binary) << "queue-guard-candidate";
+    const satsuma::host::Controller controller(config);
+
+    const satsuma::AgentUpdateManifest pending =
+        controller.publish_agent_update("vm_01", candidate, "0.1.1");
+    expect_error_contains(
+        [&controller, &candidate] {
+            static_cast<void>(controller.publish_agent_update(
+                "vm_01", candidate, "0.1.2"));
+        },
+        pending.update_id,
+        "Host did not identify the pending update that blocked a new publication");
+
+    const std::filesystem::path pending_directory =
+        update_directory(config.shared_folder.host_root, pending);
+    satsuma::AgentUpdateResult failed;
+    failed.update_id = pending.update_id;
+    failed.vm_id = pending.vm_id;
+    failed.version = pending.version;
+    failed.status = "failed";
+    failed.rollback_status = "succeeded";
+    failed.error = "injected failure";
+    failed.completed_at = "2026-08-01T00:01:00.000Z";
+    satsuma::write_json_atomic(pending_directory / L"result.json", failed);
+
+    const satsuma::AgentUpdateManifest succeeded =
+        controller.publish_agent_update("vm_01", candidate, "0.1.2");
+    expect(std::filesystem::exists(pending_directory),
+        "Host deleted failed update evidence while publishing a retry");
+    const std::filesystem::path succeeded_directory =
+        update_directory(config.shared_folder.host_root, succeeded);
+    satsuma::AgentUpdateResult success;
+    success.update_id = succeeded.update_id;
+    success.vm_id = succeeded.vm_id;
+    success.version = succeeded.version;
+    success.status = "succeeded";
+    success.rollback_status = "none";
+    success.process_id = 4321;
+    success.completed_at = "2026-08-01T00:02:00.000Z";
+    satsuma::write_json_atomic(succeeded_directory / L"result.json", success);
+
+    const satsuma::AgentUpdateManifest next =
+        controller.publish_agent_update("vm_01", candidate, "0.1.3");
+    expect(!std::filesystem::exists(succeeded_directory),
+        "Host retained successful update evidence before publishing the next update");
+    expect(std::filesystem::exists(
+        update_directory(config.shared_folder.host_root, next)),
+        "Host did not publish after cleaning a successful stale update");
+
+    const std::filesystem::path invalid_directory =
+        config.shared_folder.host_root / L"updates" / L"vm_02" / L"update-invalid";
+    std::filesystem::create_directories(invalid_directory);
+    std::ofstream(invalid_directory / L"update.json", std::ios::binary) << "{}";
+    expect_error_contains(
+        [&controller, &candidate] {
+            static_cast<void>(controller.publish_agent_update(
+                "vm_02", candidate, "0.1.1"));
+        },
+        "update-invalid",
+        "Host accepted an invalid legacy update directory");
+}
+
 }  // namespace
 
 // 运行 Host 更新通道测试并清理临时目录。
@@ -203,6 +285,7 @@ int main() {
     try {
         test_host_update_flow(root);
         test_host_rebind_publish(root);
+        test_host_update_queue_guard(root);
         std::filesystem::remove_all(root);
         std::cout << "SatsumaHostUpdateTests passed\n";
         return 0;
