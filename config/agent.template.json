@@ -3,7 +3,7 @@
   "schema_version": 1,
   "protocol_version": 3,
   "lab_id": "replace_with_lab_id",
-  "agent_version": "0.2.0",
+  "agent_version": "0.2.1",
   "shared_root": "\\\\vmware-host\\Shared Folders\\REQUIRED_SHARE_NAME",
   "storage_root": "D:\\SatsumaTestLab",
   "local_work_root": "D:\\SatsumaTestLab\\work",

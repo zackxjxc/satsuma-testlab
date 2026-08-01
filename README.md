@@ -69,7 +69,7 @@ bin\SatsumaHost.exe orchestrate --config config\lab.local.json --plan examples\m
 
 ## 项目状态
 
-当前版本为 `0.2.0`，只支持 Windows 与 VMware Workstation。真实 VMware 故障注入测试默认关闭，必须在
+当前版本为 `0.2.1`，只支持 Windows 与 VMware Workstation。真实 VMware 故障注入测试默认关闭，必须在
 专用实验 VM 上显式启用并确认。
 
 项目许可证尚未指定。在根目录出现明确的 `LICENSE` 前，源码默认不授予复制、修改或再分发许可。

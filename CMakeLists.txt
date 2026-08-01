@@ -1,12 +1,12 @@
 # Satsuma TestLab 的顶层构建配置。
 cmake_minimum_required(VERSION 3.25)
 
-project(SatsumaTestLab VERSION 0.2.0 LANGUAGES CXX)
+project(SatsumaTestLab VERSION 0.2.1 LANGUAGES CXX)
 
 include(GNUInstallDirs)
 
 if(NOT WIN32)
-    message(FATAL_ERROR "Satsuma 0.2.0 currently supports Windows only")
+    message(FATAL_ERROR "Satsuma 0.2.1 currently supports Windows only")
 endif()
 
 option(SATSUMA_BUILD_TESTS "Build Satsuma tests" ON)

@@ -16,7 +16,7 @@
     {
       "id": "vm_01",
       "vmx": "D:\\VM\\VM-01\\VM-01.vmx",
-      "agent_version": "0.2.0",
+      "agent_version": "0.2.1",
       "snapshots": {
         "base": "clean",
         "ai_prefix": "satsuma-ai-",
