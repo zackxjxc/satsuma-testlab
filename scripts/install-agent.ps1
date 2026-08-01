@@ -305,7 +305,23 @@ try {
     Remove-Item -Force -LiteralPath `
         $backupAgent, $newAgent, $backupConfig, $newConfig `
         -ErrorAction SilentlyContinue
-    Write-Host "SatsumaVM Service 已安装并启动：$targetAgent"
+
+    # 显示刚安装的实际 Service 状态、命令行和 Agent 版本
+    $installedService = Get-CimInstance `
+        -ClassName Win32_Service `
+        -Filter "Name='SatsumaVM'" `
+        -ErrorAction Stop
+    $installedVersion = (& $targetAgent --version | Out-String).Trim()
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($installedVersion)) {
+        throw "无法读取已安装 SatsumaVM 版本，退出码：$LASTEXITCODE"
+    }
+    $isRunning = $installedService.State -eq 'Running'
+    Write-Host 'SatsumaVM Service 安装结果：'
+    Write-Host "  服务状态：$($installedService.State)"
+    Write-Host "  正在运行：$isRunning"
+    Write-Host "  服务命令：$($installedService.PathName)"
+    Write-Host "  EXE 路径：$targetAgent"
+    Write-Host "  Agent 版本：$installedVersion"
 } catch {
     $installError = $_
     if (-not $installSucceeded) {

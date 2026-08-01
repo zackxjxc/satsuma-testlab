@@ -86,6 +86,12 @@ foreach(required_text IN ITEMS
     "Remove-LegacySatsumaTask"
     "Unregister-ScheduledTask"
     "--install-service"
+    "Get-CimInstance"
+    "Win32_Service"
+    "& $targetAgent --version"
+    "服务状态"
+    "EXE 路径"
+    "Agent 版本"
     "$installSucceeded = $true")
     string(FIND "${script_text}" "${required_text}" required_position)
     if(required_position EQUAL -1)
