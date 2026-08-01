@@ -78,6 +78,7 @@ void prepare_agent_hardware_identity(
     config.previous_vm_id.clear();
 
     const std::filesystem::path cache_path = hardware_cache_path(config);
+    std::string cached_vm_id; // 同一硬件上次经 Host 确认的逻辑标识
     if (std::filesystem::is_regular_file(cache_path)) {
         const nlohmann::json cache = load_json(cache_path);
         if (cache.value("schema_version", 0) != 1) {
@@ -88,6 +89,11 @@ void prepare_agent_hardware_identity(
         if (cached_hardware != config.hardware_id) {
             config.previous_hardware_id = cached_hardware;
             config.previous_vm_id = cache.value("vm_id", std::string{});
+        } else {
+            cached_vm_id = cache.value("vm_id", std::string{});
+            if (!cached_vm_id.empty()) {
+                validate_identifier(cached_vm_id, "cached Agent vm_id");
+            }
         }
     }
 
@@ -98,6 +104,9 @@ void prepare_agent_hardware_identity(
         config.identity_unbound = false;
     } else if (std::filesystem::is_regular_file(binding_path(config))) {
         config.vm_id = load_binding(config);
+        config.identity_unbound = false;
+    } else if (!cached_vm_id.empty()) {
+        config.vm_id = cached_vm_id;
         config.identity_unbound = false;
     } else {
         config.vm_id = config.hardware_id;

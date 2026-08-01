@@ -791,7 +791,7 @@ void test_agent_rejects_legacy_file_protocol(const std::filesystem::path& root) 
     expect(rejected, "production Agent accepted a legacy v1 file protocol config");
 }
 
-// 验证首次发现、Host 绑定和硬件变化迁移记录。
+// 验证首次发现、Host 绑定、本地回退和硬件变化迁移记录。
 void test_agent_hardware_identity(const std::filesystem::path& root) {
     constexpr char first_hardware[] = "564d1234-abcd-4321-9876-001122334455";
     constexpr char second_hardware[] = "564d5678-abcd-4321-9876-001122334455";
@@ -819,6 +819,31 @@ void test_agent_hardware_identity(const std::filesystem::path& root) {
             !config.identity_unbound && config.vm_id == "vm_01",
         "Host hardware binding was not applied without rewriting agent.json");
 
+    const std::filesystem::path binding_path =
+        config.shared_root / L"agents" /
+        L"564d1234-abcd-4321-9876-001122334455.binding.json";
+    std::filesystem::remove(binding_path);
+    satsuma::AgentConfig restarted;
+    restarted.lab_id = config.lab_id;
+    restarted.agent_version = config.agent_version;
+    restarted.shared_root = config.shared_root;
+    restarted.local_work_root = config.local_work_root;
+    satsuma::vm::prepare_agent_hardware_identity(restarted, first_hardware);
+    expect(
+        !restarted.identity_unbound && restarted.vm_id == "vm_01" &&
+            !restarted.vm_id_configured,
+        "Agent restart did not recover the Host-confirmed VM identity from local cache");
+
+    satsuma::write_json_atomic(binding_path, {
+        {"schema_version", 1},
+        {"lab_id", restarted.lab_id},
+        {"hardware_id", first_hardware},
+        {"vm_id", "vm_03"},
+    });
+    expect(
+        satsuma::vm::refresh_agent_binding(restarted) && restarted.vm_id == "vm_03",
+        "Restored Host binding did not replace the locally cached VM identity");
+
     satsuma::AgentConfig migrated;
     migrated.lab_id = config.lab_id;
     migrated.agent_version = config.agent_version;
@@ -827,7 +852,7 @@ void test_agent_hardware_identity(const std::filesystem::path& root) {
     satsuma::vm::prepare_agent_hardware_identity(migrated, second_hardware);
     expect(
         migrated.identity_unbound && migrated.previous_hardware_id == first_hardware &&
-            migrated.previous_vm_id == "vm_01",
+            migrated.previous_vm_id == "vm_03",
         "hardware change did not preserve the previous identity evidence");
     satsuma::vm::write_hardware_migration_marker(migrated);
     expect(
