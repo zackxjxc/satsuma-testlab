@@ -183,7 +183,30 @@ namespace {
 }  // namespace
 
 InventoryPublisher::InventoryPublisher(const AgentConfig& config, std::string boot_id)
-    : config_(config), boot_id_(std::move(boot_id)) {}
+    : config_(config), boot_id_(std::move(boot_id)) {
+    try {
+        const std::filesystem::path path = inventory_path(config_);
+        const nlohmann::json existing = load_json(path);
+        if (existing.value("schema_version", 0) != 1 ||
+            existing.value("lab_id", std::string{}) != config_.lab_id ||
+            existing.value("vm_id", std::string{}) != config_.vm_id ||
+            existing.value("hardware_id", std::string{}) != inventory_key(config_) ||
+            existing.value("observed_at", std::string{}).empty() ||
+            !existing.contains("script_engines") || !existing.at("script_engines").is_array() ||
+            !existing.contains("drives") || !existing.at("drives").is_array()) {
+            return;
+        }
+        digest_ = sha256_file(path);
+        observed_at_ = existing.at("observed_at").get<std::string>();
+        handled_request_id_ = existing.value("refresh_request_id", std::string{});
+        cache_ = existing;
+    } catch (...) {
+        cache_.reset();
+        digest_.clear();
+        observed_at_.clear();
+        handled_request_id_.clear();
+    }
+}
 
 void InventoryPublisher::synchronize() {
     std::string request_id;

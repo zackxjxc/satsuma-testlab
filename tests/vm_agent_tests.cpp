@@ -484,6 +484,13 @@ void test_inventory_cache_and_refresh(const std::filesystem::path& root) {
         config.shared_root / L"agents" / L"vm_01.inventory.json";
     const nlohmann::json original = satsuma::load_json(inventory_path);
     const std::string original_digest = publisher.digest();
+    satsuma::vm::InventoryPublisher restarted(config, "boot_inventory_restart");
+    restarted.synchronize();
+    expect(
+        satsuma::load_json(inventory_path) == original &&
+            restarted.digest() == original_digest,
+        "Agent rewrote an unchanged inventory during Service restart");
+
     satsuma::write_json_atomic(inventory_path, {{"tampered", true}});
     publisher.synchronize();
     expect(
