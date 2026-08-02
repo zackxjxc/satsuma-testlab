@@ -392,6 +392,50 @@ nlohmann::json Diagnostics::run_probe(
     }
 
     const std::chrono::seconds diagnostic_timeout = timeout;
+    const auto deadline = std::chrono::steady_clock::now() + diagnostic_timeout;
+    std::map<std::string, std::string> presence_errors;
+    std::set<std::string> ready_presence;
+    while (ready_presence.size() < targets.size() &&
+           std::chrono::steady_clock::now() < deadline) {
+        for (const VmConfig* vm : targets) {
+            if (ready_presence.contains(vm->id)) {
+                continue;
+            }
+            try {
+                static_cast<void>(load_vm_presence(config_, *vm));
+                ready_presence.insert(vm->id);
+                presence_errors.erase(vm->id);
+            } catch (const std::exception& error) {
+                presence_errors[vm->id] = error.what();
+            }
+        }
+        if (ready_presence.size() < targets.size()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+    }
+    if (ready_presence.size() < targets.size()) {
+        nlohmann::json waits = nlohmann::json::array();
+        for (const VmConfig* vm : targets) {
+            const bool ready = ready_presence.contains(vm->id);
+            nlohmann::json wait = {
+                {"vm_id", vm->id},
+                {"status", ready ? "ready" : "timeout"},
+                {"waited_seconds", diagnostic_timeout.count()},
+            };
+            if (!ready && presence_errors.contains(vm->id)) {
+                wait["last_error"] = presence_errors.at(vm->id);
+            }
+            waits.push_back(std::move(wait));
+        }
+        report["mode"] = "full";
+        report["environment_status"] = environment_status;
+        report["status"] = "failed";
+        report["run_id"] = nullptr;
+        report["finished_at"] = utc_timestamp();
+        report["agent_wait"] = std::move(waits);
+        report["agents"] = nlohmann::json::array();
+        return report;
+    }
 
     nlohmann::json inventories = nlohmann::json::array();
     for (const VmConfig* vm : targets) {
@@ -401,7 +445,12 @@ nlohmann::json Diagnostics::run_probe(
             try {
                 inventory = load_vm_inventory(config_, *vm);
             } catch (...) {
-                inventory = refresh_vm_inventory(config_, *vm, timeout);
+                const auto remaining = std::chrono::duration_cast<std::chrono::seconds>(
+                    deadline - std::chrono::steady_clock::now());
+                if (remaining.count() < 1) {
+                    throw Error("Agent readiness deadline expired before inventory refresh");
+                }
+                inventory = refresh_vm_inventory(config_, *vm, remaining);
                 refreshed = true;
             }
             inventories.push_back({
@@ -454,8 +503,6 @@ nlohmann::json Diagnostics::run_probe(
     std::map<std::string, nlohmann::json> latest_presence; // 与本次 echo 对应的 Agent 会话证据
     std::set<std::string> reported;
     std::map<std::string, std::string> validation_errors; // 瞬断期间保留最近一次读取错误
-    const auto deadline = std::chrono::steady_clock::now() + diagnostic_timeout;
-
     while (reported.size() < targets.size() && std::chrono::steady_clock::now() < deadline) {
         for (const VmConfig* vm : targets) {
             if (reported.contains(vm->id)) {

@@ -299,6 +299,18 @@ function(run_multi_vm_scenario name expected_exit expected_status vm_01_step vm_
     if(NOT diagnostic_count EQUAL 2)
         message(FATAL_ERROR "Multi-VM ${name} diagnostic count is invalid: ${host_output}")
     endif()
+    string(JSON final_power_count LENGTH "${host_output}" final_power_states)
+    if(NOT final_power_count EQUAL 2)
+        message(FATAL_ERROR "Multi-VM ${name} final power state count is invalid: ${host_output}")
+    endif()
+    foreach(power_index RANGE 0 1)
+        string(JSON final_power_state GET
+            "${host_output}" final_power_states ${power_index} state)
+        if(NOT final_power_state STREQUAL "stopped")
+            message(FATAL_ERROR
+                "Multi-VM ${name} left a target VM powered on: ${host_output}")
+        endif()
+    endforeach()
     foreach(diagnostic_index RANGE 0 1)
         string(JSON initial_status GET
             "${host_output}" diagnostics ${diagnostic_index} result initial_environment status)

@@ -31,6 +31,9 @@ public:
     // 发布 run 后把生成的 ID 绑定到持久租约。
     void attach_run(const std::string& run_id);
 
+    // 当前作用域异常退出时写入指定终态，适用于尚未发布任务的命令。
+    void release_on_scope_exit(const std::string& terminal_state);
+
     // 写入终态并允许后续写会话进入。
     void release(const std::string& terminal_state);
 

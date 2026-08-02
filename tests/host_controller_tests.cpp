@@ -399,6 +399,15 @@ void test_lab_lease_lifecycle(const std::filesystem::path& root) {
     first->release("released");
     first.reset();
 
+    auto scoped = satsuma::host::LabLease::acquire(config, config_path, "check");
+    scoped->release_on_scope_exit("failed");
+    scoped.reset();
+    const nlohmann::json scoped_status = satsuma::host::LabLease::status(config);
+    expect(
+        scoped_status.at("status") == "available" &&
+            scoped_status.at("lease").at("state") == "failed",
+        "safe command scope exit retained an active lab lease");
+
     const std::filesystem::path lease_path =
         config.host.archive_root / L"coordination" / L"lab-lease.json";
     satsuma::write_json_atomic(lease_path, {

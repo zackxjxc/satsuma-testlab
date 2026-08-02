@@ -19,7 +19,8 @@ public:
     // 执行任务计划并返回包含业务与恢复结果的机器可读报告。
     [[nodiscard]] nlohmann::json execute(
         const std::filesystem::path& plan_path,
-        std::chrono::seconds timeout) const;
+        std::chrono::seconds timeout,
+        std::chrono::seconds boot_wait = std::chrono::seconds(120)) const;
 
 private:
     LabConfig config_;  // 当前实验室配置

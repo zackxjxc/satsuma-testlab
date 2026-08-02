@@ -665,15 +665,76 @@ void apply_terminal_state_output(
     return false;
 }
 
+// 异常返回前按逆序关闭全部目标 VM，软关机失败时回退到硬停止。
+[[nodiscard]] nlohmann::json power_off_targets_best_effort(
+    const vmware::VmrunProvider& provider,
+    const std::vector<const VmConfig*>& vms) {
+    nlohmann::json results = nlohmann::json::array();
+    for (std::size_t reverse_index = vms.size(); reverse_index > 0; --reverse_index) {
+        const VmConfig& vm = *vms[reverse_index - 1];
+        nlohmann::json result = {{"vm_id", vm.id}};
+        try {
+            if (!provider.is_running(vm.vmx)) {
+                result["status"] = "already_stopped";
+                result["final_power_state"] = "stopped";
+                results.push_back(std::move(result));
+                continue;
+            }
+            try {
+                provider.stop(vm.vmx, vmware::VmStopMode::Soft);
+                result["mode"] = "soft";
+            } catch (const std::exception& soft_error) {
+                result["soft_error"] = soft_error.what();
+                provider.stop(vm.vmx, vmware::VmStopMode::Hard);
+                result["mode"] = "hard";
+            }
+            result["status"] = "stopped";
+            result["final_power_state"] = "stopped";
+        } catch (const std::exception& error) {
+            result["status"] = "failed";
+            result["final_power_state"] = "unknown";
+            result["error"] = error.what();
+        }
+        results.push_back(std::move(result));
+    }
+    return results;
+}
+
+// 读取生命周期动作完成后的逐台电源状态。
+[[nodiscard]] nlohmann::json collect_final_power_states(
+    const vmware::VmrunProvider& provider,
+    const std::vector<const VmConfig*>& vms) {
+    nlohmann::json states = nlohmann::json::array();
+    for (const VmConfig* vm : vms) {
+        try {
+            states.push_back({
+                {"vm_id", vm->id},
+                {"state", provider.is_running(vm->vmx) ? "running" : "stopped"},
+            });
+        } catch (const std::exception& error) {
+            states.push_back({
+                {"vm_id", vm->id},
+                {"state", "unknown"},
+                {"error", error.what()},
+            });
+        }
+    }
+    return states;
+}
+
 }  // namespace
 
 Orchestrator::Orchestrator(LabConfig config) : config_(std::move(config)) {}
 
 nlohmann::json Orchestrator::execute(
     const std::filesystem::path& plan_path,
-    const std::chrono::seconds timeout) const {
+    const std::chrono::seconds timeout,
+    const std::chrono::seconds boot_wait) const {
     if (timeout.count() < 1 || timeout.count() > 86'400) {
         throw Error("Orchestration timeout must be between 1 and 86400 seconds");
+    }
+    if (boot_wait.count() < 5 || boot_wait.count() > 300) {
+        throw Error("Agent boot wait must be between 5 and 300 seconds");
     }
 
     // 新运行依次准备、执行、取证、finally 和逆序清理；恢复只接管可安全重入的后半阶段。
@@ -756,6 +817,7 @@ nlohmann::json Orchestrator::execute(
             error);
         output["status"] = "MANUAL_INTERVENTION_REQUIRED";
         output["error"] = error;
+        output["power_off_results"] = power_off_targets_best_effort(provider, vms);
         return output;
     }
 
@@ -836,11 +898,12 @@ nlohmann::json Orchestrator::execute(
             Diagnostics diagnostics(config_);
             const std::chrono::seconds diagnostic_timeout = std::min(
                 timeout,
-                std::chrono::seconds(300)); // 编排总等待可超过独立诊断上限
+                boot_wait);
             if (vms.size() > 1) {
                 output["diagnostics"] = nlohmann::json::array();
             }
-            for (const VmConfig* vm : vms) {
+            for (std::size_t index = 0; index < vms.size(); ++index) {
+                const VmConfig* vm = vms[index];
                 nlohmann::json diagnostic = diagnostics.run_probe(vm->id, diagnostic_timeout);
                 if (vms.size() == 1) {
                     output["diagnostic"] = diagnostic;
@@ -892,6 +955,7 @@ nlohmann::json Orchestrator::execute(
             business_error);
         output["status"] = "RECOVERY_FAILED";
         output["error"] = business_error;
+        output["power_off_results"] = power_off_targets_best_effort(provider, vms);
         return output;
     }
 
@@ -929,6 +993,7 @@ nlohmann::json Orchestrator::execute(
             business_error);
         output["status"] = "MANUAL_INTERVENTION_REQUIRED";
         output["error"] = business_error;
+        output["power_off_results"] = power_off_targets_best_effort(provider, vms);
         return output;
     }
 
@@ -1046,6 +1111,7 @@ nlohmann::json Orchestrator::execute(
                 "VM lifecycle cleanup failed for " + policy.vm + ": " + error.what());
         }
     }
+    output["final_power_states"] = collect_final_power_states(provider, vms);
 
     if (cleanup_failed) {
         persist_run_transition(

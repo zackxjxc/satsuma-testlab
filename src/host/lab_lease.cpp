@@ -123,12 +123,20 @@ struct LabLease::State {
     std::mutex write_mutex;             // 续租与终态写入串行化
     std::jthread renewer;                // 原子续租线程
     bool released{false};               // 是否已写入终态
+    std::optional<std::string> scope_exit_state; // 未发布任务时的异常退出终态
 };
 
 LabLease::LabLease(std::unique_ptr<State> state) : state_(std::move(state)) {}
 
 LabLease::~LabLease() {
     if (state_ != nullptr) {
+        if (!state_->released && state_->scope_exit_state.has_value()) {
+            try {
+                release(*state_->scope_exit_state);
+            } catch (...) {
+                // 析构不能覆盖原始业务异常，租约文件保留 active 供人工处理。
+            }
+        }
         if (state_->renewer.joinable()) {
             state_->renewer.request_stop();
             state_->renewer.join();
@@ -202,6 +210,15 @@ void LabLease::attach_run(const std::string& run_id) {
     state_->lease["run_id"] = run_id;
     state_->lease["renewed_at"] = utc_timestamp();
     write_json_atomic(state_->path, state_->lease);
+    state_->scope_exit_state.reset();
+}
+
+void LabLease::release_on_scope_exit(const std::string& terminal_state) {
+    if (terminal_state.empty()) {
+        throw Error("Lab lease scope-exit state cannot be empty");
+    }
+    std::scoped_lock lock(state_->write_mutex);
+    state_->scope_exit_state = terminal_state;
 }
 
 void LabLease::release(const std::string& terminal_state) {
@@ -215,6 +232,7 @@ void LabLease::release(const std::string& terminal_state) {
     state_->lease["released_at"] = utc_timestamp();
     write_json_atomic(state_->path, state_->lease);
     state_->released = true;
+    state_->scope_exit_state.reset();
 }
 
 nlohmann::json LabLease::status(const LabConfig& config) {

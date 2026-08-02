@@ -107,7 +107,7 @@ void validate_command_options(
     } else if (command == L"run") {
         validate_options(options, {L"config", L"plan", L"timeout-seconds"});
     } else if (command == L"orchestrate") {
-        validate_options(options, {L"config", L"plan", L"timeout-seconds"});
+        validate_options(options, {L"config", L"plan", L"timeout-seconds", L"boot-wait-seconds"});
     } else if (command == L"report") {
         validate_options(options, {L"config", L"run", L"wait-seconds"});
     } else if (command == L"vm" && subcommand == L"start") {
@@ -144,7 +144,7 @@ void validate_command_options(
     } else if (command == L"lab" && subcommand == L"status") {
         validate_options(options, {L"config"});
     } else if (command == L"lab" && subcommand == L"recover") {
-        validate_options(options, {L"config", L"plan", L"timeout-seconds"});
+        validate_options(options, {L"config", L"plan", L"timeout-seconds", L"boot-wait-seconds"});
     } else if (command == L"lab" && subcommand == L"unlock") {
         validate_options(options, {L"config", L"force"});
     }
@@ -191,6 +191,22 @@ void validate_command_options(
     const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), seconds);
     if (error != std::errc{} || end != value.data() + value.size() || seconds < 1 || seconds > 86'400) {
         throw satsuma::Error("Orchestration timeout must be an integer between 1 and 86400 seconds");
+    }
+    return std::chrono::seconds(seconds);
+}
+
+// 解析 VM 启动后等待 Agent 文件通道就绪的秒数。
+[[nodiscard]] std::chrono::seconds parse_boot_wait(
+    const std::map<std::wstring, std::wstring>& options) {
+    const auto match = options.find(L"boot-wait-seconds");
+    if (match == options.end()) {
+        return std::chrono::seconds(120);
+    }
+    const std::string value = satsuma::path_to_utf8(match->second);
+    int seconds = 0;
+    const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), seconds);
+    if (error != std::errc{} || end != value.data() + value.size() || seconds < 5 || seconds > 300) {
+        throw satsuma::Error("Agent boot wait must be an integer between 5 and 300 seconds");
     }
     return std::chrono::seconds(seconds);
 }
@@ -295,7 +311,7 @@ void print_usage() {
         << "  SatsumaHost run --config lab.local.json --plan task.json "
            "[--timeout-seconds <1-300>]\n"
         << "  SatsumaHost orchestrate --config lab.local.json --plan task.json "
-           "[--timeout-seconds <1-86400>]\n"
+           "[--timeout-seconds <1-86400>] [--boot-wait-seconds <5-300>]\n"
         << "  SatsumaHost report --config lab.local.json --run <run-id> [--wait-seconds <1-86400>]\n"
         << "  SatsumaHost runs list --config lab.local.json\n"
         << "  SatsumaHost runs cancel --config lab.local.json --run <run-id> [--reason <text>]\n"
@@ -303,7 +319,7 @@ void print_usage() {
         << "  SatsumaHost runs prune --config lab.local.json --keep <0-10000>\n"
         << "  SatsumaHost lab status --config lab.local.json\n"
         << "  SatsumaHost lab recover --config lab.local.json --plan task.json "
-           "[--timeout-seconds <1-86400>]\n"
+           "[--timeout-seconds <1-86400>] [--boot-wait-seconds <5-300>]\n"
         << "  SatsumaHost lab unlock --config lab.local.json --force true\n";
 }
 
@@ -377,7 +393,9 @@ int wmain(const int argc, wchar_t* argv[]) {
                 config, config_path, "lab recover", plan.run_id, true);
             satsuma::host::Orchestrator orchestrator(config);
             const nlohmann::json output = orchestrator.execute(
-                plan_path, parse_orchestration_timeout(options));
+                plan_path,
+                parse_orchestration_timeout(options),
+                parse_boot_wait(options));
             const std::string status = output.at("status").get<std::string>();
             if (status == "COMPLETED" || status == "FAILED") {
                 lease->release("released");
@@ -441,6 +459,7 @@ int wmain(const int argc, wchar_t* argv[]) {
             }
             const std::chrono::seconds timeout = parse_diagnostic_timeout(options);
             auto lease = satsuma::host::LabLease::acquire(config, config_path, "check");
+            lease->release_on_scope_exit("failed");
             satsuma::host::Diagnostics diagnostics(std::move(config));
             const nlohmann::json report = diagnostics.run_probe(vm_id, timeout);
             lease->release("released");
@@ -464,6 +483,7 @@ int wmain(const int argc, wchar_t* argv[]) {
                 return 0;
             }
             if (subcommand == L"inventory refresh") {
+                operation_lease->release_on_scope_exit("failed");
                 const nlohmann::json output = satsuma::host::refresh_vm_inventory(
                     config, *vm, parse_diagnostic_timeout(options));
                 operation_lease->release("released");
@@ -725,7 +745,10 @@ int wmain(const int argc, wchar_t* argv[]) {
             auto lease = satsuma::host::LabLease::acquire(
                 config, config_path, "orchestrate", plan.run_id);
             satsuma::host::Orchestrator orchestrator(std::move(config));
-            const nlohmann::json output = orchestrator.execute(plan_path, timeout);
+            const nlohmann::json output = orchestrator.execute(
+                plan_path,
+                timeout,
+                parse_boot_wait(options));
             const std::string status = output.at("status").get<std::string>();
             if (status == "COMPLETED" || status == "FAILED") {
                 lease->release("released");
@@ -748,6 +771,7 @@ int wmain(const int argc, wchar_t* argv[]) {
                     "Task lifecycle policies require the Host orchestrator and cannot use run");
             }
             auto lease = satsuma::host::LabLease::acquire(config, config_path, "run");
+            lease->release_on_scope_exit("failed");
             satsuma::host::Diagnostics diagnostics(config);
             const std::chrono::seconds check_timeout = parse_diagnostic_timeout(options);
             std::vector<std::string> checked_vms;
