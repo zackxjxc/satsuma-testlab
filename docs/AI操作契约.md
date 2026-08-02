@@ -37,15 +37,16 @@ VM 范围，也不循环执行恢复或重启。
 3. 只有 check 返回 `ready` 后，才按 inventory 选择 EXE、CMD、Windows PowerShell 5.1 或 PowerShell 7。
 4. 明确 `restore_before`、成功/失败 VM 动作和 `cleanup`，不得猜测快照或默认删除失败现场。
 5. 从 Host JSON 输出读取 `run_id`，不要从目录名猜测。
-6. Host 返回终态后报告业务状态、归档位置、清理结果、VM 状态和租约是否释放。
+6. Host 返回终态后确认配置内本次使用的目标 VM 均已关闭电源，再报告业务状态、归档位置、清理结果、VM
+   状态和租约是否释放；关机失败时不得宣称任务已经完成。
 
 ```powershell
 bin\SatsumaHost.exe lab status --config config\lab.local.json
-bin\SatsumaHost.exe orchestrate --config config\lab.local.json --plan task.json --timeout-seconds 900
+bin\SatsumaHost.exe orchestrate --config config\lab.local.json --plan task.json --timeout-seconds 900 --boot-wait-seconds 120
 ```
 
 普通 `run` 仅用于确实不需要生命周期编排的兼容工作流。它同样自动执行目标 VM check，但发布后持久租约不会
-随 Host 进程退出；收齐终态、完成外部清理后必须执行 `runs finalize`。
+随 Host 进程退出；收齐终态、完成外部清理后必须执行 `runs finalize`，随后关闭并核对本次使用的全部 VM。
 
 ## 任务生成规则
 
@@ -67,21 +68,24 @@ bin\SatsumaHost.exe orchestrate --config config\lab.local.json --plan task.json 
 - 必须临时改源码时，使用测试分支、独立工作树或可审阅补丁，不混入正式交付代码。
 - spdlog 文件优先写到被测 EXE 同目录，并在 `collect_files` 中声明对应的 Guest 工作根相对路径。
 - 同时启用 console sink 和 file sink，关键错误及时 flush；stdout/stderr 是文件日志的补充。
+- 停止被测程序时先请求其正常退出并等待 flush；超过有限宽限时间后才能强制终止。进程被强杀后再等待不能
+  补写尚未刷新的用户态日志。
 - 不硬编码 Shared Folder。Agent 不扫描目录、不支持 glob，也不自动采集 OutputDebugString、ETW 或 Event Log。
 - 被测 EXE 崩溃但 Agent 存活时可收集已刷新日志；Agent、VM 或文件通道失效时不得声称 Guest 文件已归档。
 
 ## 生命周期规则
 
-多 VM 任务必须显式声明每台 VM 的 `on_success` 和 `on_failure`。推荐在专用测试 VM 上使用：
+多 VM 任务必须显式声明每台 VM 的 `on_success` 和 `on_failure`，并保证两条路径最终关闭 VM 电源：
 
 - 执行前需要固定基线时设置 `restore_before`。
-- 成功后无保留价值时使用 `stop`。
+- 成功后使用 `stop`。
 - 失败后需要恢复干净环境时使用带快照名的 `restore`。
-- 需要人工观察现场时使用 `leave_running`，并在结果中明确说明 VM 仍在运行。
+- 失败后不恢复快照时使用 `stop`；AI 不得生成 `leave_running`。需要分析现场时保留 Host 归档和 Shared
+  Folder 证据，而不是保持虚拟机开机。
 
 顶层 `cleanup` 只控制 Guest 工作目录和共享运行目录。建议成功时 Guest `delete`、失败时 `retain`；共享运行
 只有在 Host 归档校验成功后才能使用 `archive_then_delete`。`manual_intervention_required` 固定保留 Guest 和
-共享证据；`RECOVERY_FAILED` 或 cleanup failure 不得自动解锁实验室。
+共享证据，但仍应尽力关闭 VM；`RECOVERY_FAILED` 或 cleanup failure 不得自动解锁实验室。
 
 不要把唯一用户快照用作自动恢复目标。Satsuma 只允许创建/删除符合 `ai_prefix` 的快照；基础快照不属于
 自动化工具所有。
@@ -94,8 +98,8 @@ bin\SatsumaHost.exe orchestrate --config config\lab.local.json --plan task.json 
 | `pending` / 0 | 继续有限等待；不能宣称成功 |
 | `failed` / 1 | 报告失败步骤、退出码和错误，保留运行目录 |
 | 等待超时 / 3 | 查询 `runs list`，根据用户目标决定继续等待或取消 |
-| `manual_intervention_required` / 5 | 停止自动重试，报告 claim 恢复证据并请求人工判断 |
-| `RECOVERY_FAILED` / 4 | 报告清理/恢复失败，保留租约和证据，等待人工处理 |
+| `manual_intervention_required` / 5 | 停止自动重试，确认 VM 已关机，报告 claim 恢复证据并请求人工判断 |
+| `RECOVERY_FAILED` / 4 | 确认 VM 已关机，报告清理/恢复失败，保留租约和证据，等待人工处理 |
 
 非零被测程序退出码属于业务失败，不应通过重复运行、修改 `execution.json` 或删除 claim 来隐藏。
 

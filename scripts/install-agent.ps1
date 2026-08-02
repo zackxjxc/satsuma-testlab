@@ -318,10 +318,12 @@ try {
     $isRunning = $installedService.State -eq 'Running'
     Write-Host 'SatsumaVM Service 安装结果：'
     Write-Host "  服务状态：$($installedService.State)"
+    Write-Host "  启动类型：$($installedService.StartMode)"
     Write-Host "  正在运行：$isRunning"
     Write-Host "  服务命令：$($installedService.PathName)"
     Write-Host "  EXE 路径：$targetAgent"
     Write-Host "  Agent 版本：$installedVersion"
+    Write-Host '安装和 Host check 验收完成后，请关闭 VM 电源并重新制作包含本 Service 的基础快照。'
 } catch {
     $installError = $_
     if (-not $installSucceeded) {
