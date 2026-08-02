@@ -513,6 +513,43 @@ void test_inventory_cache_and_refresh(const std::filesystem::path& root) {
         "Agent ignored an explicit inventory refresh request");
 }
 
+// 验证硬件绑定后 Agent 在同一进程内立即重建新 VM 身份的清单。
+void test_inventory_rebind_without_restart(const std::filesystem::path& root) {
+    satsuma::AgentConfig config;
+    config.lab_id = "vm_agent_test";
+    config.vm_id = "564d1234-abcd-4321-9876-001122334455";
+    config.hardware_id = config.vm_id;
+    config.identity_unbound = true;
+    config.shared_root = root / L"share";
+    config.local_work_root = root / L"work";
+    std::filesystem::create_directories(config.shared_root / L"agents");
+    satsuma::write_json_atomic(
+        config.shared_root / L"agents" /
+            L"564d1234-abcd-4321-9876-001122334455.binding.json",
+        {
+            {"schema_version", 1},
+            {"lab_id", config.lab_id},
+            {"hardware_id", config.hardware_id},
+            {"vm_id", "vm_01"},
+        });
+
+    satsuma::vm::Agent agent(std::move(config));
+    static_cast<void>(agent.run_once());
+
+    const nlohmann::json inventory = satsuma::load_json(
+        root / L"share" / L"agents" /
+            L"564d1234-abcd-4321-9876-001122334455.inventory.json");
+    const nlohmann::json presence = satsuma::load_json(
+        root / L"share" / L"agents" /
+            L"564d1234-abcd-4321-9876-001122334455.json");
+    expect(
+        inventory.value("vm_id", std::string{}) == "vm_01" &&
+            inventory.value("hardware_id", std::string{}) ==
+                "564d1234-abcd-4321-9876-001122334455" &&
+            presence.value("vm_id", std::string{}) == "vm_01",
+        "Agent binding did not update inventory and presence in the same process");
+}
+
 // 验证 script 复用进程树、日志、退出码和精确文件收集。
 void test_powershell_script_execution(const std::filesystem::path& root) {
     const std::filesystem::path shared_root = root / L"share";
@@ -891,6 +928,7 @@ int main(const int argc, char* argv[]) {
         test_file_watch_and_agent_stop(root / L"agent-watch", fixture);
         test_file_channel_runtime_recovery(root / L"file-channel-recovery");
         test_inventory_cache_and_refresh(root / L"inventory");
+        test_inventory_rebind_without_restart(root / L"inventory-rebind");
         test_powershell_script_execution(root / L"powershell-script");
         test_cmd_script_execution(root / L"cmd-script");
         test_file_cancellation(root / L"file-cancellation", fixture);

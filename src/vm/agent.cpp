@@ -301,7 +301,9 @@ int Agent::run_once(const std::stop_token stop_token) {
     if (stop_token.stop_requested()) {
         return 0;
     }
-    static_cast<void>(refresh_agent_binding(config_));
+    if (refresh_agent_binding(config_)) {
+        inventory_.update_config(config_);
+    }
     inventory_.synchronize();
     write_presence();
     return execute_pending_runs(stop_token);
@@ -455,7 +457,9 @@ void Agent::run_watch(const std::stop_token stop_token) {
     while (!stop_token.stop_requested()) {
         bool file_channel_available = false;
         try {
-            static_cast<void>(refresh_agent_binding(config_));
+            if (refresh_agent_binding(config_)) {
+                inventory_.update_config(config_);
+            }
             inventory_.synchronize();
             write_presence();
             if (!config_.identity_unbound &&

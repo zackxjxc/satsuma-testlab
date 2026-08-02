@@ -18,6 +18,9 @@ public:
     // 保存当前 Agent 身份以及本次启动标识。
     InventoryPublisher(const AgentConfig& config, std::string boot_id);
 
+    // 身份绑定变化后更新发布配置并失效当前会话缓存。
+    void update_config(const AgentConfig& config);
+
     // 首次采集或处理显式刷新请求，并修复缺失、损坏的共享文件。
     void synchronize();
 

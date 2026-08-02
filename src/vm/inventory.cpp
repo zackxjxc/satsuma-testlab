@@ -208,6 +208,20 @@ InventoryPublisher::InventoryPublisher(const AgentConfig& config, std::string bo
     }
 }
 
+void InventoryPublisher::update_config(const AgentConfig& config) {
+    if (config_.lab_id == config.lab_id &&
+        config_.vm_id == config.vm_id &&
+        config_.hardware_id == config.hardware_id &&
+        config_.shared_root == config.shared_root) {
+        return;
+    }
+    config_ = config;
+    cache_.reset();
+    digest_.clear();
+    observed_at_.clear();
+    handled_request_id_.clear();
+}
+
 void InventoryPublisher::synchronize() {
     std::string request_id;
     const std::filesystem::path request_file = refresh_path(config_);
