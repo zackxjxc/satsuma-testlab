@@ -872,6 +872,14 @@ AgentServiceResult ensure_agent_service(
                 process_id = status.dwProcessId;
             }
         }
+        // 强制将注册表刷新到磁盘，防止 Warm 快照恢复后 Reset 导致服务键丢失。
+        // 正常重启或关机不受影响，但 Reset (=断电) 会丢弃所有尚未刷盘的注册表写入。
+        const LSTATUS flush_error = RegFlushKey(HKEY_LOCAL_MACHINE);
+        if (flush_error != ERROR_SUCCESS) {
+            throw Error(
+                "RegFlushKey(HKLM) failed after SatsumaVM service creation, error " +
+                std::to_string(flush_error));
+        }
         return {
             existed
                 ? (definition_matches ? ServiceChange::Unchanged : ServiceChange::Updated)
