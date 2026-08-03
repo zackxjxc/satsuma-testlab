@@ -40,16 +40,24 @@ namespace {
     wchar_t* argv[],
     const int start) {
     std::map<std::wstring, std::wstring> options;
-    for (int index = start; index < argc; index += 2) {
-        if (index + 1 >= argc || std::wstring(argv[index]).rfind(L"--", 0) != 0) {
+    for (int index = start; index < argc; ++index) {
+        const std::wstring token(argv[index]);
+        if (token.rfind(L"--", 0) != 0) {
             throw satsuma::Error("Options must use --name value pairs");
         }
-        const std::wstring name = std::wstring(argv[index]).substr(2);
+        const std::wstring name = token.substr(2);
         if (name.empty()) {
             throw satsuma::Error("Command-line option name must not be empty");
         }
-        if (!options.emplace(name, argv[index + 1]).second) {
+        // Boolean flag: no value follows, or the next token is another --name.
+        const bool has_value = index + 1 < argc &&
+            std::wstring(argv[index + 1]).rfind(L"--", 0) != 0;
+        const std::wstring value = has_value ? std::wstring(argv[index + 1]) : L"";
+        if (!options.emplace(name, value).second) {
             throw satsuma::Error("Duplicate command-line option: --" + option_name_utf8(name));
+        }
+        if (has_value) {
+            ++index; // consumed the value token
         }
     }
     return options;
@@ -105,7 +113,7 @@ void validate_command_options(
     } else if (command == L"discover") {
         validate_options(options, {L"config"});
     } else if (command == L"run") {
-        validate_options(options, {L"config", L"plan", L"timeout-seconds"});
+        validate_options(options, {L"config", L"plan", L"timeout-seconds", L"vm"});
     } else if (command == L"orchestrate") {
         validate_options(options, {L"config", L"plan", L"timeout-seconds", L"boot-wait-seconds"});
     } else if (command == L"report") {
@@ -136,7 +144,7 @@ void validate_command_options(
     } else if (command == L"runs" && subcommand == L"list") {
         validate_options(options, {L"config"});
     } else if (command == L"runs" && subcommand == L"cancel") {
-        validate_options(options, {L"config", L"run", L"reason"});
+        validate_options(options, {L"config", L"run", L"reason", L"break-lease"});
     } else if (command == L"runs" && subcommand == L"prune") {
         validate_options(options, {L"config", L"keep"});
     } else if (command == L"runs" && subcommand == L"finalize") {
@@ -309,12 +317,13 @@ void print_usage() {
         << "  SatsumaHost agent inventory refresh --config lab.local.json --vm <vm-id> "
            "[--timeout-seconds <1-300>]\n"
         << "  SatsumaHost run --config lab.local.json --plan task.json "
-           "[--timeout-seconds <1-300>]\n"
+           "[--timeout-seconds <1-300>] [--vm <vm-id>]\n"
         << "  SatsumaHost orchestrate --config lab.local.json --plan task.json "
            "[--timeout-seconds <1-86400>] [--boot-wait-seconds <5-300>]\n"
         << "  SatsumaHost report --config lab.local.json --run <run-id> [--wait-seconds <1-86400>]\n"
         << "  SatsumaHost runs list --config lab.local.json\n"
-        << "  SatsumaHost runs cancel --config lab.local.json --run <run-id> [--reason <text>]\n"
+        << "  SatsumaHost runs cancel --config lab.local.json --run <run-id> "
+           "[--reason <text>] [--break-lease]\n"
         << "  SatsumaHost runs finalize --config lab.local.json --run <run-id>\n"
         << "  SatsumaHost runs prune --config lab.local.json --keep <0-10000>\n"
         << "  SatsumaHost lab status --config lab.local.json\n"
@@ -413,7 +422,7 @@ int wmain(const int argc, wchar_t* argv[]) {
             command == L"vm" ||
             (command == L"snapshot" && subcommand != L"list") ||
             (command == L"agent" && subcommand != L"inventory") ||
-            (command == L"runs" && (subcommand == L"cancel" || subcommand == L"prune"));
+            (command == L"runs" && subcommand == L"prune");
         std::unique_ptr<satsuma::host::LabLease> operation_lease;
         if (short_write_operation) {
             operation_lease = satsuma::host::LabLease::acquire(
@@ -429,20 +438,29 @@ int wmain(const int argc, wchar_t* argv[]) {
                     config, config_path, run_id).dump(2) << '\n';
                 return 0;
             }
-            satsuma::host::Controller controller(std::move(config));
-            if (subcommand == L"list") {
-                std::cout << controller.list_runs().dump(2) << '\n';
-                return 0;
-            }
             if (subcommand == L"cancel") {
+                // 在创建 Controller 之前获取租约，因为 Controller 会 move config。
                 const std::string run_id = satsuma::path_to_utf8(require_option(options, L"run"));
                 const auto reason_option = options.find(L"reason");
                 const std::string reason = reason_option == options.end()
                     ? "Cancellation requested by SatsumaHost"
                     : satsuma::path_to_utf8(reason_option->second);
+                const bool break_lease = options.find(L"break-lease") != options.end();
+                auto cancel_lease = satsuma::host::LabLease::acquire(
+                    config,
+                    config_path,
+                    "runs cancel",
+                    run_id,
+                    break_lease);
+                satsuma::host::Controller controller(std::move(config));
                 const nlohmann::json output = controller.cancel_run(run_id, reason);
-                operation_lease->release("released");
+                cancel_lease->release("released");
                 std::cout << output.dump(2) << '\n';
+                return 0;
+            }
+            satsuma::host::Controller controller(std::move(config));
+            if (subcommand == L"list") {
+                std::cout << controller.list_runs().dump(2) << '\n';
                 return 0;
             }
             const nlohmann::json output = controller.prune_runs(parse_run_retention(options));
@@ -774,10 +792,17 @@ int wmain(const int argc, wchar_t* argv[]) {
             lease->release_on_scope_exit("failed");
             satsuma::host::Diagnostics diagnostics(config);
             const std::chrono::seconds check_timeout = parse_diagnostic_timeout(options);
+            const auto run_vm_option = options.find(L"vm");
+            const bool has_run_vm_filter = run_vm_option != options.end();
+            const std::string run_vm_filter = has_run_vm_filter
+                ? satsuma::path_to_utf8(run_vm_option->second) : "";
             std::vector<std::string> checked_vms;
             nlohmann::json checks = nlohmann::json::array();
             bool checks_ready = true;
             for (const satsuma::TaskStep& step : plan.steps) {
+                if (has_run_vm_filter && step.vm != run_vm_filter) {
+                    continue;
+                }
                 if (std::find(checked_vms.begin(), checked_vms.end(), step.vm) != checked_vms.end()) {
                     continue;
                 }
