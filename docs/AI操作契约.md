@@ -56,11 +56,65 @@ bin\SatsumaHost.exe orchestrate --config config\lab.local.json --plan task.json 
 - 每个 `script.script` 必须匹配同一 VM 的脚本 Artifact；只允许 `cmd`、`windows_powershell` 和 `pwsh`。
 - Artifact `source` 使用 Host 绝对路径；目标只放在 `artifacts/` 下。
 - 所有步骤给出有限 `timeout_seconds`。不要用无限等待模拟服务常驻。
-- 默认 `run_as=system`；只有业务明确需要活动用户配置文件或桌面资源时才用 `interactive_user`。
+- **`run_as` 必须逐步骤选择，不得不加判断地默认使用 `system`。** 你在代表用户执行任务，不是在
+|  安装驱动或管理系统服务——选择原则见下方的「运行身份选择」。
 - 默认 `retry_safe=false`。只有重复执行不会造成额外副作用时才设为 `true`。
 - 只收集任务声明需要的相对文件，不递归打包整个用户目录、临时目录或磁盘。
 - Windows PowerShell 5.1 非 ASCII 脚本使用 UTF-8 BOM；PowerShell 7 使用 UTF-8 无 BOM；CMD 使用 UTF-8
   无 BOM + CRLF，并显式保留目标命令退出码。
+
+## 运行身份选择
+
+**这是安全决策，不是便利性选项。** 每个步骤的 `run_as` 必须单独评估，不得因为 Schema 默认值是
+`system` 就全部使用 SYSTEM。
+
+Agent Windows Service 以 `LocalSystem` 运行，它可以启动两种进程：
+
+| `run_as` | 进程身份 | 能力 | 风险 |
+|---|---|---|---|
+| `system` | `NT AUTHORITY\SYSTEM` | 完整管理员权限、可写 `Program Files` 和 `HKLM`、可启停服务 | 误操作可损坏系统；被测试程序以 SYSTEM 运行时也获得同等权限 |
+| `interactive_user` | 活动控制台用户 | 普通用户权限、可访问用户配置文件/桌面/`HKCU` | 仅在该用户处于登录状态时可用；无 Session 时步骤直接失败 |
+
+**默认使用 `system` 意味着你授权被测程序以 SYSTEM 身份读写整个系统。** 在绝大多数测试场景中
+这不是必要的——软件安装验证可能需要 admin 权限，但功能测试、脚本验证、文件处理通常只需用户权限。
+
+### 选择流程
+
+在生成每个 `execute` 或 `script` 步骤前，逐一回答：
+
+1. **被测程序需要管理员权限吗？** 例如安装 MSI、写 `HKLM`、启停 Windows Service、操作硬件驱动
+   — 如果是，使用 `system`；如果否，继续。
+2. **被测程序需要用户桌面、用户配置文件或 `HKCU` 吗？** 例如 GUI 自动化、读写
+   `%APPDATA%`、使用用户证书存储 — 如果是，使用 `interactive_user`；如果否，继续。
+3. **两者都不需要？** 使用 `interactive_user`。这是安全默认——用完成任务所需的最低权限运行，
+   既能验证被测程序不越权，也能防止意外系统修改。
+
+### 典型场景
+
+| 场景 | 推荐 `run_as` | 原因 |
+|---|---|---|
+| 安装/卸载 MSI 或 EXE 安装包 | `system` | 安装程序通常需要 admin 权限 |
+| 运行已安装的应用程序功能测试 | `interactive_user` | 普通用户即可运行，且能访问用户配置 |
+| GUI 自动化、截图、桌面交互 | `interactive_user` | 需要用户 Session 和桌面 |
+| 服务启停、驱动加载、系统配置修改 | `system` | 需要管理员权限 |
+| 编译、单元测试、命令行工具 | `interactive_user` | 通常不需要 admin，且更接近真实使用场景 |
+| 读写 `%ProgramData%` 或共享目录 | `interactive_user` | Agent 已为运行目录设置用户 ACL |
+| 注册表 `HKLM` 写入 | `system` | 普通用户无权限 |
+| 注册表 `HKCU` 读写 | `interactive_user` | SYSTEM 的 HKCU 不是目标用户的 |
+
+### 多步骤混合
+
+同一个任务中，安装步骤用 `system`、功能验证步骤用 `interactive_user` 是正确且推荐的。
+Agent 可以在同一次轮询中顺序执行两种身份，你不必为了统一而把所有步骤升权为 SYSTEM。
+
+### 无权执行时的行为
+
+- 选择 `system`：被测程序以 SYSTEM 运行，可以做任何事。
+- 选择 `interactive_user` 但 Guest 无活动控制台用户时，步骤立即失败并写入稳定错误
+  `No interactive Windows user session available`，不会阻塞后续 SYSTEM 步骤。
+
+如果你不确定该选哪个，优先选 `interactive_user`。测试的目的是发现真实使用中的问题，
+而以 SYSTEM 运行的被测程序看到的是用户永远见不到的环境。
 
 ## 日志适配
 
