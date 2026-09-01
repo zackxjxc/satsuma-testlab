@@ -167,6 +167,7 @@ target_compile_definitions(
 target_link_libraries(SatsumaVmci PUBLIC SatsumaCore cppzmq-static)
 
 add_library(SatsumaHostLib STATIC
+    src/host/cli.cpp
     src/host/controller.cpp
     src/host/diagnostics.cpp
     src/host/gateway.cpp
