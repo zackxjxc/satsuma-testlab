@@ -65,7 +65,7 @@ New-Item -ItemType Directory -Path $preparingDirectory -Force | Out-Null
 
 try {
     $cmake = Get-Command cmake -ErrorAction Stop
-    & $cmake.Source --install $buildPath --config $Configuration --prefix $preparingDirectory
+    & $cmake.Source --install $buildPath --config $Configuration --prefix $preparingDirectory --component SatsumaRuntime
     if ($LASTEXITCODE -ne 0) {
         throw "CMake install failed with exit code $LASTEXITCODE"
     }
@@ -93,6 +93,8 @@ try {
             [void]$entryNames.Add($entry.FullName)
         }
         $expectedDocuments = @(
+            "$packageName/README.md",
+            "$packageName/AI-START-HERE.md",
             "$packageName/更新日志.md",
             "$packageName/贡献指南.md",
             "$packageName/安全策略.md",
@@ -102,11 +104,15 @@ try {
             "$packageName/docs/架构.md",
             "$packageName/docs/开发指南.md",
             "$packageName/docs/协议.md",
-            "$packageName/docs/用户指南.md"
+            "$packageName/docs/用户指南.md",
+            "$packageName/skills/satsuma-testlab/SKILL.md",
+            "$packageName/skills/satsuma-testlab/references/setup.md",
+            "$packageName/skills/satsuma-testlab/references/task-authoring.md",
+            "$packageName/skills/satsuma-testlab/references/operations.md"
         )
         foreach ($document in $expectedDocuments) {
             if (-not $entryNames.Contains($document)) {
-                throw "Release archive is missing a Unicode document entry: $document"
+                throw "Release archive is missing a required document entry: $document"
             }
         }
         $expectedTemplates = @(

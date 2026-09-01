@@ -1,0 +1,14 @@
+# AI 使用入口
+
+你正在操作 Satsuma TestLab @PROJECT_VERSION@ 的 Windows x64 发行包。
+
+在执行任何测试、配置或虚拟机操作前，完整读取 [`skills/satsuma-testlab/SKILL.md`](skills/satsuma-testlab/SKILL.md)，
+并按照其中的版本检查、授权边界和工作流程行动。`SKILL.md` 会指示你在什么情况下按需读取其 `references/`
+资料。
+
+不要只根据本文件生成命令。本文件仅用于发现 Skill，不替代 Skill、JSON Schema 或用户授权。
+
+如果当前 AI 客户端不支持自动加载 Agent Skills，就把 `SKILL.md` 及其要求的引用文件作为普通 Markdown
+读取。只有能够访问本地发行目录并执行 Windows 命令的 AI 代理才能实际操作本工具。
+
+开始时应先向用户确认测试目标和获准控制的实验 VM；不得猜测 VMX、快照名、VMCI endpoint 或 Agent 身份。

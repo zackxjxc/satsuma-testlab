@@ -5,6 +5,36 @@ project(SatsumaTestLab VERSION 0.3.0 LANGUAGES CXX)
 
 include(GNUInstallDirs)
 
+set(SATSUMA_SKILL_DIR "${CMAKE_CURRENT_SOURCE_DIR}/skills/satsuma-testlab")
+file(READ "${SATSUMA_SKILL_DIR}/SKILL.md" SATSUMA_SKILL_MANIFEST)
+string(
+    REGEX MATCH
+    "satsuma-version:[ \t]*\"([^\"]+)\""
+    SATSUMA_SKILL_VERSION_MATCH
+    "${SATSUMA_SKILL_MANIFEST}"
+)
+if(NOT SATSUMA_SKILL_VERSION_MATCH)
+    message(FATAL_ERROR "skills/satsuma-testlab/SKILL.md does not declare metadata.satsuma-version")
+endif()
+if(NOT CMAKE_MATCH_1 STREQUAL PROJECT_VERSION)
+    message(FATAL_ERROR
+        "Satsuma Skill version ${CMAKE_MATCH_1} does not match project version ${PROJECT_VERSION}"
+    )
+endif()
+
+set(SATSUMA_GENERATED_PACKAGING_DIR "${CMAKE_CURRENT_BINARY_DIR}/packaging")
+file(MAKE_DIRECTORY "${SATSUMA_GENERATED_PACKAGING_DIR}")
+configure_file(
+    packaging/README.release.md.in
+    "${SATSUMA_GENERATED_PACKAGING_DIR}/README.md"
+    @ONLY
+)
+configure_file(
+    packaging/AI-START-HERE.md.in
+    "${SATSUMA_GENERATED_PACKAGING_DIR}/AI-START-HERE.md"
+    @ONLY
+)
+
 # 统一项目目标的 MSVC 严格警告和外部头文件降噪策略。
 function(satsuma_enable_strict_warnings target)
     if(MSVC)
@@ -19,7 +49,7 @@ function(satsuma_treat_angle_headers_as_external target)
 endfunction()
 
 if(NOT WIN32)
-    message(FATAL_ERROR "Satsuma 0.3.0 currently supports Windows only")
+    message(FATAL_ERROR "Satsuma ${PROJECT_VERSION} currently supports Windows only")
 endif()
 
 option(SATSUMA_BUILD_TESTS "Build Satsuma tests" ON)
@@ -300,12 +330,17 @@ if(SATSUMA_BUILD_TESTS)
     add_subdirectory(tests)
 endif()
 
-install(TARGETS SatsumaHost SatsumaVM RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+install(
+    TARGETS SatsumaHost SatsumaVM
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+    COMPONENT SatsumaRuntime
+)
 install(
     FILES
         config/lab.template.json
         config/agent.template.json
     DESTINATION config
+    COMPONENT SatsumaRuntime
 )
 install(
     FILES
@@ -313,9 +348,15 @@ install(
         examples/multi-vm-task.json
         examples/windows-script-task.json
     DESTINATION examples
+    COMPONENT SatsumaRuntime
 )
-install(FILES scripts/install-agent.ps1 DESTINATION scripts)
-install(DIRECTORY schemas/ DESTINATION schemas FILES_MATCHING PATTERN "*.json")
+install(FILES scripts/install-agent.ps1 DESTINATION scripts COMPONENT SatsumaRuntime)
+install(
+    DIRECTORY schemas/
+    DESTINATION schemas
+    COMPONENT SatsumaRuntime
+    FILES_MATCHING PATTERN "*.json"
+)
 install(
     FILES
         docs/AI操作契约.md
@@ -325,15 +366,28 @@ install(
         docs/协议.md
         docs/开发指南.md
     DESTINATION docs
+    COMPONENT SatsumaRuntime
 )
 install(
     FILES
-        README.md
         更新日志.md
         贡献指南.md
         安全策略.md
         第三方声明.md
     DESTINATION .
+    COMPONENT SatsumaRuntime
+)
+install(
+    FILES
+        "${SATSUMA_GENERATED_PACKAGING_DIR}/README.md"
+        "${SATSUMA_GENERATED_PACKAGING_DIR}/AI-START-HERE.md"
+    DESTINATION .
+    COMPONENT SatsumaRuntime
+)
+install(
+    DIRECTORY "${SATSUMA_SKILL_DIR}"
+    DESTINATION skills
+    COMPONENT SatsumaRuntime
 )
 
 add_custom_target(

@@ -1,0 +1,70 @@
+# Satsuma TestLab @PROJECT_VERSION@
+
+Satsuma TestLab 是专为 AI 代理设计的 Windows 虚拟机自动化测试工具。它通过 VMware VMCI 在 Host 与 Guest
+之间传输任务、Artifact、日志和结果，不依赖 Guest 网卡、IP、DNS 或 VPN 状态。
+
+本目录是可直接使用的 Windows x64 便携发行包，不需要在 Host 安装，也不需要 CMake。
+
+## 让 AI 开始工作
+
+把本目录提供给能够读取本地文件并执行终端命令的 AI 代理，然后告诉它：
+
+> 阅读 `AI-START-HERE.md`，使用 Satsuma TestLab 帮我在 VMware 虚拟机中完成测试。
+
+发行包自带的 `skills/satsuma-testlab/` 与当前二进制版本配套。支持 Agent Skills 的客户端可以直接加载该
+Skill，也可以把整个目录安装到客户端的 Skill 目录。安装位置由客户端决定；不支持自动发现 Skill 的 AI
+仍然可以直接读取 `SKILL.md`。
+
+## 人工开始使用
+
+1. 阅读 [`docs/首次配置.md`](docs/首次配置.md)，填写 Host 和 Agent 配置。
+2. 在 Guest 中安装并启动 `SatsumaVM.exe` Windows Service。
+3. 在 Host 的独立终端启动 VMCI 网关：
+
+```powershell
+bin\SatsumaHost.exe gateway --config config\lab.local.json
+```
+
+4. 在另一个 Host 终端完成发现、绑定和验收：
+
+```powershell
+bin\SatsumaHost.exe discover --config config\lab.local.json
+bin\SatsumaHost.exe agent rebind --config config\lab.local.json --vm vm_01 --hardware-id <uuid>
+bin\SatsumaHost.exe check --config config\lab.local.json --vm vm_01 --timeout-seconds 180
+```
+
+5. 使用带生命周期策略的任务执行完整测试：
+
+```powershell
+bin\SatsumaHost.exe orchestrate --config config\lab.local.json --plan examples\multi-vm-task.json --timeout-seconds 900
+```
+
+完整操作方法见 [`docs/用户指南.md`](docs/用户指南.md)。
+
+## 目录说明
+
+| 目录或文件 | 用途 |
+|---|---|
+| `bin/` | Host CLI 与 Guest Agent |
+| `config/` | 待填写的 Host/Agent 配置模板 |
+| `examples/` | 可校验的任务示例 |
+| `schemas/` | 配置、任务、状态与结果的 JSON Schema |
+| `scripts/` | Guest Agent 安装脚本 |
+| `docs/` | 用户、配置、架构、协议与开发文档 |
+| `skills/satsuma-testlab/` | 与本版本配套的 AI Skill |
+| `AI-START-HERE.md` | AI 代理入口 |
+
+## 版本与文档
+
+本发行包中的程序、Schema、示例、文档和 Skill 均对应 Satsuma TestLab @PROJECT_VERSION@。升级程序时应整体
+替换发行目录，并同步更新已经安装到 AI 客户端中的 Skill；不要混用不同发行版本的二进制和 Skill。
+
+项目的 `master` 分支文档描述正在开发的版本。稳定版本文档以相应 Git Tag 和 GitHub Release 中的副本为准。
+
+## 安全边界
+
+Satsuma 面向可信实验室，不是恶意样本沙箱，也不提供跨租户隔离。恢复快照、强制停止 VM 和以 SYSTEM 身份
+运行程序都可能丢失或改变 Guest 状态，执行前必须确认目标 VM 与授权范围。
+
+项目许可证尚未指定。根目录出现明确的 `LICENSE` 前，源码和发行物默认不授予复制、修改或再分发许可；第三方
+组件信息见 [`第三方声明.md`](第三方声明.md)。
