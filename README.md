@@ -110,4 +110,4 @@ bin\SatsumaHost.exe orchestrate --config config\lab.local.json --plan examples\m
 
 当前只支持 Windows 与 VMware Workstation。真实 VMware 故障注入测试默认关闭，必须在专用实验 VM 上显式启用并确认。`master` 分支文档描述正在开发的版本；稳定版本请查看对应 Git Tag 或 GitHub Release，发行包内的程序、Schema、示例、文档和 Skill 属于同一个版本快照。
 
-项目许可证尚未指定。在根目录出现明确的 `LICENSE` 前，源码默认不授予复制、修改或再分发许可。
+项目采用 [Apache License 2.0](LICENSE) 开源；第三方组件仍适用各自的许可证。

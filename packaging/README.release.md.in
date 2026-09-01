@@ -66,5 +66,5 @@ bin\SatsumaHost.exe orchestrate --config config\lab.local.json --plan examples\m
 Satsuma 面向可信实验室，不是恶意样本沙箱，也不提供跨租户隔离。恢复快照、强制停止 VM 和以 SYSTEM 身份
 运行程序都可能丢失或改变 Guest 状态，执行前必须确认目标 VM 与授权范围。
 
-项目许可证尚未指定。根目录出现明确的 `LICENSE` 前，源码和发行物默认不授予复制、修改或再分发许可；第三方
-组件信息见 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)。
+Satsuma TestLab 按 [`LICENSE`](LICENSE) 中的 Apache License 2.0 许可；第三方组件信息见
+[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)。

@@ -98,6 +98,7 @@ try {
             "$packageName/CHANGELOG.md",
             "$packageName/CODE_OF_CONDUCT.md",
             "$packageName/CONTRIBUTING.md",
+            "$packageName/LICENSE",
             "$packageName/SECURITY.md",
             "$packageName/THIRD_PARTY_NOTICES.md",
             "$packageName/docs/AI操作契约.md",

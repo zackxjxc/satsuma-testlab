@@ -110,4 +110,4 @@ The detailed documentation is currently maintained in Chinese:
 
 Satsuma currently supports Windows and VMware Workstation only. Destructive real-VMware fault-injection tests are disabled by default and require explicit opt-in on dedicated test VMs. Documentation on `master` describes the development version; stable documentation belongs to the corresponding Git tag or GitHub Release.
 
-No project license has been granted yet. Until an explicit `LICENSE` file appears at the repository root, the source code may not be copied, modified, or redistributed by default.
+The project is licensed under the [Apache License 2.0](LICENSE). Third-party components remain subject to their respective licenses.

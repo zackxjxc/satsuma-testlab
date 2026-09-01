@@ -399,6 +399,7 @@ install(
         CHANGELOG.md
         CODE_OF_CONDUCT.md
         CONTRIBUTING.md
+        LICENSE
         SECURITY.md
         THIRD_PARTY_NOTICES.md
     DESTINATION .
