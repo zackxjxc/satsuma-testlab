@@ -167,7 +167,7 @@ execute_process(
     ERROR_VARIABLE host_version_error
 )
 string(STRIP "${host_version_output}" host_version_output)
-if(NOT host_version_result EQUAL 0 OR NOT host_version_output STREQUAL "0.2.1")
+if(NOT host_version_result EQUAL 0 OR NOT host_version_output STREQUAL "0.3.0")
     message(FATAL_ERROR
         "SatsumaHost --version returned an unexpected result: "
         "${host_version_error}\n${host_version_output}")
@@ -183,7 +183,7 @@ execute_process(
         --config "${TEST_ROOT}/lab.json"
         --vm vm_01
         --binary "${VM_EXE}"
-        --version 0.2.1
+        --version 0.3.0
         --timeout-seconds 10
     RESULTS_VARIABLE failed_update_results
     OUTPUT_VARIABLE failed_update_output
