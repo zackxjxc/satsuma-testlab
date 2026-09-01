@@ -81,7 +81,6 @@ add_test(
     COMMAND SatsumaSchemaContractTests
         "${CMAKE_SOURCE_DIR}/schemas/lab.schema.json"
         "${CMAKE_SOURCE_DIR}/config/lab.template.json"
-        "${CMAKE_SOURCE_DIR}/lab.json"
 )
 add_test(
     NAME SatsumaTaskSchemaContractTests

@@ -9,6 +9,7 @@
 #include <vector>
 
 #include <windows.h>
+#include <shlobj.h>
 #include <winternl.h>
 
 #include "satsuma/core/errors.hpp"
@@ -134,6 +135,41 @@ namespace {
         {"edition", edition},
         {"path", path_to_utf8(path)},
     };
+}
+
+// 优先从系统的 Program Files 位置发现 PowerShell 7，再回退到受系统 PATH 管理的路径。
+[[nodiscard]] std::filesystem::path find_pwsh() {
+    for (const int folder_id : {CSIDL_PROGRAM_FILES, CSIDL_PROGRAM_FILESX86}) {
+        std::array<wchar_t, MAX_PATH> folder{};
+        if (SUCCEEDED(SHGetFolderPathW(
+                nullptr,
+                folder_id,
+                nullptr,
+                SHGFP_TYPE_CURRENT,
+                folder.data()))) {
+            const std::filesystem::path candidate = std::filesystem::path(folder.data()) /
+                L"PowerShell" / L"7" / L"pwsh.exe";
+            if (std::filesystem::is_regular_file(candidate)) {
+                return candidate;
+            }
+        }
+    }
+
+    std::vector<wchar_t> resolved(32768);
+    const DWORD length = SearchPathW(
+        nullptr,
+        L"pwsh.exe",
+        nullptr,
+        static_cast<DWORD>(resolved.size()),
+        resolved.data(),
+        nullptr);
+    if (length > 0 && length < static_cast<DWORD>(resolved.size())) {
+        const std::filesystem::path candidate(resolved.data());
+        if (std::filesystem::is_regular_file(candidate)) {
+            return candidate;
+        }
+    }
+    return {};
 }
 
 // 采集全部本地固定盘容量。
@@ -302,7 +338,7 @@ nlohmann::json InventoryPublisher::collect(const std::string& request_id) const 
     }
     const std::filesystem::path powershell = std::filesystem::path(windows_directory) /
         L"System32" / L"WindowsPowerShell" / L"v1.0" / L"powershell.exe";
-    const std::filesystem::path pwsh = std::filesystem::path(L"C:\\Program Files\\PowerShell\\7\\pwsh.exe");
+    const std::filesystem::path pwsh = find_pwsh();
     const std::string observed = utc_timestamp();
     nlohmann::json inventory = {
         {"schema_version", 2},
