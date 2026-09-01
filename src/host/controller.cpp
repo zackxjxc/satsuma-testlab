@@ -200,7 +200,7 @@ RunManifest Controller::create_run(const TaskPlan& plan) const {
     }
 
     // 点号前缀目录不会被 Agent 扫描，完成后再整体原子改名。
-    const std::string staging_name = ".preparing-" + manifest.run_id + "-" + make_id("stage");
+    const std::string staging_name = ".preparing-" + make_id("stage");
     const std::filesystem::path staging_directory = resolve_under_root(
         config_.transport.state_root,
         std::filesystem::path(L"runs") / path_from_utf8(staging_name));
@@ -288,7 +288,7 @@ AgentUpdateManifest Controller::publish_agent_update(
         path_from_utf8(manifest.update_id));
     const std::filesystem::path staging_directory = resolve_under_root(
         updates_root,
-        path_from_utf8(".preparing-" + manifest.update_id + "-" + make_id("stage")));
+        path_from_utf8(".preparing-" + make_id("stage")));
     if (std::filesystem::exists(final_directory)) {
         throw Error("Agent update directory already exists: " + path_to_utf8(final_directory));
     }

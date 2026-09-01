@@ -208,7 +208,7 @@ void validate_plan_scope(
     std::filesystem::create_directories(runs_root);
     const std::filesystem::path staging = resolve_under_root(
         runs_root,
-        path_from_utf8(".preparing-" + run_id + "-" + make_id("orchestration")));
+        path_from_utf8(".preparing-" + make_id("orchestration")));
     OrchestrationIdentity identity{
         vm_ids.size() == 1 ? 1 : 2,
         run_id,
