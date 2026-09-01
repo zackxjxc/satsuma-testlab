@@ -3,7 +3,6 @@
 
 #include <algorithm>
 #include <cctype>
-#include <initializer_list>
 #include <limits>
 #include <string>
 #include <string_view>
@@ -12,40 +11,18 @@
 
 #include "satsuma/core/errors.hpp"
 #include "satsuma/core/id.hpp"
+#include "satsuma/core/json_contract.hpp"
 #include "satsuma/core/json_io.hpp"
 #include "satsuma/core/path.hpp"
 
 namespace satsuma {
 namespace {
 
-// 拒绝拼写错误或无消费者的更新字段。
-void reject_unknown_fields(
-    const nlohmann::json& value,
-    const std::initializer_list<std::string_view> allowed_fields,
-    const std::string_view context) {
-    if (!value.is_object()) {
-        throw Error(std::string(context) + " must be an object");
-    }
-    for (auto field = value.cbegin(); field != value.cend(); ++field) {
-        if (std::find(allowed_fields.begin(), allowed_fields.end(), field.key()) ==
-            allowed_fields.end()) {
-            throw Error("Unknown field in " + std::string(context) + ": " + field.key());
-        }
-    }
-}
-
 // 读取非空必需字符串字段。
 [[nodiscard]] std::string required_string(
     const nlohmann::json& value,
     const char* field) {
-    if (!value.contains(field) || !value.at(field).is_string()) {
-        throw Error(std::string("Missing or invalid string field: ") + field);
-    }
-    const std::string result = value.at(field).get<std::string>();
-    if (result.empty()) {
-        throw Error(std::string("Update field must not be empty: ") + field);
-    }
-    return result;
+    return required_non_empty_string(value, field, "Update field");
 }
 
 // 验证 SHA-256 使用 64 位小写十六进制格式。

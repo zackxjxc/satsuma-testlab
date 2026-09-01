@@ -81,6 +81,42 @@ add_test(
         -P "${CMAKE_CURRENT_SOURCE_DIR}/schema_files_test.cmake"
 )
 
+add_executable(SatsumaSchemaContractTests schema_contract_tests.cpp)
+target_compile_features(SatsumaSchemaContractTests PRIVATE cxx_std_20)
+target_include_directories(
+    SatsumaSchemaContractTests
+    PRIVATE "${jsoncons_SOURCE_DIR}/include"
+)
+if(MSVC)
+    target_compile_options(
+        SatsumaSchemaContractTests
+        PRIVATE /W4 /permissive- /utf-8 /EHsc /external:anglebrackets /external:W0
+    )
+endif()
+
+add_test(
+    NAME SatsumaAgentSchemaContractTests
+    COMMAND SatsumaSchemaContractTests
+        "${CMAKE_SOURCE_DIR}/schemas/agent.schema.json"
+        "${CMAKE_SOURCE_DIR}/config/agent.template.json"
+        "${CMAKE_SOURCE_DIR}/examples/agent-vm-01.json"
+)
+add_test(
+    NAME SatsumaLabSchemaContractTests
+    COMMAND SatsumaSchemaContractTests
+        "${CMAKE_SOURCE_DIR}/schemas/lab.schema.json"
+        "${CMAKE_SOURCE_DIR}/config/lab.template.json"
+        "${CMAKE_SOURCE_DIR}/lab.json"
+)
+add_test(
+    NAME SatsumaTaskSchemaContractTests
+    COMMAND SatsumaSchemaContractTests
+        "${CMAKE_SOURCE_DIR}/schemas/task.schema.json"
+        "${CMAKE_SOURCE_DIR}/examples/hello-vm-task.json"
+        "${CMAKE_SOURCE_DIR}/examples/multi-vm-task.json"
+        "${CMAKE_SOURCE_DIR}/examples/windows-script-task.json"
+)
+
 add_executable(
     SatsumaVmClaimStoreTests
     claim_store_tests.cpp

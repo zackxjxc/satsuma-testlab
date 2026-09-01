@@ -129,6 +129,7 @@ add_library(SatsumaCore STATIC
     src/core/config.cpp
     src/core/hardware_identity.cpp
     src/core/id.cpp
+    src/core/json_contract.cpp
     src/core/json_io.cpp
     src/core/lifecycle.cpp
     src/core/path.cpp
@@ -272,6 +273,16 @@ if(MSVC)
 endif()
 
 if(SATSUMA_BUILD_TESTS)
+    # 测试阶段使用完整 Draft 2020-12 实现验证公开 Schema 和示例；不进入生产二进制。
+    set(JSONCONS_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    FetchContent_Declare(
+        jsoncons
+        GIT_REPOSITORY https://github.com/danielaparker/jsoncons.git
+        GIT_TAG v1.7.0
+        GIT_SHALLOW TRUE
+    )
+    FetchContent_MakeAvailable(jsoncons)
+
     enable_testing()
     add_subdirectory(tests)
 endif()

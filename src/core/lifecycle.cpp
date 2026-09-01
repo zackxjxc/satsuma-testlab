@@ -1,36 +1,18 @@
 // Satsuma Host 运行生命周期状态和原子持久化实现。
 #include "satsuma/core/lifecycle.hpp"
 
-#include <algorithm>
 #include <array>
-#include <initializer_list>
-#include <string_view>
 #include <utility>
 
 #include <nlohmann/json.hpp>
 
 #include "satsuma/core/errors.hpp"
 #include "satsuma/core/id.hpp"
+#include "satsuma/core/json_contract.hpp"
 #include "satsuma/core/json_io.hpp"
 
 namespace satsuma {
 namespace {
-
-// 持久化状态与公开 Schema 一样拒绝未知字段。
-void reject_unknown_fields(
-    const nlohmann::json& value,
-    const std::initializer_list<std::string_view> allowed_fields,
-    const std::string_view context) {
-    if (!value.is_object()) {
-        throw Error(std::string(context) + " must be an object");
-    }
-    for (auto field = value.cbegin(); field != value.cend(); ++field) {
-        if (std::find(allowed_fields.begin(), allowed_fields.end(), field.key()) ==
-            allowed_fields.end()) {
-            throw Error("Unknown field in " + std::string(context) + ": " + field.key());
-        }
-    }
-}
 
 // 判断指定状态迁移是否属于已定义的生命周期图。
 [[nodiscard]] bool is_allowed_transition(const RunPhase from, const RunPhase to) noexcept {

@@ -2,7 +2,6 @@
 #include "satsuma/core/config.hpp"
 
 #include <algorithm>
-#include <initializer_list>
 #include <limits>
 #include <set>
 #include <string_view>
@@ -13,38 +12,16 @@
 #include "satsuma/core/errors.hpp"
 #include "satsuma/core/hardware_identity.hpp"
 #include "satsuma/core/id.hpp"
+#include "satsuma/core/json_contract.hpp"
 #include "satsuma/core/json_io.hpp"
 #include "satsuma/core/path.hpp"
 
 namespace satsuma {
 namespace {
 
-// 拒绝配置中的未知字段，避免拼写错误或废弃选项被静默忽略。
-void reject_unknown_fields(
-    const nlohmann::json& value,
-    const std::initializer_list<std::string_view> allowed_fields,
-    const std::string_view context) {
-    if (!value.is_object()) {
-        throw Error(std::string(context) + " must be an object");
-    }
-    for (auto field = value.cbegin(); field != value.cend(); ++field) {
-        const std::string_view name = field.key();
-        if (std::find(allowed_fields.begin(), allowed_fields.end(), name) == allowed_fields.end()) {
-            throw Error("Unknown field in " + std::string(context) + ": " + std::string(name));
-        }
-    }
-}
-
 // 读取必需字符串字段并统一空值错误。
 [[nodiscard]] std::string required_string(const nlohmann::json& value, const char* field) {
-    if (!value.contains(field) || !value.at(field).is_string()) {
-        throw Error(std::string("Missing or invalid string field: ") + field);
-    }
-    const std::string result = value.at(field).get<std::string>();
-    if (result.empty()) {
-        throw Error(std::string("Configuration field must not be empty: ") + field);
-    }
-    return result;
+    return required_non_empty_string(value, field, "Configuration field");
 }
 
 // 读取必需整数并拒绝 JSON 隐式类型转换。

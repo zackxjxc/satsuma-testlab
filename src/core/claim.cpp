@@ -1,36 +1,19 @@
 // Satsuma Agent 步骤 claim 租约模型和恢复判定实现。
 #include "satsuma/core/claim.hpp"
 
-#include <algorithm>
 #include <chrono>
-#include <initializer_list>
 #include <limits>
-#include <string_view>
 #include <utility>
 
 #include <nlohmann/json.hpp>
 
 #include "satsuma/core/errors.hpp"
 #include "satsuma/core/id.hpp"
+#include "satsuma/core/json_contract.hpp"
 #include "satsuma/core/json_io.hpp"
 
 namespace satsuma {
 namespace {
-
-// 交换契约不允许静默忽略未知字段。
-void reject_unknown_fields(
-    const nlohmann::json& value,
-    const std::initializer_list<std::string_view> allowed_fields) {
-    if (!value.is_object()) {
-        throw Error("Step claim lease must be an object");
-    }
-    for (auto field = value.cbegin(); field != value.cend(); ++field) {
-        if (std::find(allowed_fields.begin(), allowed_fields.end(), field.key()) ==
-            allowed_fields.end()) {
-            throw Error("Unknown field in step claim lease: " + field.key());
-        }
-    }
-}
 
 // 验证 claim 字段和租约时间范围的一致性。
 void validate_claim_lease(const StepClaimLease& claim) {
@@ -185,7 +168,8 @@ void from_json(const nlohmann::json& value, StepClaimLease& claim) {
         {"schema_version", "run_id", "vm_id", "step_id", "job_id", "session_id",
          "boot_id", "claimed_at", "claimed_unix_ms", "last_renewed_at",
          "last_renewed_unix_ms", "lease_expires_unix_ms", "renewal_sequence",
-         "retry_safe", "attempt"});
+         "retry_safe", "attempt"},
+        "step claim lease");
     claim.schema_version = value.value("schema_version", 0);
     claim.run_id = value.at("run_id").get<std::string>();
     claim.vm_id = value.at("vm_id").get<std::string>();

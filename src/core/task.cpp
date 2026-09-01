@@ -4,7 +4,6 @@
 #include <algorithm>
 #include <cctype>
 #include <cwctype>
-#include <initializer_list>
 #include <set>
 #include <string_view>
 
@@ -12,6 +11,7 @@
 
 #include "satsuma/core/errors.hpp"
 #include "satsuma/core/id.hpp"
+#include "satsuma/core/json_contract.hpp"
 #include "satsuma/core/json_io.hpp"
 #include "satsuma/core/path.hpp"
 
@@ -23,22 +23,6 @@ enum class StepParseMode {
     TaskPlan,
     RunManifest,
 };
-
-// 拒绝用户任务对象中的未知字段，避免拼写错误静默回落为默认行为。
-void reject_unknown_fields(
-    const nlohmann::json& value,
-    const std::initializer_list<std::string_view> allowed_fields,
-    const std::string_view context) {
-    if (!value.is_object()) {
-        throw Error(std::string(context) + " must be an object");
-    }
-    for (auto field = value.cbegin(); field != value.cend(); ++field) {
-        const std::string_view name = field.key();
-        if (std::find(allowed_fields.begin(), allowed_fields.end(), name) == allowed_fields.end()) {
-            throw Error("Unknown field in " + std::string(context) + ": " + std::string(name));
-        }
-    }
-}
 
 // 生成 Windows 等价相对路径的大小写无关比较键。
 [[nodiscard]] std::wstring windows_path_key(std::filesystem::path value) {
@@ -53,14 +37,7 @@ void reject_unknown_fields(
 
 // 读取非空必需字符串字段。
 [[nodiscard]] std::string required_string(const nlohmann::json& value, const char* field) {
-    if (!value.contains(field) || !value.at(field).is_string()) {
-        throw Error(std::string("Missing or invalid string field: ") + field);
-    }
-    const std::string result = value.at(field).get<std::string>();
-    if (result.empty()) {
-        throw Error(std::string("Task field must not be empty: ") + field);
-    }
-    return result;
+    return required_non_empty_string(value, field, "Task field");
 }
 
 // 解析仅允许 SYSTEM 或当前交互用户的运行身份。
