@@ -47,6 +47,21 @@ satsuma_enable_strict_warnings(SatsumaTestFixture)
 
 add_test(NAME SatsumaCoreTests COMMAND SatsumaCoreTests)
 
+add_executable(SatsumaVersionInfoTests version_info_tests.cpp)
+target_compile_features(SatsumaVersionInfoTests PRIVATE cxx_std_20)
+target_link_libraries(SatsumaVersionInfoTests PRIVATE version)
+satsuma_enable_test_warnings(SatsumaVersionInfoTests)
+add_dependencies(SatsumaVersionInfoTests SatsumaHost SatsumaVM)
+add_test(
+    NAME SatsumaVersionInfoTests
+    COMMAND SatsumaVersionInfoTests
+        "${PROJECT_VERSION_MAJOR}"
+        "${PROJECT_VERSION_MINOR}"
+        "${PROJECT_VERSION_PATCH}"
+        "$<TARGET_FILE:SatsumaHost>"
+        "$<TARGET_FILE:SatsumaVM>"
+)
+
 add_executable(SatsumaVmciTransportTests vmci_transport_tests.cpp)
 target_link_libraries(SatsumaVmciTransportTests PRIVATE SatsumaHostLib)
 satsuma_enable_strict_warnings(SatsumaVmciTransportTests)

@@ -52,6 +52,20 @@ if(NOT WIN32)
     message(FATAL_ERROR "Satsuma ${PROJECT_VERSION} currently supports Windows only")
 endif()
 
+enable_language(RC)
+
+function(satsuma_add_windows_version_resource target original_filename file_description internal_name)
+    set(SATSUMA_VERSION_ORIGINAL_FILENAME "${original_filename}")
+    set(SATSUMA_VERSION_FILE_DESCRIPTION "${file_description}")
+    set(SATSUMA_VERSION_INTERNAL_NAME "${internal_name}")
+    set(resource_dir "${CMAKE_CURRENT_BINARY_DIR}/resources")
+    set(resource_file "${resource_dir}/${target}-version.rc")
+
+    file(MAKE_DIRECTORY "${resource_dir}")
+    configure_file(cmake/windows-version.rc.in "${resource_file}" @ONLY)
+    target_sources(${target} PRIVATE "${resource_file}")
+endfunction()
+
 option(SATSUMA_BUILD_TESTS "Build Satsuma tests" ON)
 option(SATSUMA_ENABLE_REAL_VMWARE_SMOKE "Expose the destructive real VMware smoke target" OFF)
 option(
@@ -223,6 +237,12 @@ target_include_directories(SatsumaHostLib PUBLIC src/host src/vmware)
 target_link_libraries(SatsumaHostLib PUBLIC SatsumaCore SatsumaVmci)
 
 add_executable(SatsumaHost src/host/main.cpp)
+satsuma_add_windows_version_resource(
+    SatsumaHost
+    "SatsumaHost.exe"
+    "Satsuma TestLab Host"
+    "SatsumaHost"
+)
 target_link_libraries(SatsumaHost PRIVATE SatsumaHostLib)
 
 set(SATSUMA_VM_LIBRARY_SOURCES
@@ -252,6 +272,12 @@ target_link_libraries(
 )
 
 add_executable(SatsumaVM src/vm/main.cpp)
+satsuma_add_windows_version_resource(
+    SatsumaVM
+    "SatsumaVM.exe"
+    "Satsuma TestLab Guest Agent"
+    "SatsumaVM"
+)
 target_link_libraries(SatsumaVM PRIVATE SatsumaVmLib)
 
 set_target_properties(SatsumaHost SatsumaVM PROPERTIES
