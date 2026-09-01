@@ -1,0 +1,42 @@
+# 任务编写
+
+生成或修改任务计划前阅读本参考文档。从 `examples/` 中最接近需求的文件开始编写，并使用匹配发行版本中的 `schemas/task.schema.json` 校验结果。未知字段一律视为错误。
+
+## 必须明确的决策
+
+- 只能使用已批准测试环境配置中声明的虚拟机 ID。
+- 使用唯一的 `run_id`，长度不超过 128 个字符，且只能包含字母、数字、下划线和连字符。
+- 为每个 `execute` 和 `script` 步骤设置有限的 `timeout_seconds`。
+- 除非能够证明重复执行不会产生额外副作用，否则 `retry_safe` 必须保持为 `false`。
+- 只收集作为证据所必需的、明确命名的相对路径文件。不要收集整个用户配置目录、临时目录树或磁盘。
+- Artifact 目标路径必须位于 `artifacts/` 下；`source` 是 Host 上已经存在的绝对路径。
+- `execute.program` 必须与同一虚拟机的某个 Artifact 目标路径一致。
+- `script.script` 必须与同一虚拟机的某个脚本 Artifact 一致。支持的引擎为 `cmd`、`windows_powershell` 和 `pwsh`。
+
+通过 inventory 确认脚本引擎、体系结构、固定磁盘及其他 Guest 能力，不要依赖猜测。
+
+## 逐步骤选择运行身份
+
+不要未经评估就接受 Schema 的默认值：
+
+| 工作类型 | `run_as` | 原因 |
+|---|---|---|
+| 安装程序、服务、驱动、HKLM 或其他管理员级变更 | `system` | 需要管理员权限 |
+| GUI、桌面、HKCU、用户配置或普通应用测试 | `interactive_user` | 需要已登录用户，或应模拟该用户的真实行为 |
+| 无需提权的 CLI、编译、单元测试或文件处理 | `interactive_user` | 遵循最小权限，并贴近真实用户行为 |
+
+`interactive_user` 要求控制台存在活动用户；条件不满足时任务会失败，不会回退为 SYSTEM。一个混合任务可以使用 SYSTEM 安装，再以交互用户身份验收。
+
+## 脚本和输出规则
+
+- 含有非 ASCII 文本的 Windows PowerShell 5.1 脚本使用带 BOM 的 UTF-8。
+- PowerShell 7 脚本使用不带 BOM 的 UTF-8。
+- CMD/BAT 脚本使用不带 BOM 的 UTF-8 和 CRLF，并保留被调用程序的退出码。
+- 优先使用被测程序自身的选项，将日志写入 Guest 工作根目录；在 `collect_files` 中声明每一个需要收集的文件。
+- 先尝试正常停止被测程序并等待日志落盘，再进行有时间上限的强制终止。
+
+## 生命周期与清理
+
+带有生命周期策略的计划应使用 `orchestrate`。只有测试确实需要已知基线时才设置 `restore_before`。每台目标虚拟机都必须明确指定成功和失败后的动作，并最终处于关机状态：通常使用 `stop`，或在用户已批准的失败流程中使用 `restore`。AI 操作的流程中不要生成 `leave_running`。
+
+应有意识地选择清理策略。常见做法是删除成功任务的 Guest 工作目录，并保留失败任务的 Guest 证据；只有归档得到验证后，Host 状态才可以使用 `archive_then_delete`。需要人工干预或恢复失败时，应保留证据和租约。

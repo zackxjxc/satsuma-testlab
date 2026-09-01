@@ -1,8 +1,9 @@
 # Satsuma TestLab
 
-Satsuma TestLab 是一个面向 Windows 和 VMware Workstation 的可恢复测试编排器。Host 通过 VMware VMCI
-网关向 Guest 传输任务与 Artifact；每台 Guest 中的 Windows Service 在本机工作目录执行任务，再通过 VMCI
-分块上传退出码、日志和声明的结果文件。该通道不依赖 Guest 网卡、IP、DNS 或 VPN 状态。
+Satsuma TestLab 是专为 AI 代理设计的 Windows 虚拟机自动化测试工具。它让 AI 能够在 VMware Workstation
+虚拟机中部署和执行测试、收集完整证据，并自动管理快照与故障恢复。Host 通过 VMware VMCI 网关向 Guest
+传输任务与 Artifact；每台 Guest 中的 Windows Service 在本机工作目录执行任务，再通过 VMCI 分块上传退出码、
+日志和声明的结果文件。该通道不依赖 Guest 网卡、IP、DNS 或 VPN 状态。
 
 项目适合可信实验室中的软件安装验证、网络客户端联调、升级回归和多虚拟机测试。它不是恶意样本沙箱，
 也不提供租户隔离：任务计划、Artifact、Host 和 Guest 管理员均属于同一信任边界。
@@ -62,6 +63,16 @@ bin\SatsumaHost.exe orchestrate --config config\lab.local.json --plan examples\m
 证据并按策略清理。普通 `run` 仍可用于无生命周期任务，但发布后会保持持久租约，必须在报告终态后执行
 `runs finalize`。
 
+## 让 AI 使用
+
+GitHub Release 发行包会携带与二进制版本配套的 [`satsuma-testlab` Skill](skills/satsuma-testlab/SKILL.md)
+和 `AI-START-HERE.md`。将解压目录提供给能够读取本地文件并执行终端命令的 AI 代理，然后让它先读取
+`AI-START-HERE.md`，即可进入环境配置、任务生成、执行、取证和恢复流程。
+
+支持 [Agent Skills](https://agentskills.io/) 的客户端可以直接加载发行包中的 `skills/satsuma-testlab/`，也可以
+把整个 Skill 目录安装到客户端自己的 Skill 目录。不支持自动发现的 AI 仍可把 `SKILL.md` 当作结构化操作手册
+读取。升级 Satsuma 时应同步使用新发行包内的 Skill，避免 AI 按旧命令或旧 Schema 操作新程序。
+
 ## 文档
 
 - [用户指南](docs/用户指南.md)：安装、配置、日常命令、更新和排障。
@@ -69,7 +80,8 @@ bin\SatsumaHost.exe orchestrate --config config\lab.local.json --plan examples\m
 - [架构](docs/架构.md)：组件边界、数据流、可靠性模型和安全假设。
 - [VMCI 协议](docs/协议.md)：请求、分块传输、本地镜像、Schema 和容量限制。
 - [开发指南](docs/开发指南.md)：构建、测试、打包和真实 VMware 验收。
-- [AI 操作契约](docs/AI操作契约.md)：自动化工具使用 Satsuma 时的边界。
+- [`satsuma-testlab` Skill](skills/satsuma-testlab/SKILL.md)：AI 可直接加载的操作流程、安全边界与按需参考资料。
+- [AI 集成说明](docs/AI操作契约.md)：Skill、CLI、Schema 和人类授权之间的职责边界。
 - [更新日志](更新日志.md)：版本变化和兼容性调整。
 - [贡献指南](贡献指南.md)：开发流程和 Review 要求。
 - [安全策略](安全策略.md)：安全边界和漏洞报告方式。
@@ -77,7 +89,8 @@ bin\SatsumaHost.exe orchestrate --config config\lab.local.json --plan examples\m
 
 ## 项目状态
 
-当前版本为 `0.3.0`，只支持 Windows 与 VMware Workstation。真实 VMware 故障注入测试默认关闭，必须在
-专用实验 VM 上显式启用并确认。
+当前只支持 Windows 与 VMware Workstation。真实 VMware 故障注入测试默认关闭，必须在专用实验 VM 上显式
+启用并确认。`master` 分支文档描述正在开发的版本；稳定版本请查看对应 Git Tag 或 GitHub Release，发行包内
+的程序、Schema、示例、文档和 Skill 属于同一个版本快照。
 
 项目许可证尚未指定。在根目录出现明确的 `LICENSE` 前，源码默认不授予复制、修改或再分发许可。
