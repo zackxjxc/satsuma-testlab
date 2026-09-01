@@ -5,6 +5,19 @@ project(SatsumaTestLab VERSION 0.2.1 LANGUAGES CXX)
 
 include(GNUInstallDirs)
 
+# 统一项目目标的 MSVC 严格警告和外部头文件降噪策略。
+function(satsuma_enable_strict_warnings target)
+    if(MSVC)
+        target_compile_options(${target} PRIVATE /W4 /permissive- /utf-8 /EHsc)
+    endif()
+endfunction()
+
+function(satsuma_treat_angle_headers_as_external target)
+    if(MSVC)
+        target_compile_options(${target} PRIVATE /external:anglebrackets /external:W0)
+    endif()
+endfunction()
+
 if(NOT WIN32)
     message(FATAL_ERROR "Satsuma 0.2.1 currently supports Windows only")
 endif()
@@ -182,18 +195,19 @@ target_link_libraries(SatsumaHostLib PUBLIC SatsumaCore SatsumaVmci)
 add_executable(SatsumaHost src/host/main.cpp)
 target_link_libraries(SatsumaHost PRIVATE SatsumaHostLib)
 
-add_library(SatsumaVmLib STATIC
-    src/vm/agent.cpp
-    src/vm/claim_renewal.cpp
-    src/vm/hardware_identity.cpp
-    src/vm/inventory.cpp
-    src/vm/interactive_process.cpp
-    src/vm/process_runner.cpp
-    src/vm/process_environment.cpp
-    src/vm/service.cpp
-    src/vm/update.cpp
-    src/vm/vmci_channel.cpp
+set(SATSUMA_VM_LIBRARY_SOURCES
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/vm/agent.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/vm/claim_renewal.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/vm/hardware_identity.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/vm/inventory.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/vm/interactive_process.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/vm/process_runner.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/vm/process_environment.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/vm/service.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/vm/update.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/vm/vmci_channel.cpp"
 )
+add_library(SatsumaVmLib STATIC ${SATSUMA_VM_LIBRARY_SOURCES})
 target_include_directories(SatsumaVmLib PUBLIC src/vm)
 target_link_libraries(
     SatsumaVmLib
@@ -265,13 +279,11 @@ file(GENERATE
     CONTENT "${SATSUMA_DEMO_TASK}"
 )
 
-if(MSVC)
-    foreach(target SatsumaCore SatsumaVmci SatsumaHostLib SatsumaHost SatsumaVmLib SatsumaVM SatsumaDemoApp)
-        target_compile_options(${target} PRIVATE /W4 /permissive- /utf-8 /EHsc)
-    endforeach()
-    target_compile_options(SatsumaHostLib PRIVATE /external:anglebrackets /external:W0)
-    target_compile_options(SatsumaVmLib PRIVATE /external:anglebrackets /external:W0)
-endif()
+foreach(target SatsumaCore SatsumaVmci SatsumaHostLib SatsumaHost SatsumaVmLib SatsumaVM SatsumaDemoApp)
+    satsuma_enable_strict_warnings(${target})
+endforeach()
+satsuma_treat_angle_headers_as_external(SatsumaHostLib)
+satsuma_treat_angle_headers_as_external(SatsumaVmLib)
 
 if(SATSUMA_BUILD_TESTS)
     # 测试阶段使用完整 Draft 2020-12 实现验证公开 Schema 和示例；不进入生产二进制。

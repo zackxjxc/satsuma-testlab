@@ -1,17 +1,13 @@
 # Satsuma 核心单元测试和 Host/VM 集成测试。
+function(satsuma_enable_test_warnings target)
+    satsuma_enable_strict_warnings(${target})
+    satsuma_treat_angle_headers_as_external(${target})
+endfunction()
+
 add_library(
     SatsumaVmTestLib
     STATIC
-    ../src/vm/agent.cpp
-    ../src/vm/claim_renewal.cpp
-    ../src/vm/hardware_identity.cpp
-    ../src/vm/inventory.cpp
-    ../src/vm/interactive_process.cpp
-    ../src/vm/process_runner.cpp
-    ../src/vm/process_environment.cpp
-    ../src/vm/service.cpp
-    ../src/vm/update.cpp
-    ../src/vm/vmci_channel.cpp
+    ${SATSUMA_VM_LIBRARY_SOURCES}
 )
 target_include_directories(SatsumaVmTestLib PUBLIC ../src/vm)
 target_compile_definitions(
@@ -26,22 +22,14 @@ target_link_libraries(
     SatsumaVmTestLib
     PUBLIC SatsumaCore SatsumaVmci advapi32 shell32 userenv version wtsapi32
 )
-if(MSVC)
-    target_compile_options(
-        SatsumaVmTestLib
-        PRIVATE /W4 /permissive- /utf-8 /EHsc /external:anglebrackets /external:W0
-    )
-endif()
+satsuma_enable_strict_warnings(SatsumaVmTestLib)
+satsuma_treat_angle_headers_as_external(SatsumaVmTestLib)
 
 # 端到端测试使用独立 Agent，确保生产 SatsumaVM 不包含本地镜像旁路。
 add_executable(SatsumaVMTestAgent ../src/vm/main.cpp)
 target_link_libraries(SatsumaVMTestAgent PRIVATE SatsumaVmTestLib)
-if(MSVC)
-    target_compile_options(
-        SatsumaVMTestAgent
-        PRIVATE /W4 /permissive- /utf-8 /EHsc /external:anglebrackets /external:W0
-    )
-endif()
+satsuma_enable_strict_warnings(SatsumaVMTestAgent)
+satsuma_treat_angle_headers_as_external(SatsumaVMTestAgent)
 
 add_executable(SatsumaCoreTests core_tests.cpp)
 target_link_libraries(SatsumaCoreTests PRIVATE SatsumaCore)
@@ -53,24 +41,16 @@ set_target_properties(SatsumaTestFixture PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
 )
 
-if(MSVC)
-    target_compile_options(
-        SatsumaCoreTests
-        PRIVATE /W4 /permissive- /utf-8 /EHsc /external:anglebrackets /external:W0
-    )
-    target_compile_options(SatsumaTestFixture PRIVATE /W4 /permissive- /utf-8 /EHsc)
-endif()
+satsuma_enable_strict_warnings(SatsumaCoreTests)
+satsuma_treat_angle_headers_as_external(SatsumaCoreTests)
+satsuma_enable_strict_warnings(SatsumaTestFixture)
 
 add_test(NAME SatsumaCoreTests COMMAND SatsumaCoreTests)
 
 add_executable(SatsumaVmciTransportTests vmci_transport_tests.cpp)
 target_link_libraries(SatsumaVmciTransportTests PRIVATE SatsumaHostLib)
-if(MSVC)
-    target_compile_options(
-        SatsumaVmciTransportTests
-        PRIVATE /W4 /permissive- /utf-8 /EHsc /external:anglebrackets /external:W0
-    )
-endif()
+satsuma_enable_strict_warnings(SatsumaVmciTransportTests)
+satsuma_treat_angle_headers_as_external(SatsumaVmciTransportTests)
 add_test(NAME SatsumaVmciTransportTests COMMAND SatsumaVmciTransportTests)
 set_tests_properties(SatsumaVmciTransportTests PROPERTIES TIMEOUT 10 RUN_SERIAL TRUE)
 
@@ -87,12 +67,7 @@ target_include_directories(
     SatsumaSchemaContractTests
     PRIVATE "${jsoncons_SOURCE_DIR}/include"
 )
-if(MSVC)
-    target_compile_options(
-        SatsumaSchemaContractTests
-        PRIVATE /W4 /permissive- /utf-8 /EHsc /external:anglebrackets /external:W0
-    )
-endif()
+satsuma_enable_test_warnings(SatsumaSchemaContractTests)
 
 add_test(
     NAME SatsumaAgentSchemaContractTests
@@ -122,12 +97,7 @@ add_executable(
     claim_store_tests.cpp
 )
 target_link_libraries(SatsumaVmClaimStoreTests PRIVATE SatsumaVmTestLib)
-if(MSVC)
-    target_compile_options(
-        SatsumaVmClaimStoreTests
-        PRIVATE /W4 /permissive- /utf-8 /EHsc /external:anglebrackets /external:W0
-    )
-endif()
+satsuma_enable_test_warnings(SatsumaVmClaimStoreTests)
 add_test(NAME SatsumaVmClaimStoreTests COMMAND SatsumaVmClaimStoreTests)
 
 add_executable(
@@ -135,12 +105,7 @@ add_executable(
     claim_renewal_tests.cpp
 )
 target_link_libraries(SatsumaVmClaimRenewalTests PRIVATE SatsumaVmTestLib)
-if(MSVC)
-    target_compile_options(
-        SatsumaVmClaimRenewalTests
-        PRIVATE /W4 /permissive- /utf-8 /EHsc /external:anglebrackets /external:W0
-    )
-endif()
+satsuma_enable_test_warnings(SatsumaVmClaimRenewalTests)
 add_test(NAME SatsumaVmClaimRenewalTests COMMAND SatsumaVmClaimRenewalTests)
 
 add_executable(
@@ -148,12 +113,7 @@ add_executable(
     host_update_tests.cpp
 )
 target_link_libraries(SatsumaHostUpdateTests PRIVATE SatsumaHostLib)
-if(MSVC)
-    target_compile_options(
-        SatsumaHostUpdateTests
-        PRIVATE /W4 /permissive- /utf-8 /EHsc /external:anglebrackets /external:W0
-    )
-endif()
+satsuma_enable_test_warnings(SatsumaHostUpdateTests)
 add_test(NAME SatsumaHostUpdateTests COMMAND SatsumaHostUpdateTests)
 
 add_executable(
@@ -161,12 +121,7 @@ add_executable(
     host_controller_tests.cpp
 )
 target_link_libraries(SatsumaHostControllerTests PRIVATE SatsumaHostLib)
-if(MSVC)
-    target_compile_options(
-        SatsumaHostControllerTests
-        PRIVATE /W4 /permissive- /utf-8 /EHsc /external:anglebrackets /external:W0
-    )
-endif()
+satsuma_enable_test_warnings(SatsumaHostControllerTests)
 add_test(NAME SatsumaHostControllerTests COMMAND SatsumaHostControllerTests)
 
 add_test(
@@ -189,12 +144,7 @@ target_link_libraries(
     SatsumaVmInteractiveTests
     PRIVATE SatsumaVmTestLib
 )
-if(MSVC)
-    target_compile_options(
-        SatsumaVmInteractiveTests
-        PRIVATE /W4 /permissive- /utf-8 /EHsc /external:anglebrackets /external:W0
-    )
-endif()
+satsuma_enable_test_warnings(SatsumaVmInteractiveTests)
 add_test(
     NAME SatsumaVmInteractiveTests
     COMMAND SatsumaVmInteractiveTests
@@ -215,12 +165,7 @@ target_link_libraries(
     SatsumaVmAgentTests
     PRIVATE SatsumaVmTestLib
 )
-if(MSVC)
-    target_compile_options(
-        SatsumaVmAgentTests
-        PRIVATE /W4 /permissive- /utf-8 /EHsc /external:anglebrackets /external:W0
-    )
-endif()
+satsuma_enable_test_warnings(SatsumaVmAgentTests)
 add_test(
     NAME SatsumaVmAgentTests
     COMMAND SatsumaVmAgentTests
@@ -237,12 +182,7 @@ target_link_libraries(
     SatsumaVmAgentClaimTests
     PRIVATE SatsumaVmTestLib
 )
-if(MSVC)
-    target_compile_options(
-        SatsumaVmAgentClaimTests
-        PRIVATE /W4 /permissive- /utf-8 /EHsc /external:anglebrackets /external:W0
-    )
-endif()
+satsuma_enable_test_warnings(SatsumaVmAgentClaimTests)
 add_test(
     NAME SatsumaVmAgentClaimTests
     COMMAND SatsumaVmAgentClaimTests "$<TARGET_FILE:SatsumaTestFixture>"
@@ -258,12 +198,7 @@ target_link_libraries(
     SatsumaVmServiceTests
     PRIVATE SatsumaVmTestLib
 )
-if(MSVC)
-    target_compile_options(
-        SatsumaVmServiceTests
-        PRIVATE /W4 /permissive- /utf-8 /EHsc /external:anglebrackets /external:W0
-    )
-endif()
+satsuma_enable_test_warnings(SatsumaVmServiceTests)
 add_test(NAME SatsumaVmServiceTests COMMAND SatsumaVmServiceTests "$<TARGET_FILE:SatsumaVM>")
 set_tests_properties(SatsumaVmServiceTests PROPERTIES TIMEOUT 10)
 
@@ -276,12 +211,7 @@ target_link_libraries(
     SatsumaVmUpdateTests
     PRIVATE SatsumaVmTestLib
 )
-if(MSVC)
-    target_compile_options(
-        SatsumaVmUpdateTests
-        PRIVATE /W4 /permissive- /utf-8 /EHsc /external:anglebrackets /external:W0
-    )
-endif()
+satsuma_enable_test_warnings(SatsumaVmUpdateTests)
 add_test(NAME SatsumaVmUpdateTests COMMAND SatsumaVmUpdateTests)
 set_tests_properties(SatsumaVmUpdateTests PROPERTIES TIMEOUT 15)
 
@@ -331,11 +261,9 @@ add_executable(
     vmrun_provider_tests.cpp
 )
 target_link_libraries(SatsumaVmrunProviderTests PRIVATE SatsumaHostLib)
-if(MSVC)
-    target_compile_options(SatsumaFakeVmrun PRIVATE /W4 /permissive- /utf-8 /EHsc)
-    target_compile_options(SatsumaMultiVmFakeVmrun PRIVATE /W4 /permissive- /utf-8 /EHsc)
-    target_compile_options(SatsumaVmrunProviderTests PRIVATE /W4 /permissive- /utf-8 /EHsc)
-endif()
+satsuma_enable_strict_warnings(SatsumaFakeVmrun)
+satsuma_enable_strict_warnings(SatsumaMultiVmFakeVmrun)
+satsuma_enable_strict_warnings(SatsumaVmrunProviderTests)
 add_test(
     NAME SatsumaVmrunProviderTests
     COMMAND SatsumaVmrunProviderTests "$<TARGET_FILE:SatsumaFakeVmrun>"
