@@ -38,6 +38,27 @@ function Assert-ChildPath {
     }
 }
 
+# Compute a SHA-256 digest without relying on PowerShell module auto-loading.
+function Get-Sha256Hex {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path
+    )
+
+    $stream = [IO.File]::OpenRead([IO.Path]::GetFullPath($Path))
+    try {
+        $algorithm = [Security.Cryptography.SHA256]::Create()
+        try {
+            $digest = $algorithm.ComputeHash($stream)
+            return [BitConverter]::ToString($digest).Replace("-", "").ToLowerInvariant()
+        } finally {
+            $algorithm.Dispose()
+        }
+    } finally {
+        $stream.Dispose()
+    }
+}
+
 $buildPath = [IO.Path]::GetFullPath($BuildDirectory)
 if (-not (Test-Path -LiteralPath $buildPath -PathType Container)) {
     throw "Build directory does not exist: $buildPath"
@@ -136,7 +157,7 @@ try {
         Remove-Item -LiteralPath $packagePath -Force
     }
     Move-Item -LiteralPath $partialPackagePath -Destination $packagePath
-    $packageHash = (Get-FileHash -LiteralPath $packagePath -Algorithm SHA256).Hash.ToLowerInvariant()
+    $packageHash = Get-Sha256Hex -Path $packagePath
     $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
     [IO.File]::WriteAllText(
         $checksumPath,
