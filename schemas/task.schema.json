@@ -17,11 +17,11 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["source", "vm", "shared_destination"],
+        "required": ["source", "vm", "destination"],
         "properties": {
           "source": {"type": "string", "minLength": 1},
           "vm": {"$ref": "#/$defs/identifier"},
-          "shared_destination": {
+          "destination": {
             "type": "string",
             "pattern": "^artifacts[/\\\\].+"
           },
@@ -129,7 +129,7 @@
     "task_cleanup": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["guest_work", "shared_run"],
+      "required": ["guest_work", "host_run"],
       "properties": {
         "guest_work": {
           "type": "object",
@@ -140,7 +140,7 @@
             "on_failure": {"enum": ["delete", "retain"]}
           }
         },
-        "shared_run": {
+        "host_run": {
           "type": "object",
           "additionalProperties": false,
           "required": ["on_success", "on_failure"],

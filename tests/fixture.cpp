@@ -186,7 +186,7 @@ void write_text_file(
     std::abort();
 }
 
-// 在可选独占锁下连续替换同一 JSON 文件，复现实机共享目录原子写问题。
+// 在可选独占锁下连续替换同一 JSON 文件，复现 Windows 句柄竞争。
 void run_atomic_json_probe(
     const std::filesystem::path& target_path,
     const std::filesystem::path& lock_path) {

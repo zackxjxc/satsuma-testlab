@@ -22,8 +22,7 @@ class VmciChannel;
 using ClaimAcquireOperation = std::function<StepClaimAcquireResult(
     const std::filesystem::path&,
     const std::filesystem::path&,
-    const StepClaimLease&,
-    const std::string&)>;
+    const StepClaimLease&)>;
 
 using ResultPublishOperation = std::function<StepResultPublishStatus(
     const std::filesystem::path&,
@@ -101,11 +100,11 @@ private:
     InventoryPublisher inventory_; // 当前会话的 Guest 环境快照
     ProcessRunner runner_;     // Windows Job Object 执行器
     std::unique_ptr<VmciChannel> vmci_channel_; // 生产 VMCI 通道；测试可为空
-    std::uint64_t file_channel_failure_count_{0}; // 传输通道累计失败次数
-    std::uint64_t consecutive_file_channel_failures_{0}; // 当前连续失败次数
-    std::string last_file_channel_error_; // 最近一次传输失败
-    std::string last_file_channel_error_at_; // 最近一次传输失败时间
-    std::string last_file_channel_recovered_at_; // 最近一次传输恢复时间
+    std::uint64_t vmci_channel_failure_count_{0}; // 传输通道累计失败次数
+    std::uint64_t consecutive_vmci_channel_failures_{0}; // 当前连续失败次数
+    std::string last_vmci_channel_error_; // 最近一次传输失败
+    std::string last_vmci_channel_error_at_; // 最近一次传输失败时间
+    std::string last_vmci_channel_recovered_at_; // 最近一次传输恢复时间
 };
 
 }  // namespace satsuma::vm

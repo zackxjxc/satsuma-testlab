@@ -20,19 +20,19 @@
 namespace satsuma::vm {
 namespace {
 
-// 兼容尚未完成硬件绑定的旧配置，使用当前 VM ID 作为文件键。
+// 尚未取得硬件身份时使用当前 VM ID 作为清单键。
 [[nodiscard]] std::string inventory_key(const AgentConfig& config) {
     return config.hardware_id.empty() ? config.vm_id : config.hardware_id;
 }
 
 // 返回当前硬件身份对应的清单文件。
 [[nodiscard]] std::filesystem::path inventory_path(const AgentConfig& config) {
-    return config.channel_root / L"agents" / path_from_utf8(inventory_key(config) + ".inventory.json");
+    return config.mirror_root / L"agents" / path_from_utf8(inventory_key(config) + ".inventory.json");
 }
 
 // 返回 Host 显式刷新请求文件。
 [[nodiscard]] std::filesystem::path refresh_path(const AgentConfig& config) {
-    return config.channel_root / L"agents" /
+    return config.mirror_root / L"agents" /
         path_from_utf8(inventory_key(config) + ".inventory-refresh.json");
 }
 
@@ -212,7 +212,7 @@ void InventoryPublisher::update_config(const AgentConfig& config) {
     if (config_.lab_id == config.lab_id &&
         config_.vm_id == config.vm_id &&
         config_.hardware_id == config.hardware_id &&
-        config_.channel_root == config.channel_root) {
+        config_.mirror_root == config.mirror_root) {
         return;
     }
     config_ = config;

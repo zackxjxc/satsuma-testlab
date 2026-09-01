@@ -1,4 +1,4 @@
-// UTF-8 路径转换和共享根目录边界校验实现。
+// UTF-8 路径转换和可信根目录边界校验实现。
 #include "satsuma/core/path.hpp"
 
 #include <algorithm>
@@ -14,7 +14,7 @@
 namespace satsuma {
 namespace {
 
-constexpr std::chrono::seconds kPathRenameTimeout{2}; // 共享层瞬时占用最长等待时间
+constexpr std::chrono::seconds kPathRenameTimeout{2}; // 本机状态文件瞬时占用最长等待时间
 constexpr std::chrono::milliseconds kPathRenameRetryDelay{10}; // 路径改名重试间隔
 
 // 判断路径改名错误是否来自可恢复的 Windows 瞬时占用。

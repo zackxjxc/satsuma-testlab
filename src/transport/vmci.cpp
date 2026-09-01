@@ -18,6 +18,11 @@
 namespace satsuma::transport {
 namespace {
 
+class ReceiveTimeout final : public Error {
+public:
+    ReceiveTimeout() : Error("VMCI metadata receive timed out") {}
+};
+
 [[nodiscard]] int checked_timeout(const std::chrono::milliseconds timeout) {
     if (timeout.count() < 1 || timeout.count() > std::numeric_limits<int>::max()) {
         throw Error("VMCI timeout is outside the supported range");
@@ -100,7 +105,7 @@ void send_message(zmq::socket_t& socket, const Message& message) {
 [[nodiscard]] Message receive_message(zmq::socket_t& socket) {
     zmq::message_t metadata_frame;
     if (!socket.recv(metadata_frame, zmq::recv_flags::none)) {
-        throw Error("VMCI metadata receive timed out");
+        throw ReceiveTimeout();
     }
     Message message;
     message.metadata = parse_metadata(metadata_frame);
@@ -233,23 +238,28 @@ struct Server::Impl {
         : endpoint(std::move(value)),
           handler(std::move(value_handler)),
           poll_interval_ms(checked_timeout(poll_interval)),
-          context(1),
-          socket(context, zmq::socket_type::rep) {
+          context(1) {
         if (!handler) {
             throw Error("VMCI server requires a request handler");
         }
         if (zmq_has("vmci") != 1 && endpoint.starts_with("vmci://")) {
             throw Error("libzmq was built without native VMCI support");
         }
-        configure_socket(socket, poll_interval_ms, false);
-        socket.bind(endpoint);
+        reset_socket();
+    }
+
+    void reset_socket() {
+        socket.reset();
+        socket.emplace(context, zmq::socket_type::rep);
+        configure_socket(*socket, poll_interval_ms, false);
+        socket->bind(endpoint);
     }
 
     std::string endpoint;
     Handler handler;
     int poll_interval_ms;
     zmq::context_t context;
-    zmq::socket_t socket;
+    std::optional<zmq::socket_t> socket;
 };
 
 Server::Server(
@@ -275,7 +285,7 @@ Server& Server::operator=(Server&&) noexcept = default;
 void Server::run(const std::stop_token stop_token) {
     while (!stop_token.stop_requested()) {
         try {
-            Message request = receive_message(impl_->socket);
+            Message request = receive_message(*impl_->socket);
             Message response;
             try {
                 response = impl_->handler(request);
@@ -288,15 +298,25 @@ void Server::run(const std::stop_token stop_token) {
             } catch (...) {
                 response = Message{{{"ok", false}, {"error", "unknown gateway error"}}, {}};
             }
-            send_message(impl_->socket, response);
+            send_message(*impl_->socket, response);
+        } catch (const ReceiveTimeout&) {
+            continue;
         } catch (const zmq::error_t& error) {
-            if (error.num() != EAGAIN && !stop_token.stop_requested()) {
-                throw Error(zmq_error_text("VMCI server", error));
+            if (error.num() == EAGAIN || stop_token.stop_requested()) {
+                continue;
             }
-        } catch (const Error& error) {
-            if (std::string_view(error.what()).find("timed out") == std::string_view::npos &&
-                !stop_token.stop_requested()) {
-                throw;
+            try {
+                impl_->reset_socket();
+            } catch (const zmq::error_t& reset_error) {
+                throw Error(zmq_error_text("VMCI server reset", reset_error));
+            }
+        } catch (const Error&) {
+            if (!stop_token.stop_requested()) {
+                try {
+                    impl_->reset_socket();
+                } catch (const zmq::error_t& reset_error) {
+                    throw Error(zmq_error_text("VMCI server reset", reset_error));
+                }
             }
         }
     }

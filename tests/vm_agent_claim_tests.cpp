@@ -13,7 +13,7 @@
 #include <nlohmann/json.hpp>
 
 #include "agent.hpp"
-#include "claim_store.hpp"
+#include "satsuma/core/claim_store.hpp"
 #include "satsuma/core/errors.hpp"
 #include "satsuma/core/id.hpp"
 #include "satsuma/core/json_io.hpp"
@@ -51,15 +51,25 @@ void expect(const bool condition, const std::string& message) {
     };
 }
 
-// 创建指向专用共享目录和本地工作目录的 Agent 配置。
+// 长任务成功路径使用更宽的租约，避免 Release 主机调度抖动制造伪失败。
+[[nodiscard]] satsuma::vm::ClaimLeasePolicy stable_execution_policy() {
+    return {
+        1'200ms,
+        100ms,
+        30ms,
+        200ms,
+    };
+}
+
+// 创建指向专用镜像目录和本地工作目录的 Agent 配置。
 [[nodiscard]] satsuma::AgentConfig make_config(
-    const std::filesystem::path& shared_root,
+    const std::filesystem::path& mirror_root,
     const std::filesystem::path& local_work_root) {
     satsuma::AgentConfig config;
     config.lab_id = "vm_agent_claim_test";
     config.vm_id = "vm_01";
     config.agent_version = "0.1.0";
-    config.channel_root = shared_root;
+    config.mirror_root = mirror_root;
     config.local_work_root = local_work_root;
     config.poll_interval_ms = 30'000;
     config.reconnect_interval_ms = 30'000;
@@ -68,13 +78,13 @@ void expect(const bool condition, const std::string& message) {
 
 // 创建一个可跨越多个短租约的 SYSTEM execute 任务。
 void write_execute_run(
-    const std::filesystem::path& shared_root,
+    const std::filesystem::path& mirror_root,
     const std::filesystem::path& fixture,
     const std::string& run_id,
     const int sleep_ms,
     const bool include_child_probe) {
     const std::filesystem::path run_directory =
-        shared_root / L"runs" / satsuma::path_from_utf8(run_id);
+        mirror_root / L"runs" / satsuma::path_from_utf8(run_id);
     const std::filesystem::path artifact =
         run_directory / L"artifacts" / L"vm_01" / L"fixture.exe";
     std::filesystem::create_directories(artifact.parent_path());
@@ -123,7 +133,7 @@ void write_execute_run(
 
 // 创建一个用于并发首次领取的 echo 任务。
 void write_echo_run(
-    const std::filesystem::path& shared_root,
+    const std::filesystem::path& mirror_root,
     const std::string& run_id) {
     satsuma::RunManifest manifest;
     manifest.lab_id = "vm_agent_claim_test";
@@ -139,30 +149,30 @@ void write_echo_run(
     step.retry_safe = true;
     manifest.steps.push_back(std::move(step));
     satsuma::write_json_atomic(
-        shared_root / L"runs" / satsuma::path_from_utf8(run_id) / L"task.json",
+        mirror_root / L"runs" / satsuma::path_from_utf8(run_id) / L"task.json",
         nlohmann::json(manifest));
 }
 
 // 返回当前步骤的共享状态和结果根目录。
 [[nodiscard]] std::filesystem::path step_root(
-    const std::filesystem::path& shared_root,
+    const std::filesystem::path& mirror_root,
     const std::string& run_id) {
-    return shared_root / L"runs" / satsuma::path_from_utf8(run_id);
+    return mirror_root / L"runs" / satsuma::path_from_utf8(run_id);
 }
 
 // 验证长任务连续续租、成功发布并停止后台线程。
 void test_long_execution_renews_claim(
     const std::filesystem::path& root,
     const std::filesystem::path& fixture) {
-    const std::filesystem::path shared_root = root / L"share";
+    const std::filesystem::path mirror_root = root / L"mirror";
     const std::filesystem::path local_work_root = root / L"work";
     const std::string run_id = "run_long_renewal";
-    write_execute_run(shared_root, fixture, run_id, 700, false);
+    write_execute_run(mirror_root, fixture, run_id, 700, false);
 
     satsuma::vm::AgentRuntimeOptions options;
-    options.claim_lease_policy = test_policy();
+    options.claim_lease_policy = stable_execution_policy();
     std::atomic<bool> observed_local_logs{false}; // 续租时是否只看到 Guest 本地运行日志
-    options.claim_renew_operation = [&local_work_root, &shared_root, &run_id, &observed_local_logs](
+    options.claim_renew_operation = [&local_work_root, &mirror_root, &run_id, &observed_local_logs](
         const std::filesystem::path& claim_path,
         const satsuma::StepClaimLease& claim,
         const std::int64_t renewed_unix_ms) {
@@ -170,11 +180,11 @@ void test_long_execution_renews_claim(
             local_work_root / L"vm_agent_claim_test" / satsuma::path_from_utf8(run_id) /
             L"vm_01" / L".satsuma" / L"jobs" / satsuma::path_from_utf8(claim.job_id) /
             L"stdout.log.partial";
-        const std::filesystem::path shared_log =
-            shared_root / L"runs" / satsuma::path_from_utf8(run_id) / L"results" /
+        const std::filesystem::path mirrored_log =
+            mirror_root / L"runs" / satsuma::path_from_utf8(run_id) / L"results" /
             L"vm_01" / L"execute" / L".jobs" / satsuma::path_from_utf8(claim.job_id) /
             L"stdout.log.partial";
-        if (std::filesystem::is_regular_file(local_log) && !std::filesystem::exists(shared_log)) {
+        if (std::filesystem::is_regular_file(local_log) && !std::filesystem::exists(mirrored_log)) {
             observed_local_logs.store(true, std::memory_order_release);
         }
         return satsuma::vm::renew_step_claim_transaction(
@@ -183,26 +193,26 @@ void test_long_execution_renews_claim(
             renewed_unix_ms);
     };
     satsuma::vm::Agent agent(
-        make_config(shared_root, local_work_root),
+        make_config(mirror_root, local_work_root),
         {},
         options);
     expect(agent.run_once() == 1, "Agent did not execute the long renewal step");
 
-    const std::filesystem::path run_directory = step_root(shared_root, run_id);
+    const std::filesystem::path run_directory = step_root(mirror_root, run_id);
     const std::filesystem::path claim_path =
         run_directory / L"state" / L"vm_01" / L"execute.claim.json";
     const satsuma::StepClaimLease effective =
-        satsuma::vm::load_effective_step_claim(claim_path);
+        satsuma::load_step_claim_lease(claim_path);
     expect(
         effective.renewal_sequence >= 2,
         "long Agent execution did not cross two renewal intervals");
     expect(
         observed_local_logs.load(std::memory_order_acquire),
-        "running process logs were not isolated from the shared folder");
+        "running process logs were not isolated from the VMCI mirror");
     const std::uint32_t stopped_sequence = effective.renewal_sequence;
     std::this_thread::sleep_for(options.claim_lease_policy.renewal_interval * 2);
     expect(
-        satsuma::vm::load_effective_step_claim(claim_path).renewal_sequence ==
+        satsuma::load_step_claim_lease(claim_path).renewal_sequence ==
             stopped_sequence,
         "Agent renewal thread continued after canonical result publication");
 
@@ -234,10 +244,10 @@ void test_long_execution_renews_claim(
 void test_renewal_failure_and_recovery(
     const std::filesystem::path& root,
     const std::filesystem::path& fixture) {
-    const std::filesystem::path shared_root = root / L"share";
+    const std::filesystem::path mirror_root = root / L"mirror";
     const std::filesystem::path local_work_root = root / L"work";
     const std::string run_id = "run_renewal_failure";
-    write_execute_run(shared_root, fixture, run_id, 400, true);
+    write_execute_run(mirror_root, fixture, run_id, 400, true);
 
     satsuma::vm::AgentRuntimeOptions failing_options;
     failing_options.claim_lease_policy = test_policy();
@@ -248,7 +258,7 @@ void test_renewal_failure_and_recovery(
         throw satsuma::Error("injected persistent Agent renewal failure");
     };
     satsuma::vm::Agent failing_agent(
-        make_config(shared_root, local_work_root),
+        make_config(mirror_root, local_work_root),
         {},
         failing_options);
     const auto failure_started = std::chrono::steady_clock::now();
@@ -257,7 +267,7 @@ void test_renewal_failure_and_recovery(
         std::chrono::steady_clock::now() - failure_started < 1s,
         "persistent renewal failure did not cancel the Job Object promptly");
 
-    const std::filesystem::path run_directory = step_root(shared_root, run_id);
+    const std::filesystem::path run_directory = step_root(mirror_root, run_id);
     const std::filesystem::path claim_path =
         run_directory / L"state" / L"vm_01" / L"execute.claim.json";
     const satsuma::StepClaimLease first_claim =
@@ -284,7 +294,7 @@ void test_renewal_failure_and_recovery(
     satsuma::vm::AgentRuntimeOptions recovery_options;
     recovery_options.claim_lease_policy = test_policy();
     satsuma::vm::Agent recovery_agent(
-        make_config(shared_root, local_work_root),
+        make_config(mirror_root, local_work_root),
         {},
         recovery_options);
     expect(recovery_agent.run_once() == 1, "attempt 2 did not recover the expired safe claim");
@@ -313,19 +323,19 @@ void test_renewal_failure_and_recovery(
 
 // 验证两个 Agent 同时扫描时只有一个 job 能领取和发布结果。
 void test_concurrent_agents_execute_once(const std::filesystem::path& root) {
-    const std::filesystem::path shared_root = root / L"share";
+    const std::filesystem::path mirror_root = root / L"mirror";
     const std::filesystem::path local_work_root = root / L"work";
     const std::string run_id = "run_concurrent_agents";
-    write_echo_run(shared_root, run_id);
+    write_echo_run(mirror_root, run_id);
 
     satsuma::vm::AgentRuntimeOptions options;
     options.claim_lease_policy = test_policy();
     satsuma::vm::Agent first(
-        make_config(shared_root, local_work_root / L"first"),
+        make_config(mirror_root, local_work_root / L"first"),
         {},
         options);
     satsuma::vm::Agent second(
-        make_config(shared_root, local_work_root / L"second"),
+        make_config(mirror_root, local_work_root / L"second"),
         {},
         options);
     std::atomic<bool> start{false}; // 同时释放两个 Agent 扫描
@@ -366,7 +376,7 @@ void test_concurrent_agents_execute_once(const std::filesystem::path& root) {
         executed[0] + executed[1] == 1,
         "concurrent Agents did not execute exactly one step");
 
-    const std::filesystem::path run_directory = step_root(shared_root, run_id);
+    const std::filesystem::path run_directory = step_root(mirror_root, run_id);
     const satsuma::StepClaimLease claim = satsuma::load_step_claim_lease(
         run_directory / L"state" / L"vm_01" / L"echo.claim.json");
     const satsuma::ExecutionResult result = satsuma::load_json(
@@ -379,11 +389,11 @@ void test_concurrent_agents_execute_once(const std::filesystem::path& root) {
 
 // 验证损坏 claim 立即发布人工门禁，而不是执行任务或无限重连。
 void test_invalid_claim_enters_manual_gate(const std::filesystem::path& root) {
-    const std::filesystem::path shared_root = root / L"share";
+    const std::filesystem::path mirror_root = root / L"mirror";
     const std::filesystem::path local_work_root = root / L"work";
     const std::string run_id = "run_invalid_claim";
-    write_echo_run(shared_root, run_id);
-    const std::filesystem::path run_directory = step_root(shared_root, run_id);
+    write_echo_run(mirror_root, run_id);
+    const std::filesystem::path run_directory = step_root(mirror_root, run_id);
     const std::filesystem::path claim_path =
         run_directory / L"state" / L"vm_01" / L"echo.claim.json";
     satsuma::write_json_atomic(
@@ -393,7 +403,7 @@ void test_invalid_claim_enters_manual_gate(const std::filesystem::path& root) {
     satsuma::vm::AgentRuntimeOptions options;
     options.claim_lease_policy = test_policy();
     satsuma::vm::Agent agent(
-        make_config(shared_root, local_work_root),
+        make_config(mirror_root, local_work_root),
         {},
         options);
     expect(agent.run_once() == 0, "Agent executed a step with an invalid persisted claim");

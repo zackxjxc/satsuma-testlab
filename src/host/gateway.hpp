@@ -1,6 +1,7 @@
 // Host 常驻 VMCI 网关接口。
 #pragma once
 
+#include <memory>
 #include <stop_token>
 
 #include "satsuma/core/config.hpp"
@@ -8,9 +9,15 @@
 
 namespace satsuma::host {
 
+class GatewayStateLock;
+
 class Gateway {
 public:
     explicit Gateway(LabConfig config);
+    ~Gateway();
+
+    Gateway(const Gateway&) = delete;
+    Gateway& operator=(const Gateway&) = delete;
 
     // 在当前线程监听 VMCI，直到收到停止请求。
     void run(std::stop_token stop_token = {});
@@ -20,6 +27,7 @@ public:
 
 private:
     LabConfig config_;
+    std::unique_ptr<GatewayStateLock> state_lock_;
 };
 
 }  // namespace satsuma::host

@@ -52,7 +52,7 @@ bin\SatsumaHost.exe orchestrate --config config\lab.local.json --plan task.json 
 
 - 输出必须符合 `schemas/task.schema.json`，未知字段视为错误。
 - `run_id`、VM ID 和步骤 ID 只使用字母、数字、下划线和连字符，最长 128 字符。
-- 每个 `execute.program` 必须匹配同一 VM 的 Artifact `shared_destination`。
+- 每个 `execute.program` 必须匹配同一 VM 的 Artifact `destination`。
 - 每个 `script.script` 必须匹配同一 VM 的脚本 Artifact；只允许 `cmd`、`windows_powershell` 和 `pwsh`。
 - Artifact `source` 使用 Host 绝对路径；目标只放在 `artifacts/` 下。
 - 所有步骤给出有限 `timeout_seconds`。不要用无限等待模拟服务常驻。
@@ -134,12 +134,12 @@ Agent 可以在同一次轮询中顺序执行两种身份，你不必为了统�
 - 执行前需要固定基线时设置 `restore_before`。
 - 成功后使用 `stop`。
 - 失败后需要恢复干净环境时使用带快照名的 `restore`。
-- 失败后不恢复快照时使用 `stop`；AI 不得生成 `leave_running`。需要分析现场时保留 Host 归档和 Shared
-  Folder 证据，而不是保持虚拟机开机。
+- 失败后不恢复快照时使用 `stop`；AI 不得生成 `leave_running`。需要分析现场时保留 Host 状态和归档证据，
+  而不是保持虚拟机开机。
 
-顶层 `cleanup` 只控制 Guest 工作目录和共享运行目录。建议成功时 Guest `delete`、失败时 `retain`；共享运行
+顶层 `cleanup` 只控制 Guest 工作目录和 Host 运行目录。建议成功时 Guest `delete`、失败时 `retain`；Host 运行
 只有在 Host 归档校验成功后才能使用 `archive_then_delete`。`manual_intervention_required` 固定保留 Guest 和
-共享证据，但仍应尽力关闭 VM；`RECOVERY_FAILED` 或 cleanup failure 不得自动解锁实验室。
+状态证据，但仍应尽力关闭 VM；`RECOVERY_FAILED` 或 cleanup failure 不得自动解锁实验室。
 
 不要把唯一用户快照用作自动恢复目标。Satsuma 只允许创建/删除符合 `ai_prefix` 的快照；基础快照不属于
 自动化工具所有。
@@ -178,8 +178,8 @@ Host 崩溃后先读取 `lab status`。仅当持久状态明确允许同一 `run
 恢复快照前必须把 Guest 本地存储、Host 状态根和 Host 归档视为三个独立恢复域，并遵守以下门禁：
 
 1. 先保存报告、生命周期、租约和错误证据，确认原 Host 进程已退出或完成同一 `run_id` 的恢复。
-2. 在整理共享状态前硬停止目标 VM，避免旧 Agent 与 Host 继续写协议文件。
-3. 只归档和移走目标 VM 已明确放弃的 `updates`、旧 presence、inventory 和请求；不得清空共享根，不得删除
+2. 在整理 Host 状态前硬停止目标 VM，避免旧 Agent 与网关继续发布协议数据。
+3. 只归档和移走目标 VM 已明确放弃的 `updates`、旧 presence、inventory 和请求；不得清空状态根，不得删除
    pending、人工门禁、未归档运行、claim 或其他 VM 的状态。
 4. 恢复并启动 VM 后，必须观察到恢复后生成的新 boot/session/presence；旧文件存在不能作为上线证据。
 5. 完整 `check` 通过后才能继续任务。失败时保留现场并停止自动重试。

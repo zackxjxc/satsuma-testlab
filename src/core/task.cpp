@@ -18,13 +18,11 @@
 namespace satsuma {
 namespace {
 
-// 区分用户任务计划与两个版本的 Agent 可见清单。
+// 区分两个用户任务 schema 与当前 Agent 可见清单。
 enum class StepParseMode {
     TaskPlanV1,
     TaskPlanV2,
-    RunManifestV1,
-    RunManifestV2,
-    RunManifestV3,
+    RunManifest,
 };
 
 // 拒绝用户任务对象中的未知字段，避免拼写错误静默回落为默认行为。
@@ -104,7 +102,7 @@ void validate_sha256(const std::string& hash) {
     }
 }
 
-// 按任务计划或指定文件协议解析并验证一个步骤。
+// 按任务计划或 VMCI 运行清单解析并验证一个步骤。
 [[nodiscard]] TaskStep parse_step(const nlohmann::json& value, const StepParseMode mode) {
     const std::string type = required_string(value, "type");
     if (mode == StepParseMode::TaskPlanV1 || mode == StepParseMode::TaskPlanV2) {
@@ -163,11 +161,7 @@ void validate_sha256(const std::string& hash) {
 
     if (step.type == "execute" || step.type == "script") {
         const bool has_run_as = value.contains("run_as");
-        if (mode == StepParseMode::RunManifestV1 && has_run_as) {
-            throw Error("Run manifest protocol 1 does not accept run_as for step " + step.id);
-        }
-        if ((mode == StepParseMode::RunManifestV2 || mode == StepParseMode::RunManifestV3) &&
-            !has_run_as) {
+        if (mode == StepParseMode::RunManifest && !has_run_as) {
             throw Error("Run manifest requires run_as for executable step " + step.id);
         }
         step.run_as = has_run_as ? parse_task_run_as(value) : TaskRunAs::System;
@@ -175,8 +169,7 @@ void validate_sha256(const std::string& hash) {
             step.program = path_from_utf8(required_string(value, "program"));
             validate_relative_path(step.program);
         } else {
-            if (mode == StepParseMode::TaskPlanV1 || mode == StepParseMode::RunManifestV1 ||
-                mode == StepParseMode::RunManifestV2) {
+            if (mode == StepParseMode::TaskPlanV1) {
                 throw Error("script steps require task schema 2 and run manifest protocol 3");
             }
             step.engine = parse_script_engine(value);
@@ -294,9 +287,9 @@ void validate_snapshot_name(const std::string& snapshot, const std::string_view 
 
 // 解析 Guest 工作目录和 Host 状态运行目录的结束清理策略。
 [[nodiscard]] TaskCleanupPolicy parse_task_cleanup_policy(const nlohmann::json& value) {
-    reject_unknown_fields(value, {"guest_work", "shared_run"}, "cleanup");
-    if (!value.contains("guest_work") || !value.contains("shared_run")) {
-        throw Error("cleanup requires guest_work and shared_run policies");
+    reject_unknown_fields(value, {"guest_work", "host_run"}, "cleanup");
+    if (!value.contains("guest_work") || !value.contains("host_run")) {
+        throw Error("cleanup requires guest_work and host_run policies");
     }
 
     const auto parse_guest_action = [](const nlohmann::json& action_value) {
@@ -309,38 +302,36 @@ void validate_snapshot_name(const std::string& snapshot, const std::string_view 
         }
         throw Error("Unsupported Guest work cleanup action: " + action);
     };
-    const auto parse_shared_action = [](const nlohmann::json& action_value) {
+    const auto parse_host_action = [](const nlohmann::json& action_value) {
         const std::string action = action_value.get<std::string>();
         if (action == "retain") {
-            return SharedRunCleanupAction::Retain;
+            return HostRunCleanupAction::Retain;
         }
         if (action == "archive_then_delete") {
-            return SharedRunCleanupAction::ArchiveThenDelete;
+            return HostRunCleanupAction::ArchiveThenDelete;
         }
-        throw Error("Unsupported shared run cleanup action: " + action);
+        throw Error("Unsupported Host run cleanup action: " + action);
     };
 
     const nlohmann::json& guest = value.at("guest_work");
-    const nlohmann::json& shared = value.at("shared_run");
+    const nlohmann::json& host = value.at("host_run");
     reject_unknown_fields(guest, {"on_success", "on_failure"}, "cleanup.guest_work");
-    reject_unknown_fields(shared, {"on_success", "on_failure"}, "cleanup.shared_run");
+    reject_unknown_fields(host, {"on_success", "on_failure"}, "cleanup.host_run");
     if (!guest.contains("on_success") || !guest.contains("on_failure") ||
-        !shared.contains("on_success") || !shared.contains("on_failure")) {
+        !host.contains("on_success") || !host.contains("on_failure")) {
         throw Error("cleanup policies require on_success and on_failure actions");
     }
 
     TaskCleanupPolicy cleanup;
     cleanup.guest_work_on_success = parse_guest_action(guest.at("on_success"));
     cleanup.guest_work_on_failure = parse_guest_action(guest.at("on_failure"));
-    cleanup.shared_run_on_success = parse_shared_action(shared.at("on_success"));
-    cleanup.shared_run_on_failure = parse_shared_action(shared.at("on_failure"));
+    cleanup.host_run_on_success = parse_host_action(host.at("on_success"));
+    cleanup.host_run_on_failure = parse_host_action(host.at("on_failure"));
     return cleanup;
 }
 
 // 将一个任务步骤转换为稳定的 JSON 表示。
-[[nodiscard]] nlohmann::json serialize_step(
-    const TaskStep& step,
-    const int protocol_version) {
+[[nodiscard]] nlohmann::json serialize_step(const TaskStep& step) {
     nlohmann::json value = {
         {"id", step.id},
         {"vm", step.vm},
@@ -349,22 +340,10 @@ void validate_snapshot_name(const std::string& snapshot, const std::string_view 
         {"retry_safe", step.retry_safe},
     };
     if (step.type == "execute" || step.type == "script") {
-        if (protocol_version == kLegacyRunManifestProtocolVersion) {
-            if (step.run_as != TaskRunAs::System) {
-                throw Error("Run manifest protocol 1 only supports system execute steps");
-            }
-        } else if (protocol_version == kIdentityRunManifestProtocolVersion ||
-                   protocol_version == kRunManifestProtocolVersion) {
-            value["run_as"] = std::string(task_run_as_name(step.run_as));
-        } else {
-            throw Error("Unsupported run manifest protocol version");
-        }
+        value["run_as"] = std::string(task_run_as_name(step.run_as));
         if (step.type == "execute") {
             value["program"] = path_to_utf8(step.program);
         } else {
-            if (protocol_version != kRunManifestProtocolVersion) {
-                throw Error("script steps require run manifest protocol 3");
-            }
             value["engine"] = std::string(script_engine_name(step.engine));
             value["script"] = path_to_utf8(step.script);
         }
@@ -454,13 +433,13 @@ TaskPlan load_task_plan(const std::filesystem::path& path) {
         for (const auto& artifact_value : value.at("artifacts")) {
             reject_unknown_fields(
                 artifact_value,
-                {"source", "vm", "shared_destination", "sha256"},
+                {"source", "vm", "destination", "sha256"},
                 "task artifact");
             ArtifactInput artifact;
             artifact.source = path_from_utf8(required_string(artifact_value, "source"));
             artifact.vm = required_string(artifact_value, "vm");
             validate_identifier(artifact.vm, "Artifact VM id");
-            artifact.destination = path_from_utf8(required_string(artifact_value, "shared_destination"));
+            artifact.destination = path_from_utf8(required_string(artifact_value, "destination"));
             validate_relative_path(artifact.destination);
             if (!artifact.source.is_absolute()) {
                 throw Error("Artifact source must be an absolute Host path: " + path_to_utf8(artifact.source));
@@ -535,12 +514,12 @@ std::string_view guest_work_cleanup_action_name(const GuestWorkCleanupAction act
     throw Error("Unknown Guest work cleanup action");
 }
 
-std::string_view shared_run_cleanup_action_name(const SharedRunCleanupAction action) {
+std::string_view host_run_cleanup_action_name(const HostRunCleanupAction action) {
     switch (action) {
-    case SharedRunCleanupAction::Retain: return "retain";
-    case SharedRunCleanupAction::ArchiveThenDelete: return "archive_then_delete";
+    case HostRunCleanupAction::Retain: return "retain";
+    case HostRunCleanupAction::ArchiveThenDelete: return "archive_then_delete";
     }
-    throw Error("Unknown shared run cleanup action");
+    throw Error("Unknown Host run cleanup action");
 }
 
 RunManifest load_run_manifest(const std::filesystem::path& path) {
@@ -553,9 +532,7 @@ RunManifest load_run_manifest(const std::filesystem::path& path) {
 
 void to_json(nlohmann::json& value, const RunManifest& manifest) {
     if (manifest.schema_version != 1 ||
-        (manifest.protocol_version != kLegacyRunManifestProtocolVersion &&
-         manifest.protocol_version != kIdentityRunManifestProtocolVersion &&
-         manifest.protocol_version != kRunManifestProtocolVersion)) {
+        manifest.protocol_version != kRunManifestProtocolVersion) {
         throw Error("Unsupported run manifest schema or protocol version");
     }
     value = {
@@ -577,7 +554,7 @@ void to_json(nlohmann::json& value, const RunManifest& manifest) {
         });
     }
     for (const auto& step : manifest.steps) {
-        value["steps"].push_back(serialize_step(step, manifest.protocol_version));
+        value["steps"].push_back(serialize_step(step));
     }
 }
 
@@ -590,9 +567,7 @@ void from_json(const nlohmann::json& value, RunManifest& manifest) {
     manifest.name = required_string(value, "name");
     manifest.created_at = required_string(value, "created_at");
     if (manifest.schema_version != 1 ||
-        (manifest.protocol_version != kLegacyRunManifestProtocolVersion &&
-         manifest.protocol_version != kIdentityRunManifestProtocolVersion &&
-         manifest.protocol_version != kRunManifestProtocolVersion)) {
+        manifest.protocol_version != kRunManifestProtocolVersion) {
         throw Error("Unsupported run manifest schema or protocol version");
     }
 
@@ -609,13 +584,8 @@ void from_json(const nlohmann::json& value, RunManifest& manifest) {
     }
 
     manifest.steps.clear();
-    const StepParseMode step_mode = manifest.protocol_version == kLegacyRunManifestProtocolVersion
-        ? StepParseMode::RunManifestV1
-        : (manifest.protocol_version == kIdentityRunManifestProtocolVersion
-            ? StepParseMode::RunManifestV2
-            : StepParseMode::RunManifestV3);
     for (const auto& step_value : value.at("steps")) {
-        manifest.steps.push_back(parse_step(step_value, step_mode));
+        manifest.steps.push_back(parse_step(step_value, StepParseMode::RunManifest));
     }
 }
 
@@ -656,9 +626,7 @@ void from_json(const nlohmann::json& value, ExecutionResult& result) {
     result.job_id = required_string(value, "job_id");
     result.step_id = required_string(value, "step_id");
     result.status = required_string(value, "status");
-    result.run_as = value.contains("run_as")
-        ? parse_task_run_as(value)
-        : TaskRunAs::System;
+    result.run_as = parse_task_run_as(value);
     if (value.contains("interactive_session_id") &&
         !value.at("interactive_session_id").is_null()) {
         result.interactive_session_id = value.at("interactive_session_id").get<std::uint32_t>();

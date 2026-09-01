@@ -40,7 +40,14 @@ void replace_file(
 [[nodiscard]] std::filesystem::path protocol_relative(
     const AgentConfig& config,
     const std::filesystem::path& path) {
-    return std::filesystem::relative(path, config.channel_root);
+    return std::filesystem::relative(path, config.mirror_root);
+}
+
+// VMCI 元数据固定使用正斜杠，不暴露 Windows 本机分隔符。
+[[nodiscard]] std::string protocol_text(const std::filesystem::path& relative) {
+    std::string text = path_to_utf8(relative);
+    std::replace(text.begin(), text.end(), '\\', '/');
+    return text;
 }
 
 }  // namespace
@@ -57,7 +64,7 @@ VmciChannel::VmciChannel(const AgentConfig& config, std::string session_id)
           config.transport.vmci_port,
           std::chrono::milliseconds(
               std::min(config.transport.request_timeout_ms, 1'000))) {
-    std::filesystem::create_directories(config_.channel_root);
+    std::filesystem::create_directories(config_.mirror_root);
 }
 
 void VmciChannel::update_config(const AgentConfig& config) {
@@ -108,7 +115,7 @@ void VmciChannel::download_file(const nlohmann::json& descriptor) {
     const std::string expected_hash = descriptor.at("sha256").get<std::string>();
     const std::filesystem::path relative = path_from_utf8(relative_text);
     validate_relative_path(relative);
-    const std::filesystem::path target = resolve_under_root(config_.channel_root, relative);
+    const std::filesystem::path target = resolve_under_root(config_.mirror_root, relative);
     if (std::filesystem::is_regular_file(target) &&
         std::filesystem::file_size(target) == expected_size &&
         sha256_file(target) == expected_hash) {
@@ -191,7 +198,7 @@ void VmciChannel::remove_stale_inbound(
         }
     }
 
-    const std::filesystem::path runs = config_.channel_root / L"runs";
+    const std::filesystem::path runs = config_.mirror_root / L"runs";
     if (std::filesystem::is_directory(runs)) {
         for (const auto& entry : std::filesystem::directory_iterator(runs)) {
             if (entry.is_directory() && !active_runs.contains(entry.path().filename().native())) {
@@ -201,7 +208,7 @@ void VmciChannel::remove_stale_inbound(
         }
     }
     const std::filesystem::path updates =
-        config_.channel_root / L"updates" / path_from_utf8(config_.vm_id);
+        config_.mirror_root / L"updates" / path_from_utf8(config_.vm_id);
     if (std::filesystem::is_directory(updates)) {
         for (const auto& entry : std::filesystem::directory_iterator(updates)) {
             if (entry.is_directory() && !active_updates.contains(entry.path().filename().native())) {
@@ -239,7 +246,7 @@ void VmciChannel::upload_file(
             }
         }
         nlohmann::json request = request_base("upload");
-        request["path"] = path_to_utf8(relative);
+        request["path"] = protocol_text(relative);
         request["transfer_id"] = transfer_id;
         request["offset"] = offset;
         request["total_size"] = total;
@@ -256,7 +263,7 @@ void VmciChannel::upload_file(
 
 void VmciChannel::synchronize_outbound() {
     std::vector<std::filesystem::path> files;
-    const std::filesystem::path agents = config_.channel_root / L"agents";
+    const std::filesystem::path agents = config_.mirror_root / L"agents";
     files.push_back(agents / path_from_utf8(config_.hardware_id + ".json"));
     files.push_back(agents / path_from_utf8(config_.hardware_id + ".inventory.json"));
     files.push_back(
@@ -266,7 +273,7 @@ void VmciChannel::synchronize_outbound() {
         files.push_back(agents / path_from_utf8(config_.vm_id + ".json"));
     }
 
-    const std::filesystem::path runs = config_.channel_root / L"runs";
+    const std::filesystem::path runs = config_.mirror_root / L"runs";
     if (std::filesystem::is_directory(runs)) {
         for (const auto& run : std::filesystem::directory_iterator(runs)) {
             const std::filesystem::path state = run.path() / L"state";
@@ -276,7 +283,7 @@ void VmciChannel::synchronize_outbound() {
         }
     }
     const std::filesystem::path updates =
-        config_.channel_root / L"updates" / path_from_utf8(config_.vm_id);
+        config_.mirror_root / L"updates" / path_from_utf8(config_.vm_id);
     if (std::filesystem::is_directory(updates)) {
         for (const auto& update : std::filesystem::directory_iterator(updates)) {
             files.push_back(update.path() / L"result.json");
@@ -349,8 +356,8 @@ StepResultPublishStatus VmciChannel::publish_result(
         const std::filesystem::path canonical = protocol_relative(config_, file.canonical_path);
         upload_file(file.staged_path, staged);
         mappings.push_back({
-            {"staged_path", path_to_utf8(staged)},
-            {"canonical_path", path_to_utf8(canonical)},
+            {"staged_path", protocol_text(staged)},
+            {"canonical_path", protocol_text(canonical)},
         });
     }
     nlohmann::json request = request_base("result_publish");

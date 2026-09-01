@@ -1,4 +1,4 @@
-// Guest 环境清单采集、缓存和共享文件发布接口。
+// Guest 环境清单采集、缓存和 VMCI 状态发布接口。
 #pragma once
 
 #include <filesystem>
@@ -21,7 +21,7 @@ public:
     // 身份绑定变化后更新发布配置并失效当前会话缓存。
     void update_config(const AgentConfig& config);
 
-    // 首次采集或处理显式刷新请求，并修复缺失、损坏的共享文件。
+    // 首次采集或处理显式刷新请求，并修复缺失、损坏的镜像文件。
     void synchronize();
 
     // 返回当前已发布快照的 SHA-256；尚未成功发布时为空。

@@ -6,10 +6,11 @@
   "additionalProperties": false,
   "required": [
     "schema_version", "run_id", "vm_id", "step_id", "job_id", "session_id", "boot_id",
-    "claimed_at", "claimed_unix_ms", "lease_expires_unix_ms", "retry_safe", "attempt"
+    "claimed_at", "claimed_unix_ms", "last_renewed_at", "last_renewed_unix_ms",
+    "lease_expires_unix_ms", "renewal_sequence", "retry_safe", "attempt"
   ],
   "properties": {
-    "schema_version": {"enum": [2, 3]},
+    "schema_version": {"const": 3},
     "run_id": {"type": "string", "minLength": 1},
     "vm_id": {"type": "string", "minLength": 1},
     "step_id": {"type": "string", "minLength": 1},
@@ -24,22 +25,5 @@
     "renewal_sequence": {"type": "integer", "minimum": 0},
     "retry_safe": {"type": "boolean"},
     "attempt": {"type": "integer", "minimum": 1}
-  },
-  "allOf": [
-    {
-      "if": {"properties": {"schema_version": {"const": 3}}},
-      "then": {
-        "required": ["last_renewed_at", "last_renewed_unix_ms", "renewal_sequence"]
-      },
-      "else": {
-        "not": {
-          "anyOf": [
-            {"required": ["last_renewed_at"]},
-            {"required": ["last_renewed_unix_ms"]},
-            {"required": ["renewal_sequence"]}
-          ]
-        }
-      }
-    }
-  ]
+  }
 }

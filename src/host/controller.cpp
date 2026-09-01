@@ -50,7 +50,7 @@ void validate_vm_references(const LabConfig& config, const TaskPlan& plan) {
             const VmConfig& vm = *find_vm(config, step.vm);
             const nlohmann::json presence = load_vm_presence(config, vm);
             if (presence.value("protocol_version", 0) != kRunManifestProtocolVersion) {
-                throw Error("Script step requires Agent file protocol version 3 for VM " + step.vm);
+                throw Error("Script step requires Agent VMCI protocol version 3 for VM " + step.vm);
             }
             const nlohmann::json inventory = load_vm_inventory(config, vm);
             const std::string engine = std::string(script_engine_name(step.engine));
@@ -160,7 +160,7 @@ void prepare_agent_update_queue(
         std::filesystem::remove_all(update_directory, cleanup_error);
         if (cleanup_error || std::filesystem::exists(update_directory)) {
             throw Error(
-                "Successful agent update could not clean its shared directory before publishing another: " +
+                "Successful agent update could not clean its state directory before publishing another: " +
                 previous.update_id + ": " + cleanup_error.message());
         }
     }
@@ -367,7 +367,7 @@ AgentUpdateResult Controller::wait_agent_update(
                     std::this_thread::sleep_for(std::chrono::milliseconds(100));
                 } while (std::chrono::steady_clock::now() < cleanup_deadline);
                 throw Error(
-                    "Successful agent update could not clean its shared directory: " +
+                    "Successful agent update could not clean its state directory: " +
                     cleanup_error.message());
             }
             return result;

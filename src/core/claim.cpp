@@ -10,15 +10,14 @@
 #include "satsuma/core/errors.hpp"
 #include "satsuma/core/id.hpp"
 #include "satsuma/core/json_io.hpp"
-#include "satsuma/core/path.hpp"
 
 namespace satsuma {
 namespace {
 
 // 验证 claim 字段和租约时间范围的一致性。
 void validate_claim_lease(const StepClaimLease& claim) {
-    if (claim.schema_version != 2 && claim.schema_version != 3) {
-        throw Error("Step claim lease requires schema_version 2 or 3");
+    if (claim.schema_version != 3) {
+        throw Error("Step claim lease requires schema_version 3");
     }
     validate_identifier(claim.run_id, "claim run_id");
     validate_identifier(claim.vm_id, "claim vm_id");
@@ -122,21 +121,6 @@ bool same_step_claim_owner(
         left.attempt == right.attempt;
 }
 
-std::filesystem::path step_claim_renewal_path(
-    const std::filesystem::path& claim_path,
-    const StepClaimLease& claim) {
-    validate_claim_lease(claim);
-    if (claim.renewal_sequence == 0) {
-        throw Error("Step claim renewal path requires a positive sequence");
-    }
-    std::string sequence = std::to_string(claim.renewal_sequence); // 固定宽度续租序号
-    sequence.insert(0, 10 - sequence.size(), '0');
-    return claim_path.parent_path() /
-        path_from_utf8(
-            claim.step_id + ".claim-renewal-" + claim.job_id + "-" +
-            sequence + ".json");
-}
-
 ClaimRecoveryDecision evaluate_claim_recovery(
     const StepClaimLease& claim,
     const std::int64_t now_unix_ms) {
@@ -187,15 +171,9 @@ void from_json(const nlohmann::json& value, StepClaimLease& claim) {
     claim.boot_id = value.at("boot_id").get<std::string>();
     claim.claimed_at = value.at("claimed_at").get<std::string>();
     claim.claimed_unix_ms = value.at("claimed_unix_ms").get<std::int64_t>();
-    if (claim.schema_version == 3) {
-        claim.last_renewed_at = value.at("last_renewed_at").get<std::string>();
-        claim.last_renewed_unix_ms = value.at("last_renewed_unix_ms").get<std::int64_t>();
-        claim.renewal_sequence = value.at("renewal_sequence").get<std::uint32_t>();
-    } else {
-        claim.last_renewed_at = claim.claimed_at;
-        claim.last_renewed_unix_ms = claim.claimed_unix_ms;
-        claim.renewal_sequence = 0;
-    }
+    claim.last_renewed_at = value.at("last_renewed_at").get<std::string>();
+    claim.last_renewed_unix_ms = value.at("last_renewed_unix_ms").get<std::int64_t>();
+    claim.renewal_sequence = value.at("renewal_sequence").get<std::uint32_t>();
     claim.lease_expires_unix_ms = value.at("lease_expires_unix_ms").get<std::int64_t>();
     claim.retry_safe = value.at("retry_safe").get<bool>();
     claim.attempt = value.at("attempt").get<std::uint32_t>();

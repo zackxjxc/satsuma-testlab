@@ -266,13 +266,12 @@ try {
     } else {
         $candidateConfig | Add-Member -NotePropertyName storage_root -NotePropertyValue $InstallRoot
     }
-    $channelRoot = Join-Path $InstallRoot 'channel'
-    if ($candidateConfig.PSObject.Properties.Name -contains 'channel_root') {
-        $candidateConfig.channel_root = $channelRoot
+    $mirrorRoot = Join-Path $InstallRoot 'mirror'
+    if ($candidateConfig.PSObject.Properties.Name -contains 'mirror_root') {
+        $candidateConfig.mirror_root = $mirrorRoot
     } else {
-        $candidateConfig | Add-Member -NotePropertyName channel_root -NotePropertyValue $channelRoot
+        $candidateConfig | Add-Member -NotePropertyName mirror_root -NotePropertyValue $mirrorRoot
     }
-    $candidateConfig.local_work_root = $workRoot
     $configText = $candidateConfig | ConvertTo-Json -Depth 20
     [IO.File]::WriteAllText($newConfig, $configText + "`n", (New-Object Text.UTF8Encoding($false)))
     $sourceHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $sourceAgent).Hash

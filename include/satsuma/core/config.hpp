@@ -7,7 +7,7 @@
 #include <string>
 #include <vector>
 
-#include "satsuma/core/file_protocol.hpp"
+#include "satsuma/core/protocol.hpp"
 
 namespace satsuma {
 
@@ -64,21 +64,20 @@ struct LabConfig {
 // VM Agent 的本机配置。
 struct AgentConfig {
     int schema_version{1};                  // 配置 schema 版本
-    int protocol_version{kRunManifestProtocolVersion}; // 文件协议版本
+    int protocol_version{kRunManifestProtocolVersion}; // VMCI 任务协议版本
     std::string lab_id;                     // 实验室稳定 ID
     std::string vm_id;                      // 当前虚拟机的稳定标识，未绑定时暂用硬件 ID
     std::string hardware_id;                // 当前 SMBIOS UUID
     std::string previous_hardware_id;       // 变更前的 SMBIOS UUID
     std::string previous_vm_id;             // 变更前缓存的 VM 标识
-    bool vm_id_configured{false};            // agent.json 是否显式声明旧版 vm_id
+    bool vm_id_configured{false};            // agent.json 是否显式声明 vm_id
     bool identity_unbound{false};            // 当前硬件尚未绑定 VM 标识
     std::string agent_version;              // 当前 Agent 语义版本
     std::string last_update_id;              // 最近成功应用的更新 ID
     std::filesystem::path storage_root;     // 安装器选定的统一本地存储根
-    std::filesystem::path channel_root;     // Guest 本地 VMCI 持久化镜像
+    std::filesystem::path mirror_root;     // Guest 本地 VMCI 持久化镜像
     std::filesystem::path local_work_root;  // Guest 本地执行根目录
     AgentTransportConfig transport;         // Host VMCI endpoint
-    bool legacy_storage_layout{false};       // 旧配置尚未声明 storage_root
     int poll_interval_ms{1000};             // 无任务时的轮询间隔
     int reconnect_interval_ms{1000};        // VMCI 网关异常后的重试间隔
 };

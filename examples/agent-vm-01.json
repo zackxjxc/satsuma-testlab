@@ -3,11 +3,14 @@
   "schema_version": 1,
   "protocol_version": 3,
   "lab_id": "local_windows_lab",
-  "vm_id": "vm_01",
   "agent_version": "0.2.1",
-  "shared_root": "\\\\vmware-host\\Shared Folders\\vm-share",
+  "transport": {
+    "host_cid": 2,
+    "vmci_port": 42510,
+    "request_timeout_ms": 10000
+  },
   "storage_root": "D:\\SatsumaTestLab",
-  "local_work_root": "D:\\SatsumaTestLab\\work",
+  "mirror_root": "D:\\SatsumaTestLab\\mirror",
   "poll_interval_ms": 1000,
   "reconnect_interval_ms": 1000
 }

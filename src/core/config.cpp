@@ -178,8 +178,8 @@ AgentConfig load_agent_config(const std::filesystem::path& path) {
     reject_unknown_fields(
         value,
         {"$schema", "schema_version", "protocol_version", "lab_id", "vm_id",
-         "agent_version", "last_update_id", "transport", "local_work_root",
-         "storage_root", "channel_root", "poll_interval_ms", "reconnect_interval_ms"},
+         "agent_version", "last_update_id", "transport",
+         "storage_root", "mirror_root", "poll_interval_ms", "reconnect_interval_ms"},
         "Agent configuration");
     validate_schema_version(value, "agent.json");
 
@@ -197,33 +197,18 @@ AgentConfig load_agent_config(const std::filesystem::path& path) {
     if (config.vm_id_configured) {
         validate_identifier(config.vm_id, "vm_id");
     }
-    config.local_work_root = path_from_utf8(required_string(value, "local_work_root"));
-    require_absolute_path(config.local_work_root, "local_work_root");
-    config.legacy_storage_layout = !value.contains("storage_root");
-    config.storage_root = config.legacy_storage_layout
-        ? config.local_work_root.parent_path()
-        : path_from_utf8(required_string(value, "storage_root"));
+    config.storage_root = path_from_utf8(required_string(value, "storage_root"));
     require_absolute_path(config.storage_root, "storage_root");
-    config.channel_root = value.contains("channel_root")
-        ? path_from_utf8(required_string(value, "channel_root"))
-        : config.storage_root / L"channel";
-    require_absolute_path(config.channel_root, "channel_root");
+    config.local_work_root = config.storage_root / L"work";
+    config.mirror_root = path_from_utf8(required_string(value, "mirror_root"));
+    require_absolute_path(config.mirror_root, "mirror_root");
     const std::filesystem::path storage_drive = config.storage_root.root_path();
     if (storage_drive.empty() || GetDriveTypeW(storage_drive.c_str()) != DRIVE_FIXED) {
         throw Error("storage_root must be located on a local fixed drive");
     }
-    const std::filesystem::path channel_drive = config.channel_root.root_path();
-    if (channel_drive.empty() || GetDriveTypeW(channel_drive.c_str()) != DRIVE_FIXED) {
-        throw Error("channel_root must be located on a local fixed drive");
-    }
-    if (!config.legacy_storage_layout) {
-        const std::filesystem::path expected_work =
-            (config.storage_root / L"work").lexically_normal();
-        if (_wcsicmp(
-                expected_work.native().c_str(),
-                config.local_work_root.lexically_normal().native().c_str()) != 0) {
-            throw Error("local_work_root must equal <storage_root>/work");
-        }
+    const std::filesystem::path mirror_drive = config.mirror_root.root_path();
+    if (mirror_drive.empty() || GetDriveTypeW(mirror_drive.c_str()) != DRIVE_FIXED) {
+        throw Error("mirror_root must be located on a local fixed drive");
     }
     const auto& transport = value.at("transport");
     reject_unknown_fields(
@@ -248,10 +233,8 @@ AgentConfig load_agent_config(const std::filesystem::path& path) {
     config.poll_interval_ms = value.value("poll_interval_ms", 1000);
     config.reconnect_interval_ms = value.value("reconnect_interval_ms", 1000);
 
-    if (config.protocol_version != kLegacyRunManifestProtocolVersion &&
-        config.protocol_version != kIdentityRunManifestProtocolVersion &&
-        config.protocol_version != kRunManifestProtocolVersion) {
-        throw Error("agent.json requires protocol_version 1, 2, or 3");
+    if (config.protocol_version != kRunManifestProtocolVersion) {
+        throw Error("agent.json requires protocol_version 3");
     }
     if (config.poll_interval_ms < 100 || config.poll_interval_ms > 60'000) {
         throw Error("poll_interval_ms must be between 100 and 60000");

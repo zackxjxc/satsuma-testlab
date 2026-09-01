@@ -9,8 +9,9 @@
   "host": {
     "archive_root": "D:\\Satsuma\\archive"
   },
-  "shared_folder": {
-    "host_root": "D:\\vm-share"
+  "transport": {
+    "state_root": "D:\\Satsuma\\state",
+    "vmci_port": 42510
   },
   "vms": [
     {

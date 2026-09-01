@@ -9,7 +9,7 @@
 #include <string>
 #include <thread>
 
-#include "claim_store.hpp"
+#include "satsuma/core/claim_store.hpp"
 
 namespace satsuma::vm {
 

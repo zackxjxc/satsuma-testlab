@@ -1,13 +1,13 @@
 # 在主任务发布后注入过期危险 claim，并驱动 Agent 发布人工门禁。
 if(NOT DEFINED VM_EXE OR
    NOT DEFINED AGENT_CONFIG OR
-   NOT DEFINED SHARED_ROOT OR
+   NOT DEFINED STATE_ROOT OR
    NOT DEFINED RUN_ID OR
    NOT DEFINED LIFECYCLE_STATE)
     message(FATAL_ERROR "Expired claim injection arguments are incomplete")
 endif()
 
-set(run_directory "${SHARED_ROOT}/runs/${RUN_ID}")
+set(run_directory "${STATE_ROOT}/runs/${RUN_ID}")
 set(claim_path "${run_directory}/state/vm_01/main_echo.claim.json")
 set(claim_injected FALSE)
 foreach(attempt RANGE 1 300)
@@ -15,7 +15,7 @@ foreach(attempt RANGE 1 300)
         file(MAKE_DIRECTORY "${run_directory}/state/vm_01")
         file(WRITE "${claim_path}" [=[
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "run_id": "@RUN_ID@",
   "vm_id": "vm_01",
   "step_id": "main_echo",
@@ -24,7 +24,10 @@ foreach(attempt RANGE 1 300)
   "boot_id": "boot_old",
   "claimed_at": "2026-07-26T00:00:00.000Z",
   "claimed_unix_ms": 1000,
+  "last_renewed_at": "2026-07-26T00:00:00.000Z",
+  "last_renewed_unix_ms": 1000,
   "lease_expires_unix_ms": 2000,
+  "renewal_sequence": 0,
   "retry_safe": false,
   "attempt": 1
 }

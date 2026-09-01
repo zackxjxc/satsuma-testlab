@@ -21,16 +21,13 @@ namespace {
     const std::filesystem::path storage_root = config.storage_root.empty()
         ? config.local_work_root.parent_path()
         : config.storage_root;
-    const std::filesystem::path agent_root =
-        config.legacy_storage_layout || config.storage_root.empty()
-        ? storage_root
-        : storage_root / L"agent";
+    const std::filesystem::path agent_root = storage_root / L"agent";
     return agent_root / L"hardware-id-cache.json";
 }
 
 // Host 以硬件 UUID 为键发布 VM 标识绑定。
 [[nodiscard]] std::filesystem::path binding_path(const AgentConfig& config) {
-    return config.channel_root / L"agents" /
+    return config.mirror_root / L"agents" /
         path_from_utf8(config.hardware_id + ".binding.json");
 }
 
@@ -97,7 +94,7 @@ void prepare_agent_hardware_identity(
         }
     }
 
-    // 手工构造的旧配置也按显式 vm_id 处理，保持库调用兼容。
+    // 测试或嵌入式调用可直接构造显式 vm_id 配置。
     config.vm_id_configured = config.vm_id_configured || !config.vm_id.empty();
     if (config.vm_id_configured) {
         validate_identifier(config.vm_id, "vm_id");
@@ -131,9 +128,9 @@ bool refresh_agent_binding(AgentConfig& config) {
 
 std::filesystem::path hardware_presence_path(const AgentConfig& config) {
     if (config.hardware_id.empty()) {
-        return config.channel_root / L"agents" / path_from_utf8(config.vm_id + ".json");
+        return config.mirror_root / L"agents" / path_from_utf8(config.vm_id + ".json");
     }
-    return config.channel_root / L"agents" /
+    return config.mirror_root / L"agents" /
         path_from_utf8(config.hardware_id + ".json");
 }
 
@@ -153,7 +150,7 @@ void write_hardware_migration_marker(const AgentConfig& config) {
         marker["old_vm_id"] = config.previous_vm_id;
     }
     write_json_atomic(
-        config.channel_root / L"agents" /
+        config.mirror_root / L"agents" /
             path_from_utf8(config.previous_hardware_id + ".migrated.json"),
         marker);
 }

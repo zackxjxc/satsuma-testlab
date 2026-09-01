@@ -298,22 +298,22 @@ function ConvertFrom-HostOutput {
     return $Result.Stdout | ConvertFrom-Json -Depth 64
 }
 
-# 返回本轮运行的共享和 Host 归档事实路径。
+# 返回本轮运行的 Host 状态和归档事实路径。
 function Get-RunPaths {
     param(
         [Parameter(Mandatory = $true)]
         [string]$RunId
     )
 
-    $sharedRun = Join-Path $script:sharedRoot (Join-Path 'runs' $RunId)
+    $hostRun = Join-Path $script:stateRoot (Join-Path 'runs' $RunId)
     $archiveRun = Join-Path $script:archiveRoot (Join-Path 'runs' $RunId)
-    $stepRoot = Join-Path $sharedRun (Join-Path 'results' (Join-Path $script:VmId 'crash_step'))
+    $stepRoot = Join-Path $hostRun (Join-Path 'results' (Join-Path $script:VmId 'crash_step'))
     return [pscustomobject]@{
-        SharedRun = $sharedRun
+        HostRun = $hostRun
         ArchiveRun = $archiveRun
         Lifecycle = Join-Path $archiveRun 'lifecycle.json'
-        Claim = Join-Path $sharedRun (Join-Path 'state' (Join-Path $script:VmId 'crash_step.claim.json'))
-        Recovery = Join-Path $sharedRun (Join-Path 'state' (Join-Path $script:VmId 'crash_step.claim-recovery.json'))
+        Claim = Join-Path $hostRun (Join-Path 'state' (Join-Path $script:VmId 'crash_step.claim.json'))
+        Recovery = Join-Path $hostRun (Join-Path 'state' (Join-Path $script:VmId 'crash_step.claim-recovery.json'))
         Result = Join-Path $stepRoot 'execution.json'
         MainEvidence = Join-Path $archiveRun `
             (Join-Path 'evidence/main/results' (Join-Path $script:VmId 'crash_step/execution.json'))
@@ -357,7 +357,7 @@ function Wait-ForLifecyclePhase {
     return $observed.State
 }
 
-# 等待 claim 和至少一份不可变续租 sidecar。
+# 等待 Host 权威 claim 至少完成一次原子续租。
 function Wait-ForClaimRenewal {
     param(
         [Parameter(Mandatory = $true)]
@@ -367,27 +367,21 @@ function Wait-ForClaimRenewal {
         [int]$TimeoutSeconds
     )
 
-    $claim = Wait-ForCondition -TimeoutSeconds $TimeoutSeconds -Description 'initial step claim' -Probe {
+    $claim = Wait-ForCondition -TimeoutSeconds $TimeoutSeconds -Description 'renewed step claim' -Probe {
         if (Test-Path -LiteralPath $ClaimPath -PathType Leaf) {
-            return Read-JsonFile -Path $ClaimPath
-        }
-        return $false
-    }
-    if ([int]$claim.schema_version -ne 3) {
-        throw "Real crash recovery requires claim schema 3; update the Guest Agent before testing"
-    }
-    $parent = Split-Path -Parent $ClaimPath
-    $filter = "crash_step.claim-renewal-$($claim.job_id)-*.json"
-    $renewals = Wait-ForCondition -TimeoutSeconds $TimeoutSeconds -Description 'claim renewal sidecar' -Probe {
-        $matches = @(Get-ChildItem -LiteralPath $parent -Filter $filter -File -ErrorAction SilentlyContinue)
-        if ($matches.Count -gt 0) {
-            return $matches
+            $candidate = Read-JsonFile -Path $ClaimPath
+            if ([int]$candidate.schema_version -ne 3) {
+                throw "Real crash recovery requires claim schema 3; update the Guest Agent before testing"
+            }
+            if ([uint32]$candidate.renewal_sequence -ge 1) {
+                return $candidate
+            }
         }
         return $false
     }
     return [pscustomobject]@{
         Claim = $claim
-        Renewals = @($renewals)
+        RenewalSequence = [uint32]$claim.renewal_sequence
     }
 }
 
@@ -448,7 +442,7 @@ function New-CrashPlan {
             [ordered]@{
                 source = $script:resolvedFixtureExe
                 vm = $script:VmId
-                shared_destination = $artifactDestination
+                destination = $artifactDestination
             }
         )
         steps = @(
@@ -580,7 +574,7 @@ function Invoke-HostCrashScenario {
             claim_job_id = $claim.job_id
             claim_boot_id = $claim.boot_id
             claim_attempt = [uint32]$claim.attempt
-            renewal_count = @($claimEvidence.Renewals).Count
+            renewal_count = $claimEvidence.RenewalSequence
             lifecycle_path = $paths.Lifecycle
             main_evidence = $paths.MainEvidence
             finally_evidence = $paths.FinallyEvidence
@@ -643,16 +637,13 @@ function Invoke-AgentCrashScenario {
         }
 
         $currentClaim = Read-JsonFile -Path $paths.Claim
-        $archivedClaims = @(Get-ChildItem `
-            -Path "$($paths.Claim).expired-attempt-1-*" `
-            -File `
-            -ErrorAction SilentlyContinue)
+        $archivedClaimPath = "$($paths.Claim).attempt-1.json"
         $execution = $null
         if ($RetrySafe) {
-            if ($archivedClaims.Count -ne 1) {
-                throw "Safe Agent crash retained $($archivedClaims.Count) archived attempt 1 claims."
+            if (-not (Test-Path -LiteralPath $archivedClaimPath -PathType Leaf)) {
+                throw 'Safe Agent crash did not retain the archived attempt 1 claim.'
             }
-            $archivedClaim = Read-JsonFile -Path $archivedClaims[0].FullName
+            $archivedClaim = Read-JsonFile -Path $archivedClaimPath
             $execution = Read-JsonFile -Path $paths.Result
             if ([uint32]$currentClaim.attempt -ne 2 -or
                 $currentClaim.job_id -ceq $claimEvidence.Claim.job_id -or
@@ -665,7 +656,7 @@ function Invoke-AgentCrashScenario {
             Assert-CompletedEvidence -Paths $paths
         }
         else {
-            if ($archivedClaims.Count -ne 0 -or
+            if ((Test-Path -LiteralPath $archivedClaimPath) -or
                 [uint32]$currentClaim.attempt -ne 1 -or
                 $currentClaim.job_id -cne $claimEvidence.Claim.job_id -or
                 (Test-Path -LiteralPath $paths.Result) -or
@@ -703,7 +694,7 @@ function Invoke-AgentCrashScenario {
             old_job_id = $claimEvidence.Claim.job_id
             current_job_id = $currentClaim.job_id
             current_attempt = [uint32]$currentClaim.attempt
-            renewal_count = @($claimEvidence.Renewals).Count
+            renewal_count = $claimEvidence.RenewalSequence
             canonical_result = if ($null -eq $execution) { $null } else { $paths.Result }
             recovery_gate = if ($RetrySafe) { $null } else { $paths.Recovery }
             lifecycle_path = $paths.Lifecycle
@@ -730,10 +721,10 @@ $matchingVms = @($lab.vms | Where-Object { $_.id -ceq $VmId })
 if ($matchingVms.Count -ne 1) {
     throw "Lab config must contain exactly one VM with id $VmId"
 }
-$sharedRoot = [System.IO.Path]::GetFullPath([string]$lab.transport.state_root)
+$stateRoot = [System.IO.Path]::GetFullPath([string]$lab.transport.state_root)
 $archiveRoot = [System.IO.Path]::GetFullPath([string]$lab.host.archive_root)
-if (-not (Test-Path -LiteralPath $sharedRoot -PathType Container)) {
-    throw "Shared root does not exist: $sharedRoot"
+if (-not (Test-Path -LiteralPath $stateRoot -PathType Container)) {
+    throw "Host state root does not exist: $stateRoot"
 }
 if (-not (Test-Path -LiteralPath $archiveRoot -PathType Container)) {
     throw "Archive root does not exist: $archiveRoot"
@@ -742,7 +733,7 @@ $hardwareId = [string]$matchingVms[0].hardware_id
 if ([string]::IsNullOrWhiteSpace($hardwareId)) {
     throw "Lab config VM $VmId does not define hardware_id"
 }
-$presencePath = Join-Path $sharedRoot (Join-Path 'agents' "$hardwareId.json")
+$presencePath = Join-Path $stateRoot (Join-Path 'agents' "$hardwareId.json")
 $validationTimestamp = [DateTime]::UtcNow.ToString('yyyyMMddHHmmss')
 $validationSuffix = [Guid]::NewGuid().ToString('N').Substring(0, 8)
 $validationId = "real-crash-$validationTimestamp-$validationSuffix"

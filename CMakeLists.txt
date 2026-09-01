@@ -125,7 +125,7 @@ endif()
 
 add_library(SatsumaCore STATIC
     src/core/claim.cpp
-    src/vm/claim_store.cpp
+    src/core/claim_store.cpp
     src/core/config.cpp
     src/core/hardware_identity.cpp
     src/core/id.cpp
@@ -230,12 +230,12 @@ set(SATSUMA_DEMO_TASK [=[
     {
       "source": "$<TARGET_FILE:SatsumaDemoApp>",
       "vm": "vm_01",
-      "shared_destination": "artifacts/vm_01/SatsumaDemoApp.exe"
+      "destination": "artifacts/vm_01/SatsumaDemoApp.exe"
     },
     {
       "source": "@DEMO_INPUT@",
       "vm": "vm_01",
-      "shared_destination": "artifacts/vm_01/demo-input.txt"
+      "destination": "artifacts/vm_01/demo-input.txt"
     }
   ],
   "steps": [
@@ -272,7 +272,6 @@ if(MSVC)
 endif()
 
 if(SATSUMA_BUILD_TESTS)
-    target_compile_definitions(SatsumaVmLib PRIVATE SATSUMA_TEST_LOCAL_CHANNEL)
     enable_testing()
     add_subdirectory(tests)
 endif()

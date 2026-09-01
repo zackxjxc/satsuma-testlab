@@ -8,7 +8,7 @@
 
 #include <nlohmann/json.hpp>
 
-#include "claim_store.hpp"
+#include "satsuma/core/claim_store.hpp"
 #include "satsuma/core/config.hpp"
 #include "satsuma/core/vmci.hpp"
 

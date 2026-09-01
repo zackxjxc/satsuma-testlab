@@ -9,7 +9,7 @@
       "on_success": "delete",
       "on_failure": "retain"
     },
-    "shared_run": {
+    "host_run": {
       "on_success": "archive_then_delete",
       "on_failure": "retain"
     }

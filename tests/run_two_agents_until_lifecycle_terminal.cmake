@@ -2,13 +2,13 @@
 if(NOT DEFINED VM_EXE OR
    NOT DEFINED VM_01_CONFIG OR
    NOT DEFINED VM_02_CONFIG OR
-   NOT DEFINED SHARED_ROOT OR
+   NOT DEFINED STATE_ROOT OR
    NOT DEFINED RUN_ID OR
    NOT DEFINED LIFECYCLE_STATE)
     message(FATAL_ERROR "Two-Agent lifecycle driver arguments are incomplete")
 endif()
 
-set(main_manifest "${SHARED_ROOT}/runs/${RUN_ID}/task.json")
+set(main_manifest "${STATE_ROOT}/runs/${RUN_ID}/task.json")
 
 # 查找指定 VM 的单机诊断 manifest 和结果路径。
 function(find_diagnostic vm_id manifest_output execution_output)
@@ -16,7 +16,7 @@ function(find_diagnostic vm_id manifest_output execution_output)
     set(found_execution "")
     file(GLOB diagnostic_manifests
         LIST_DIRECTORIES FALSE
-        "${SHARED_ROOT}/runs/check-*/task.json")
+        "${STATE_ROOT}/runs/check-*/task.json")
     foreach(diagnostic_manifest IN LISTS diagnostic_manifests)
         file(READ "${diagnostic_manifest}" diagnostic_json)
         string(JSON diagnostic_step_count LENGTH "${diagnostic_json}" steps)
@@ -33,7 +33,7 @@ function(find_diagnostic vm_id manifest_output execution_output)
         string(JSON diagnostic_run_id GET "${diagnostic_json}" run_id)
         set(found_manifest "${diagnostic_manifest}")
         set(found_execution
-            "${SHARED_ROOT}/runs/${diagnostic_run_id}/results/${vm_id}/${vm_id}/execution.json")
+            "${STATE_ROOT}/runs/${diagnostic_run_id}/results/${vm_id}/${vm_id}/execution.json")
     endforeach()
     set(${manifest_output} "${found_manifest}" PARENT_SCOPE)
     set(${execution_output} "${found_execution}" PARENT_SCOPE)
@@ -155,7 +155,7 @@ set(finally_manifest "")
 foreach(attempt RANGE 1 300)
     file(GLOB finally_manifests
         LIST_DIRECTORIES FALSE
-        "${SHARED_ROOT}/runs/finally-*/task.json")
+        "${STATE_ROOT}/runs/finally-*/task.json")
     list(LENGTH finally_manifests finally_manifest_count)
     if(finally_manifest_count GREATER 1)
         message(FATAL_ERROR "Host published multiple finally manifests")

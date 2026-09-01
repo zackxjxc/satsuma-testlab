@@ -10,7 +10,7 @@
 
 #include <nlohmann/json_fwd.hpp>
 
-#include "satsuma/core/file_protocol.hpp"
+#include "satsuma/core/protocol.hpp"
 
 namespace satsuma {
 
@@ -55,7 +55,7 @@ struct TaskStep {
     std::string message;                    // echo 步骤内容
     TaskRunAs run_as{TaskRunAs::System};    // 被测进程运行身份
     int timeout_seconds{120};               // 进程树超时秒数
-    bool retry_safe{false};                 // 旧 claim 到期后是否允许在不确定状态下重放
+    bool retry_safe{false};                 // owner 的 claim 到期后是否允许在不确定状态下重放
     std::vector<std::filesystem::path> collect_files; // 待收集的工作目录相对路径
 };
 
@@ -93,7 +93,7 @@ enum class GuestWorkCleanupAction {
 };
 
 // Host 传输状态中运行目录的清理动作。
-enum class SharedRunCleanupAction {
+enum class HostRunCleanupAction {
     Retain,
     ArchiveThenDelete,
 };
@@ -102,8 +102,8 @@ enum class SharedRunCleanupAction {
 struct TaskCleanupPolicy {
     GuestWorkCleanupAction guest_work_on_success{GuestWorkCleanupAction::Delete};
     GuestWorkCleanupAction guest_work_on_failure{GuestWorkCleanupAction::Retain};
-    SharedRunCleanupAction shared_run_on_success{SharedRunCleanupAction::Retain};
-    SharedRunCleanupAction shared_run_on_failure{SharedRunCleanupAction::Retain};
+    HostRunCleanupAction host_run_on_success{HostRunCleanupAction::Retain};
+    HostRunCleanupAction host_run_on_failure{HostRunCleanupAction::Retain};
 };
 
 // AI 或用户提供的任务计划。
@@ -114,13 +114,13 @@ struct TaskPlan {
     std::vector<ArtifactInput> artifacts;  // 待部署文件
     std::vector<TaskStep> steps;           // 有序步骤列表
     std::optional<TaskLifecyclePolicy> lifecycle; // 可选的 Host 生命周期策略
-    TaskCleanupPolicy cleanup;             // Guest 和共享运行目录清理策略
+    TaskCleanupPolicy cleanup;             // Guest 工作目录和 Host 运行状态清理策略
 };
 
 // Host 物化后供 VM 领取的不可变任务清单。
 struct RunManifest {
     int schema_version{1};                    // 清单 schema 版本
-    int protocol_version{kRunManifestProtocolVersion}; // Host/VM 文件协议版本
+    int protocol_version{kRunManifestProtocolVersion}; // Host/VM VMCI 协议版本
     std::string lab_id;                       // 实验室稳定 ID
     std::string run_id;                       // 本次运行唯一 ID
     std::string request_id;                   // Host 请求唯一 ID
@@ -175,8 +175,8 @@ struct ExecutionResult {
 // 返回 Guest 工作目录清理动作的稳定协议名称。
 [[nodiscard]] std::string_view guest_work_cleanup_action_name(GuestWorkCleanupAction action);
 
-// 返回共享运行目录清理动作的稳定协议名称。
-[[nodiscard]] std::string_view shared_run_cleanup_action_name(SharedRunCleanupAction action);
+// 返回 Host 运行目录清理动作的稳定协议名称。
+[[nodiscard]] std::string_view host_run_cleanup_action_name(HostRunCleanupAction action);
 
 // 将运行清单转换为 JSON。
 void to_json(nlohmann::json& value, const RunManifest& manifest);

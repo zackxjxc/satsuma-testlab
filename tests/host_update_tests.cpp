@@ -199,7 +199,7 @@ void test_host_update_flow(const std::filesystem::path& root) {
     expect(observed_success.status == "succeeded",
         "Host did not return the successful update result");
     expect(!std::filesystem::exists(success_directory),
-        "Host retained a successful shared update directory");
+        "Host retained a successful update directory");
 
     for (const auto& entry : std::filesystem::directory_iterator(
              config.transport.state_root / L"updates" / L"vm_01")) {
@@ -272,7 +272,7 @@ void test_host_update_queue_guard(const std::filesystem::path& root) {
                 "vm_02", candidate, "0.1.1"));
         },
         "update-invalid",
-        "Host accepted an invalid legacy update directory");
+        "Host accepted an invalid existing update directory");
 }
 
 }  // namespace

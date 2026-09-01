@@ -76,13 +76,13 @@ void test_file_primitives(const std::filesystem::path& root) {
         FILE_ATTRIBUTE_NORMAL,
         nullptr);
     expect(delete_capable_reader != INVALID_HANDLE_VALUE,
-        "shared read test could not open its delete-capable handle");
-    const nlohmann::json shared_value = satsuma::load_json(json_path);
-    const std::string shared_hash = satsuma::sha256_file(json_path);
+        "concurrent read test could not open its delete-capable handle");
+    const nlohmann::json concurrent_value = satsuma::load_json(json_path);
+    const std::string concurrent_hash = satsuma::sha256_file(json_path);
     CloseHandle(delete_capable_reader);
-    expect(shared_value == value && shared_hash.size() == 64,
+    expect(concurrent_value == value && concurrent_hash.size() == 64,
         "JSON or SHA-256 reader denied atomic replacement sharing");
-    HANDLE blocking_reader = CreateFileW( // 模拟共享目录延迟释放的读取 lease
+    HANDLE blocking_reader = CreateFileW( // 模拟扫描器延迟释放读取 lease
         json_path.c_str(),
         GENERIC_READ,
         FILE_SHARE_READ | FILE_SHARE_WRITE,
@@ -245,12 +245,13 @@ void test_absolute_configuration_paths(const std::filesystem::path& root) {
 
     const nlohmann::json agent = {
         {"schema_version", 1},
-        {"protocol_version", 2},
+        {"protocol_version", satsuma::kRunManifestProtocolVersion},
         {"lab_id", "absolute_path_test"},
         {"vm_id", "vm_01"},
         {"agent_version", "0.1.0"},
         {"transport", {{"host_cid", 2}, {"vmci_port", 42510}}},
-        {"local_work_root", satsuma::path_to_utf8(root / L"work")},
+        {"storage_root", satsuma::path_to_utf8(root / L"storage")},
+        {"mirror_root", satsuma::path_to_utf8(root / L"storage" / L"mirror")},
     };
     const std::filesystem::path agent_path = root / L"absolute-agent.json";
     const auto expect_agent_rejected = [&agent_path](
@@ -267,31 +268,23 @@ void test_absolute_configuration_paths(const std::filesystem::path& root) {
     expect_agent_rejected(invalid_agent, "reserved VMCI CID was accepted");
     invalid_agent = agent;
     invalid_agent["local_work_root"] = "work";
-    expect_agent_rejected(invalid_agent, "relative Agent work root was accepted");
+    expect_agent_rejected(invalid_agent, "removed Agent work-root field was accepted");
     invalid_agent = agent;
     invalid_agent["host"] = "127.0.0.1:37100";
     expect_agent_rejected(invalid_agent, "removed Agent network configuration was accepted");
 
-    nlohmann::json unified_agent = agent;
-    unified_agent["protocol_version"] = satsuma::kRunManifestProtocolVersion;
-    unified_agent["storage_root"] = satsuma::path_to_utf8(root / L"storage");
-    unified_agent["local_work_root"] = satsuma::path_to_utf8(root / L"storage" / L"work");
-    satsuma::write_json_atomic(agent_path, unified_agent);
+    satsuma::write_json_atomic(agent_path, agent);
     const satsuma::AgentConfig unified = satsuma::load_agent_config(agent_path);
     expect(
-        !unified.legacy_storage_layout && unified.storage_root == root / L"storage",
+        unified.storage_root == root / L"storage",
         "unified Agent storage root was not parsed");
 
-    invalid_agent = unified_agent;
-    invalid_agent["local_work_root"] = satsuma::path_to_utf8(root / L"other-work");
-    expect_agent_rejected(invalid_agent, "storage_root accepted an unrelated work directory");
-    invalid_agent = unified_agent;
+    invalid_agent = agent;
     invalid_agent["storage_root"] = "\\\\vmware-host\\Shared Folders\\vm-share";
-    invalid_agent["local_work_root"] = "\\\\vmware-host\\Shared Folders\\vm-share\\work";
     expect_agent_rejected(invalid_agent, "storage_root accepted a VMware Shared Folder");
 }
 
-// 验证硬件 UUID 规范化以及新旧身份配置兼容读取。
+// 验证硬件 UUID 规范化以及可选 VM 身份配置读取。
 void test_hardware_identity_configuration(const std::filesystem::path& root) {
     expect(
         satsuma::normalize_hardware_id("564D1234-ABCD-4321-9876-001122334455") ==
@@ -304,23 +297,24 @@ void test_hardware_identity_configuration(const std::filesystem::path& root) {
     const std::filesystem::path agent_path = root / L"hardware-agent.json";
     nlohmann::json agent = {
         {"schema_version", 1},
-        {"protocol_version", 2},
+        {"protocol_version", satsuma::kRunManifestProtocolVersion},
         {"lab_id", "hardware_test"},
         {"agent_version", "0.1.0"},
         {"transport", {{"host_cid", 2}, {"vmci_port", 42510}}},
-        {"local_work_root", satsuma::path_to_utf8(root / L"work")},
+        {"storage_root", satsuma::path_to_utf8(root / L"storage")},
+        {"mirror_root", satsuma::path_to_utf8(root / L"storage" / L"mirror")},
     };
     satsuma::write_json_atomic(agent_path, agent);
     satsuma::AgentConfig config = satsuma::load_agent_config(agent_path);
     expect(
-        !config.vm_id_configured && config.vm_id.empty() && config.legacy_storage_layout,
+        !config.vm_id_configured && config.vm_id.empty(),
         "Agent config without vm_id was not accepted as unbound");
     agent["vm_id"] = "vm_01";
     satsuma::write_json_atomic(agent_path, agent);
     config = satsuma::load_agent_config(agent_path);
     expect(
         config.vm_id_configured && config.vm_id == "vm_01",
-        "legacy Agent vm_id was not preserved");
+        "configured Agent vm_id was not preserved");
 }
 
 // 验证 AI 快照命名、重名检查和数量配额。
@@ -415,7 +409,7 @@ void test_protocol_round_trip() {
     const nlohmann::json encoded = manifest;
     expect(
         encoded.at("protocol_version") == satsuma::kRunManifestProtocolVersion,
-        "run manifest did not use the current file protocol");
+        "run manifest did not use the current VMCI protocol");
     expect(
         encoded.at("steps").at(0).at("run_as") == "interactive_user",
         "run manifest did not serialize the execute identity");
@@ -451,16 +445,6 @@ void test_protocol_round_trip() {
             decoded_result.interactive_session_id == std::uint32_t{23},
         "execution result identity changed during JSON round trip");
 
-    nlohmann::json legacy_result = encoded_result;
-    legacy_result.erase("run_as");
-    legacy_result.erase("interactive_session_id");
-    const satsuma::ExecutionResult decoded_legacy_result =
-        legacy_result.get<satsuma::ExecutionResult>();
-    expect(
-        decoded_legacy_result.run_as == satsuma::TaskRunAs::System &&
-            !decoded_legacy_result.interactive_session_id.has_value(),
-        "legacy execution result did not default to the system identity");
-
     nlohmann::json invalid_result = encoded_result;
     invalid_result["run_as"] = "administrator";
     expect_error(
@@ -486,7 +470,7 @@ void test_protocol_round_trip() {
         "successful interactive result accepted a missing Session ID");
 }
 
-// 验证任务计划默认身份以及运行清单 v1/v2 的兼容门禁。
+// 验证两种任务 Schema 的默认身份和运行清单门禁。
 void test_task_run_as_protocol(const std::filesystem::path& root) {
     nlohmann::json execute_step = {
         {"id", "execute"},
@@ -543,45 +527,26 @@ void test_task_run_as_protocol(const std::filesystem::path& root) {
     step.program = satsuma::path_from_utf8("artifacts/vm_01/test.exe");
     manifest.steps.push_back(step);
 
-    const nlohmann::json version_two = manifest;
+    const nlohmann::json encoded_manifest = manifest;
     expect(
-        version_two.at("steps").at(0).at("run_as") == "system",
-        "protocol v2 did not explicitly serialize system run_as");
+        encoded_manifest.at("steps").at(0).at("run_as") == "system",
+        "run manifest did not explicitly serialize system run_as");
 
-    nlohmann::json missing_v2_identity = version_two;
-    missing_v2_identity["steps"][0].erase("run_as");
+    nlohmann::json missing_identity = encoded_manifest;
+    missing_identity["steps"][0].erase("run_as");
     expect_error(
-        [&missing_v2_identity] {
-            static_cast<void>(missing_v2_identity.get<satsuma::RunManifest>());
+        [&missing_identity] {
+            static_cast<void>(missing_identity.get<satsuma::RunManifest>());
         },
-        "protocol v2 accepted an execute step without run_as");
+        "run manifest accepted an execute step without run_as");
 
-    nlohmann::json version_one = version_two;
-    version_one["protocol_version"] = satsuma::kLegacyRunManifestProtocolVersion;
-    version_one["steps"][0].erase("run_as");
-    const satsuma::RunManifest decoded_version_one =
-        version_one.get<satsuma::RunManifest>();
-    expect(
-        decoded_version_one.steps.at(0).run_as == satsuma::TaskRunAs::System,
-        "protocol v1 execute step did not use the implicit system identity");
-
-    version_one["steps"][0]["run_as"] = "system";
+    nlohmann::json unsupported_protocol = encoded_manifest;
+    unsupported_protocol["protocol_version"] = 2;
     expect_error(
-        [&version_one] {
-            static_cast<void>(version_one.get<satsuma::RunManifest>());
+        [&unsupported_protocol] {
+            static_cast<void>(unsupported_protocol.get<satsuma::RunManifest>());
         },
-        "protocol v1 accepted an explicit run_as field");
-
-    manifest.protocol_version = satsuma::kLegacyRunManifestProtocolVersion;
-    const nlohmann::json serialized_version_one = manifest;
-    expect(
-        !serialized_version_one.at("steps").at(0).contains("run_as"),
-        "protocol v1 serializer emitted run_as");
-
-    manifest.steps.at(0).run_as = satsuma::TaskRunAs::InteractiveUser;
-    expect_error(
-        [&manifest] { static_cast<void>(nlohmann::json(manifest)); },
-        "protocol v1 serialized an interactive_user step");
+        "run manifest accepted an obsolete protocol version");
 
     manifest.protocol_version = satsuma::kRunManifestProtocolVersion;
     satsuma::TaskStep echo_step;
@@ -590,11 +555,11 @@ void test_task_run_as_protocol(const std::filesystem::path& root) {
     echo_step.type = "echo";
     echo_step.message = "hello";
     manifest.steps = {echo_step};
-    const nlohmann::json version_two_echo = manifest;
+    const nlohmann::json encoded_echo = manifest;
     expect(
-        !version_two_echo.at("steps").at(0).contains("run_as"),
-        "protocol v2 serialized run_as for an echo step");
-    static_cast<void>(version_two_echo.get<satsuma::RunManifest>());
+        !encoded_echo.at("steps").at(0).contains("run_as"),
+        "run manifest serialized run_as for an echo step");
+    static_cast<void>(encoded_echo.get<satsuma::RunManifest>());
 }
 
 // 验证任务 schema 2 和运行清单 v3 的受控脚本协议。
@@ -605,7 +570,7 @@ void test_script_step_protocol(const std::filesystem::path& root) {
         {"artifacts", {{
             {"source", "C:/scripts/configure.ps1"},
             {"vm", "vm_01"},
-            {"shared_destination", "artifacts/vm_01/configure.ps1"},
+            {"destination", "artifacts/vm_01/configure.ps1"},
         }}},
         {"steps", {{
             {"id", "configure"},
@@ -651,11 +616,11 @@ void test_script_step_protocol(const std::filesystem::path& root) {
         [&plan_path] { static_cast<void>(satsuma::load_task_plan(plan_path)); },
         "task schema 1 accepted a script step");
 
-    nlohmann::json protocol_two = encoded;
-    protocol_two["protocol_version"] = satsuma::kIdentityRunManifestProtocolVersion;
+    nlohmann::json obsolete_protocol = encoded;
+    obsolete_protocol["protocol_version"] = 2;
     expect_error(
-        [&protocol_two] { static_cast<void>(protocol_two.get<satsuma::RunManifest>()); },
-        "run manifest protocol 2 accepted a script step");
+        [&obsolete_protocol] { static_cast<void>(obsolete_protocol.get<satsuma::RunManifest>()); },
+        "obsolete run manifest protocol was accepted");
 }
 
 // 验证任务生命周期策略解析和普通 run 的安全边界所需模型。
@@ -710,7 +675,7 @@ void test_task_cleanup_policy(const std::filesystem::path& root) {
         {"steps", {{{"id", "echo"}, {"vm", "vm_01"}, {"type", "echo"}, {"message", "run"}}}},
         {"cleanup", {
             {"guest_work", {{"on_success", "delete"}, {"on_failure", "retain"}}},
-            {"shared_run", {{"on_success", "archive_then_delete"}, {"on_failure", "retain"}}},
+            {"host_run", {{"on_success", "archive_then_delete"}, {"on_failure", "retain"}}},
         }},
     };
     const std::filesystem::path plan_path = root / L"task-cleanup-plan.json";
@@ -719,12 +684,12 @@ void test_task_cleanup_policy(const std::filesystem::path& root) {
     expect(
         plan.cleanup.guest_work_on_success == satsuma::GuestWorkCleanupAction::Delete &&
             plan.cleanup.guest_work_on_failure == satsuma::GuestWorkCleanupAction::Retain &&
-            plan.cleanup.shared_run_on_success == satsuma::SharedRunCleanupAction::ArchiveThenDelete &&
-            plan.cleanup.shared_run_on_failure == satsuma::SharedRunCleanupAction::Retain,
+            plan.cleanup.host_run_on_success == satsuma::HostRunCleanupAction::ArchiveThenDelete &&
+            plan.cleanup.host_run_on_failure == satsuma::HostRunCleanupAction::Retain,
         "task cleanup policy changed during parsing");
     expect(
         satsuma::guest_work_cleanup_action_name(plan.cleanup.guest_work_on_success) == "delete" &&
-            satsuma::shared_run_cleanup_action_name(plan.cleanup.shared_run_on_success) ==
+            satsuma::host_run_cleanup_action_name(plan.cleanup.host_run_on_success) ==
                 "archive_then_delete",
         "task cleanup policy names changed");
 
@@ -739,7 +704,7 @@ void test_task_cleanup_policy(const std::filesystem::path& root) {
     satsuma::write_json_atomic(plan_path, value);
     expect_error(
         [&plan_path] { static_cast<void>(satsuma::load_task_plan(plan_path)); },
-        "Guest cleanup accepted a shared-run-only action");
+        "Guest cleanup accepted a Host-run-only action");
 }
 
 // 验证用户任务会尽早拒绝未知字段和 Windows 等价的重复收集路径。
@@ -750,7 +715,7 @@ void test_task_input_validation(const std::filesystem::path& root) {
         {"artifacts", {{
             {"source", "C:/fixture.exe"},
             {"vm", "vm_01"},
-            {"shared_destination", "artifacts/vm_01/fixture.exe"},
+            {"destination", "artifacts/vm_01/fixture.exe"},
         }}},
         {"steps", {{
             {"id", "execute"},
@@ -919,27 +884,13 @@ void test_claim_recovery_decision(const std::filesystem::path& root) {
         loaded.attempt == 1 && loaded.lease_expires_unix_ms == 6'000 &&
             loaded.last_renewed_unix_ms == 1'000 && loaded.renewal_sequence == 0,
         "claim lease round trip failed");
-    expect(
-        satsuma::step_claim_renewal_path(claim_path, renewed).filename() ==
-            L"echo.claim-renewal-job_claim-0000000001.json",
-        "claim renewal sidecar path did not bind the step, job, and sequence");
+    nlohmann::json obsolete = safe;
+    obsolete["schema_version"] = 2;
     expect_error(
-        [&claim_path, &safe] {
-            static_cast<void>(satsuma::step_claim_renewal_path(claim_path, safe));
+        [&obsolete] {
+            static_cast<void>(obsolete.get<satsuma::StepClaimLease>());
         },
-        "claim renewal sidecar accepted sequence zero");
-
-    nlohmann::json legacy = safe;
-    legacy["schema_version"] = 2;
-    legacy.erase("last_renewed_at");
-    legacy.erase("last_renewed_unix_ms");
-    legacy.erase("renewal_sequence");
-    const satsuma::StepClaimLease compatible = legacy.get<satsuma::StepClaimLease>();
-    expect(
-        compatible.last_renewed_at == compatible.claimed_at &&
-            compatible.last_renewed_unix_ms == compatible.claimed_unix_ms &&
-            compatible.renewal_sequence == 0,
-        "legacy claim lease did not receive renewal defaults");
+        "obsolete claim schema was accepted");
 }
 
 // 验证独立更新清单和终态结果的严格协议。

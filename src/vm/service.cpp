@@ -26,7 +26,7 @@ namespace satsuma::vm {
 namespace {
 
 constexpr std::wstring_view kServiceDescription =
-    L"Runs the Satsuma TestLab file-channel Agent inside the guest.";
+    L"Runs the Satsuma TestLab VMCI Agent inside the guest.";
 constexpr DWORD kServiceStartWaitMs = 30'000;
 constexpr DWORD kServiceStopWaitMs = 20'000;
 constexpr DWORD kServiceDeleteWaitMs = 15'000;
@@ -477,20 +477,17 @@ void wait_for_service_absent(const SC_HANDLE manager) {
     return manager;
 }
 
-// 验证配置中的 work 路径使用同一固定安装根。
+// 验证 work 路径位于固定存储根。
 void validate_local_work_root(
     const AgentServiceSpec& spec,
     const std::filesystem::path& local_work_root) {
-    const std::filesystem::path legacy_expected =
-        std::filesystem::absolute(spec.config.parent_path() / L"work").lexically_normal();
-    const std::filesystem::path unified_expected =
+    const std::filesystem::path expected =
         std::filesystem::absolute(spec.config.parent_path().parent_path() / L"work").lexically_normal();
     const std::filesystem::path actual =
         std::filesystem::absolute(local_work_root).lexically_normal();
-    if ((_wcsicmp(legacy_expected.c_str(), actual.c_str()) != 0 &&
-         _wcsicmp(unified_expected.c_str(), actual.c_str()) != 0) ||
+    if (_wcsicmp(expected.c_str(), actual.c_str()) != 0 ||
         !std::filesystem::is_directory(actual)) {
-        throw Error("Agent local_work_root must use the fixed install work directory");
+        throw Error("Agent work directory must use <storage_root>/work");
     }
 }
 

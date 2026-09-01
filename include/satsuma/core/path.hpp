@@ -1,4 +1,4 @@
-// UTF-8 路径转换和共享根目录边界校验接口。
+// UTF-8 路径转换和可信根目录边界校验接口。
 #pragma once
 
 #include <filesystem>
@@ -21,7 +21,7 @@ void rename_path_with_retry(
 // 验证任务路径是非空、安全的相对路径。
 void validate_relative_path(const std::filesystem::path& relative);
 
-// 解析共享根目录内的相对路径，并拒绝越界和重解析点。
+// 解析可信根目录内的相对路径，并拒绝越界和重解析点。
 [[nodiscard]] std::filesystem::path resolve_under_root(
     const std::filesystem::path& root,
     const std::filesystem::path& relative);

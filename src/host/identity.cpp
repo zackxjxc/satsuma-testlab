@@ -50,15 +50,14 @@ void validate_presence_common(
     const std::string& hardware_id) {
     const int protocol_version = presence.value("protocol_version", 0);
     if (presence.value("schema_version", 0) != 1 ||
-        (protocol_version != kIdentityRunManifestProtocolVersion &&
-         protocol_version != kRunManifestProtocolVersion) ||
+        protocol_version != kRunManifestProtocolVersion ||
         presence.value("lab_id", std::string{}) != config.lab_id ||
         normalize_hardware_id(presence.value("hardware_id", std::string{})) != hardware_id) {
         throw Error("Agent presence identity mismatch for hardware_id " + hardware_id);
     }
 }
 
-// 汇总所有兼容别名中的硬件到 VM 标识映射，用于发现克隆冲突。
+// 汇总所有 presence 别名中的硬件到 VM 标识映射，用于发现克隆冲突。
 [[nodiscard]] std::map<std::string, std::set<std::string>> collect_presence_identities(
     const LabConfig& config) {
     std::map<std::string, std::set<std::string>> identities;
@@ -75,8 +74,7 @@ void validate_presence_common(
             const nlohmann::json presence = load_json(entry.path());
             const int protocol_version = presence.value("protocol_version", 0);
             if (presence.value("schema_version", 0) != 1 ||
-                (protocol_version != kIdentityRunManifestProtocolVersion &&
-                 protocol_version != kRunManifestProtocolVersion) ||
+                protocol_version != kRunManifestProtocolVersion ||
                 presence.value("lab_id", std::string{}) != config.lab_id) {
                 continue;
             }

@@ -10,7 +10,7 @@
   ],
   "properties": {
     "schema_version": {"const": 1},
-    "protocol_version": {"enum": [1, 2, 3]},
+    "protocol_version": {"const": 3},
     "lab_id": {"$ref": "#/$defs/identifier"},
     "run_id": {"$ref": "#/$defs/identifier"},
     "request_id": {"$ref": "#/$defs/identifier"},
@@ -24,47 +24,16 @@
     "steps": {
       "type": "array",
       "minItems": 1,
-      "maxItems": 256
-    }
-  },
-  "allOf": [
-    {
-      "if": {"properties": {"protocol_version": {"const": 1}}},
-      "then": {
-        "properties": {
-          "steps": {
-            "type": "array",
-            "items": {
-              "oneOf": [
-                {"$ref": "#/$defs/echo_step"},
-                {"$ref": "#/$defs/execute_step_v1"}
-              ]
-            }
-          }
-        }
-      },
-      "else": {
-        "if": {"properties": {"protocol_version": {"const": 2}}},
-        "then": {
-          "properties": {
-            "steps": {"type": "array", "items": {"oneOf": [
-              {"$ref": "#/$defs/echo_step"},
-              {"$ref": "#/$defs/execute_step_v2"}
-            ]}}
-          }
-        },
-        "else": {
-          "properties": {
-            "steps": {"type": "array", "items": {"oneOf": [
-              {"$ref": "#/$defs/echo_step"},
-              {"$ref": "#/$defs/execute_step_v2"},
-              {"$ref": "#/$defs/script_step_v3"}
-            ]}}
-          }
-        }
+      "maxItems": 256,
+      "items": {
+        "oneOf": [
+          {"$ref": "#/$defs/echo_step"},
+          {"$ref": "#/$defs/execute_step"},
+          {"$ref": "#/$defs/script_step"}
+        ]
       }
     }
-  ],
+  },
   "$defs": {
     "identifier": {
       "type": "string",
@@ -123,14 +92,7 @@
         }
       }
     },
-    "execute_step_v1": {
-      "type": "object",
-      "allOf": [
-        {"$ref": "#/$defs/execute_common"}
-      ],
-      "unevaluatedProperties": false
-    },
-    "execute_step_v2": {
+    "execute_step": {
       "type": "object",
       "allOf": [
         {"$ref": "#/$defs/execute_common"},
@@ -142,7 +104,7 @@
       ],
       "unevaluatedProperties": false
     },
-    "script_step_v3": {
+    "script_step": {
       "type": "object",
       "additionalProperties": false,
       "required": [

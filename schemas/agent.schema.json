@@ -11,7 +11,7 @@
     "agent_version",
     "transport",
     "storage_root",
-    "local_work_root"
+    "mirror_root"
   ],
   "properties": {
     "$schema": {"type": "string"},
@@ -32,8 +32,7 @@
       }
     },
     "storage_root": {"type": "string", "minLength": 1},
-    "channel_root": {"type": "string", "minLength": 1},
-    "local_work_root": {"type": "string", "minLength": 1},
+    "mirror_root": {"type": "string", "minLength": 1},
     "poll_interval_ms": {"type": "integer", "minimum": 100, "maximum": 60000},
     "reconnect_interval_ms": {"type": "integer", "minimum": 100, "maximum": 60000}
   },

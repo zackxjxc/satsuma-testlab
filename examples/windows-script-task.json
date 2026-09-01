@@ -6,7 +6,7 @@
     {
       "source": "C:\\SatsumaTasks\\configure-vm-01.ps1",
       "vm": "vm_01",
-      "shared_destination": "artifacts/vm_01/configure-vm-01.ps1"
+      "destination": "artifacts/vm_01/configure-vm-01.ps1"
     }
   ],
   "steps": [

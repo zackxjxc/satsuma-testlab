@@ -23,7 +23,7 @@ namespace satsuma::vm {
     const std::filesystem::path& manifest_path);
 
 #ifdef SATSUMA_UPDATE_TESTS
-// 更新事务使用的全部本机和共享文件路径。
+// 更新事务使用的全部本机镜像和安装路径。
 struct AgentUpdatePaths {
     std::filesystem::path update_directory; // 共享更新目录
     std::filesystem::path manifest;         // 本机清单副本

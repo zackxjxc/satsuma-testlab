@@ -62,23 +62,19 @@ function(run_multi_vm_scenario name expected_exit expected_status vm_01_step vm_
          expected_successful expected_failed expected_vm_01_status expected_vm_02_status
          fail_vm_02_cleanup fail_vm_02_soft_stop fail_vm_01_start)
     set(root "${TEST_ROOT}/${name}")
-    set(share "${root}/host-state")
+    set(host_state "${root}/host-state")
     set(archive "${root}/archive")
     set(vm_01_storage "${root}/vm-01-storage")
     set(vm_02_storage "${root}/vm-02-storage")
-    set(vm_01_local "${vm_01_storage}/work")
-    set(vm_02_local "${vm_02_storage}/work")
     file(MAKE_DIRECTORY
-        "${share}"
+        "${host_state}"
         "${archive}"
-        "${vm_01_local}"
-        "${vm_02_local}")
-    file(TO_CMAKE_PATH "${share}" share_path)
+        "${vm_01_storage}"
+        "${vm_02_storage}")
+    file(TO_CMAKE_PATH "${host_state}" state_path)
     file(TO_CMAKE_PATH "${archive}" archive_path)
     file(TO_CMAKE_PATH "${vm_01_storage}" vm_01_storage_path)
     file(TO_CMAKE_PATH "${vm_02_storage}" vm_02_storage_path)
-    file(TO_CMAKE_PATH "${vm_01_local}" vm_01_local_path)
-    file(TO_CMAKE_PATH "${vm_02_local}" vm_02_local_path)
     file(TO_CMAKE_PATH "${root}/VM 01.vmx" vm_01_vmx_path)
     file(TO_CMAKE_PATH "${root}/VM 02.vmx" vm_02_vmx_path)
     file(WRITE "${vm_01_vmx_path}" "# VM 01 test VMX\n")
@@ -90,7 +86,7 @@ function(run_multi_vm_scenario name expected_exit expected_status vm_01_step vm_
   "lab_id": "multi_vm_lab",
   "provider": {"type": "vmware_workstation", "vmrun": "@VMRUN@"},
   "host": {"archive_root": "@ARCHIVE@"},
-  "transport": {"state_root": "@SHARE@", "vmci_port": 42510},
+  "transport": {"state_root": "@STATE@", "vmci_port": 42510},
   "vms": [
     {
       "id": "vm_02",
@@ -109,7 +105,7 @@ function(run_multi_vm_scenario name expected_exit expected_status vm_01_step vm_
 ]=])
     string(REPLACE "@VMRUN@" "${vmrun_path}" lab_json "${lab_json}")
     string(REPLACE "@ARCHIVE@" "${archive_path}" lab_json "${lab_json}")
-    string(REPLACE "@SHARE@" "${share_path}" lab_json "${lab_json}")
+    string(REPLACE "@STATE@" "${state_path}" lab_json "${lab_json}")
     string(REPLACE "@VM_01_VMX@" "${vm_01_vmx_path}" lab_json "${lab_json}")
     string(REPLACE "@VM_02_VMX@" "${vm_02_vmx_path}" lab_json "${lab_json}")
     file(WRITE "${root}/lab.json" "${lab_json}")
@@ -123,23 +119,20 @@ function(run_multi_vm_scenario name expected_exit expected_status vm_01_step vm_
   "agent_version": "0.1.0",
   "transport": {"host_cid": 2, "vmci_port": 42510},
   "storage_root": "@STORAGE@",
-  "channel_root": "@SHARE@",
-  "local_work_root": "@LOCAL@",
+  "mirror_root": "@STATE@",
   "poll_interval_ms": 100,
   "reconnect_interval_ms": 100
 }
 ]=])
-    string(REPLACE "@SHARE@" "${share_path}" vm_01_agent_json "${agent_json}")
+    string(REPLACE "@STATE@" "${state_path}" vm_01_agent_json "${agent_json}")
     string(REPLACE "@STORAGE@" "${vm_01_storage_path}" vm_01_agent_json "${vm_01_agent_json}")
-    string(REPLACE "@LOCAL@" "${vm_01_local_path}" vm_01_agent_json "${vm_01_agent_json}")
     string(REPLACE "@VM_ID@" "vm_01" vm_01_agent_json "${vm_01_agent_json}")
     file(WRITE "${root}/vm_01-agent.json" "${vm_01_agent_json}")
-    string(REPLACE "@SHARE@" "${share_path}" vm_02_agent_json "${agent_json}")
+    string(REPLACE "@STATE@" "${state_path}" vm_02_agent_json "${agent_json}")
     string(REPLACE "@STORAGE@" "${vm_02_storage_path}" vm_02_agent_json "${vm_02_agent_json}")
-    string(REPLACE "@LOCAL@" "${vm_02_local_path}" vm_02_agent_json "${vm_02_agent_json}")
     string(REPLACE "@VM_ID@" "vm_02" vm_02_agent_json "${vm_02_agent_json}")
     file(WRITE "${root}/vm_02-agent.json" "${vm_02_agent_json}")
-    set(ENV{SATSUMA_TEST_LOCAL_CHANNEL} "1")
+    set(ENV{SATSUMA_TEST_LOCAL_MIRROR} "1")
 
     set(run_id "multi_vm_${name}")
     set(plan_json [=[
@@ -151,17 +144,17 @@ function(run_multi_vm_scenario name expected_exit expected_status vm_01_step vm_
     {
       "source": "@FIXTURE@",
       "vm": "vm_01",
-      "shared_destination": "artifacts/vm_01/SatsumaTestFixture.exe"
+      "destination": "artifacts/vm_01/SatsumaTestFixture.exe"
     },
     {
       "source": "@FIXTURE@",
       "vm": "vm_02",
-      "shared_destination": "artifacts/vm_02/SatsumaTestFixture.exe"
+      "destination": "artifacts/vm_02/SatsumaTestFixture.exe"
     }
   ],
   "cleanup": {
     "guest_work": {"on_success": "delete", "on_failure": "retain"},
-    "shared_run": {"on_success": "archive_then_delete", "on_failure": "retain"}
+    "host_run": {"on_success": "archive_then_delete", "on_failure": "retain"}
   },
   "steps": [
     @VM_01_STEP@,
@@ -221,7 +214,7 @@ function(run_multi_vm_scenario name expected_exit expected_status vm_01_step vm_
             "-DVM_EXE=${VM_EXE}"
             "-DVM_01_CONFIG=${root}/vm_01-agent.json"
             "-DVM_02_CONFIG=${root}/vm_02-agent.json"
-            "-DSHARED_ROOT=${share}"
+            "-DSTATE_ROOT=${host_state}"
             "-DRUN_ID=${run_id}"
             "-DLIFECYCLE_STATE=${lifecycle_state}"
             -P "${CMAKE_CURRENT_LIST_DIR}/run_two_agents_until_lifecycle_terminal.cmake"
@@ -282,10 +275,10 @@ function(run_multi_vm_scenario name expected_exit expected_status vm_01_step vm_
     file(READ "${archive}/runs/${run_id}/orchestration.json" orchestration_identity)
     string(JSON finally_run_id GET "${orchestration_identity}" finally_run_id)
     if(expected_status STREQUAL "COMPLETED")
-        if(EXISTS "${share}/runs/${run_id}" OR EXISTS "${share}/runs/${finally_run_id}")
+        if(EXISTS "${host_state}/runs/${run_id}" OR EXISTS "${host_state}/runs/${finally_run_id}")
             message(FATAL_ERROR "Multi-VM ${name} retained transport-state runs after verified archive")
         endif()
-    elseif(NOT EXISTS "${share}/runs/${run_id}")
+    elseif(NOT EXISTS "${host_state}/runs/${run_id}")
         message(FATAL_ERROR "Multi-VM ${name} deleted failure evidence from transport state")
     endif()
     file(READ "${main_evidence}/task.json" main_manifest)

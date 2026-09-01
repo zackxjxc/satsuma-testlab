@@ -8,11 +8,10 @@ if(NOT DEFINED HOST_EXE OR
 endif()
 
 file(REMOVE_RECURSE "${TEST_ROOT}")
-file(MAKE_DIRECTORY "${TEST_ROOT}/storage/channel" "${TEST_ROOT}/storage/work" "${TEST_ROOT}/archive")
+file(MAKE_DIRECTORY "${TEST_ROOT}/storage/mirror" "${TEST_ROOT}/storage/work" "${TEST_ROOT}/archive")
 
-file(TO_CMAKE_PATH "${TEST_ROOT}/storage/channel" share_path)
+file(TO_CMAKE_PATH "${TEST_ROOT}/storage/mirror" state_path)
 file(TO_CMAKE_PATH "${TEST_ROOT}/storage" storage_path)
-file(TO_CMAKE_PATH "${TEST_ROOT}/storage/work" local_path)
 file(TO_CMAKE_PATH "${TEST_ROOT}/archive" archive_path)
 file(TO_CMAKE_PATH "${FIXTURE_EXE}" fixture_path)
 file(TO_CMAKE_PATH "${VMRUN_EXE}" vmrun_path)
@@ -33,7 +32,7 @@ set(lab_json [=[
   },
   "host": {"archive_root": "@ARCHIVE@"},
   "transport": {
-    "state_root": "@SHARE@",
+    "state_root": "@STATE@",
     "vmci_port": 42510
   },
   "vms": [
@@ -71,7 +70,7 @@ set(lab_json [=[
 }
 ]=])
 string(REPLACE "@ARCHIVE@" "${archive_path}" lab_json "${lab_json}")
-string(REPLACE "@SHARE@" "${share_path}" lab_json "${lab_json}")
+string(REPLACE "@STATE@" "${state_path}" lab_json "${lab_json}")
 string(REPLACE "@VMRUN@" "${vmrun_path}" lab_json "${lab_json}")
 string(REPLACE "@VMX@" "${vmx_path}" lab_json "${lab_json}")
 string(REPLACE "@HARD_VMX@" "${hard_vmx_path}" lab_json "${lab_json}")
@@ -87,16 +86,15 @@ set(agent_json [=[
   "agent_version": "0.1.0",
   "transport": {"host_cid": 2, "vmci_port": 42510},
   "storage_root": "@STORAGE@",
-  "local_work_root": "@LOCAL@",
+  "mirror_root": "@STATE@",
   "poll_interval_ms": 100,
   "reconnect_interval_ms": 100
 }
 ]=])
-string(REPLACE "@SHARE@" "${share_path}" agent_json "${agent_json}")
+string(REPLACE "@STATE@" "${state_path}" agent_json "${agent_json}")
 string(REPLACE "@STORAGE@" "${storage_path}" agent_json "${agent_json}")
-string(REPLACE "@LOCAL@" "${local_path}" agent_json "${agent_json}")
 file(WRITE "${TEST_ROOT}/agent.json" "${agent_json}")
-set(ENV{SATSUMA_TEST_LOCAL_CHANNEL} "1")
+set(ENV{SATSUMA_TEST_LOCAL_MIRROR} "1")
 
 # 独立故障场景确认保留租约后，由测试操作者显式放弃现场。
 function(force_unlock_lab context)
@@ -122,7 +120,7 @@ set(task_json [=[
     {
       "source": "@FIXTURE@",
       "vm": "vm_01",
-      "shared_destination": "artifacts/vm_01/SatsumaTestFixture.exe"
+      "destination": "artifacts/vm_01/SatsumaTestFixture.exe"
     }
   ],
   "steps": [
@@ -178,7 +176,7 @@ endif()
 # Agent 返回失败终态后，Host 必须释放短操作租约并保留失败证据。
 execute_process(
     COMMAND "${CMAKE_COMMAND}"
-        "-DUPDATE_ROOT=${share_path}/updates"
+        "-DUPDATE_ROOT=${state_path}/updates"
         -DVM_ID=vm_01
         -P "${CMAKE_CURRENT_LIST_DIR}/write_failed_update_result_after_publish.cmake"
     COMMAND "${HOST_EXE}" agent update
@@ -267,7 +265,7 @@ if(missing_plan_result EQUAL 0 OR missing_plan_error_position EQUAL -1)
         "SatsumaHost missing option error omitted --plan: "
         "${missing_plan_error}\n${missing_plan_output}")
 endif()
-if(EXISTS "${share_path}/runs")
+if(EXISTS "${state_path}/runs")
     message(FATAL_ERROR "Rejected Host CLI calls unexpectedly created the runs directory")
 endif()
 
@@ -377,7 +375,7 @@ execute_process(
         "-DVM_EXE=${VM_EXE}"
         "-DAGENT_CONFIG=${TEST_ROOT}/agent.json"
         "-DLIFECYCLE_STATE=${lifecycle_state}"
-        "-DSHARED_ROOT=${share_path}"
+        "-DSTATE_ROOT=${state_path}"
         -DINJECT_ATOMIC_JSON_TEMPORARY=ON
         -P "${CMAKE_CURRENT_LIST_DIR}/run_agent_until_lifecycle_terminal.cmake"
     COMMAND "${HOST_EXE}" orchestrate
@@ -543,8 +541,8 @@ set(executing_plan_path "${TEST_ROOT}/orchestration-executing-resume.json")
 set(executing_main_path "${TEST_ROOT}/orchestration-executing-main.json")
 file(WRITE "${executing_plan_path}" "${executing_resume_plan}")
 file(WRITE "${executing_main_path}" "${executing_main_plan}")
-file(MAKE_DIRECTORY "${share_path}/runs/orchestration_executing_resume")
-file(WRITE "${share_path}/runs/orchestration_executing_resume/task.json" [=[
+file(MAKE_DIRECTORY "${state_path}/runs/orchestration_executing_resume")
+file(WRITE "${state_path}/runs/orchestration_executing_resume/task.json" [=[
 {
   "schema_version": 1,
   "protocol_version": 3,
@@ -676,7 +674,7 @@ string(REPLACE
     "${collecting_resume_plan}")
 string(REPLACE
     "  \"lifecycle\": {"
-    "  \"cleanup\": {\n    \"guest_work\": {\"on_success\": \"retain\", \"on_failure\": \"retain\"},\n    \"shared_run\": {\"on_success\": \"retain\", \"on_failure\": \"retain\"}\n  },\n  \"lifecycle\": {"
+    "  \"cleanup\": {\n    \"guest_work\": {\"on_success\": \"retain\", \"on_failure\": \"retain\"},\n    \"host_run\": {\"on_success\": \"retain\", \"on_failure\": \"retain\"}\n  },\n  \"lifecycle\": {"
     collecting_resume_plan
     "${collecting_resume_plan}")
 string(REPLACE
@@ -710,8 +708,8 @@ set(collecting_manifest [=[
   ]
 }
 ]=])
-file(MAKE_DIRECTORY "${share_path}/runs/orchestration_collecting_resume")
-file(WRITE "${share_path}/runs/orchestration_collecting_resume/task.json" "${collecting_manifest}")
+file(MAKE_DIRECTORY "${state_path}/runs/orchestration_collecting_resume")
+file(WRITE "${state_path}/runs/orchestration_collecting_resume/task.json" "${collecting_manifest}")
 execute_process(
     COMMAND "${VM_EXE}" --config "${TEST_ROOT}/agent.json" --once
     RESULT_VARIABLE collecting_agent_result
@@ -861,7 +859,7 @@ set(orchestration_failure_json [=[
     {
       "source": "@FIXTURE@",
       "vm": "vm_01",
-      "shared_destination": "artifacts/vm_01/SatsumaTestFixture.exe"
+      "destination": "artifacts/vm_01/SatsumaTestFixture.exe"
     }
   ],
   "steps": [
@@ -1004,7 +1002,7 @@ execute_process(
     COMMAND "${CMAKE_COMMAND}"
         "-DVM_EXE=${VM_EXE}"
         "-DAGENT_CONFIG=${TEST_ROOT}/agent.json"
-        "-DSHARED_ROOT=${share_path}"
+        "-DSTATE_ROOT=${state_path}"
         "-DRUN_ID=orchestration_manual_gate"
         "-DLIFECYCLE_STATE=${manual_gate_state}"
         -P "${CMAKE_CURRENT_LIST_DIR}/inject_expired_claim_and_drive_agent.cmake"
@@ -1065,7 +1063,7 @@ set(claim_task_template [=[
 ]=])
 set(claim_template [=[
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "run_id": "@RUN_ID@",
   "vm_id": "vm_01",
   "step_id": "echo",
@@ -1074,7 +1072,10 @@ set(claim_template [=[
   "boot_id": "boot_old",
   "claimed_at": "2026-07-26T00:00:00.000Z",
   "claimed_unix_ms": 1000,
+  "last_renewed_at": "2026-07-26T00:00:00.000Z",
+  "last_renewed_unix_ms": 1000,
   "lease_expires_unix_ms": 2000,
+  "renewal_sequence": 0,
   "retry_safe": @RETRY_SAFE@,
   "attempt": 1
 }
@@ -1085,9 +1086,9 @@ string(REPLACE "@RUN_ID@" "${safe_claim_run}" safe_claim_task "${claim_task_temp
 string(REPLACE "@RETRY_SAFE@" "true" safe_claim_task "${safe_claim_task}")
 string(REPLACE "@RUN_ID@" "${safe_claim_run}" safe_claim "${claim_template}")
 string(REPLACE "@RETRY_SAFE@" "true" safe_claim "${safe_claim}")
-file(MAKE_DIRECTORY "${share_path}/runs/${safe_claim_run}/state/vm_01")
-file(WRITE "${share_path}/runs/${safe_claim_run}/task.json" "${safe_claim_task}")
-file(WRITE "${share_path}/runs/${safe_claim_run}/state/vm_01/echo.claim.json" "${safe_claim}")
+file(MAKE_DIRECTORY "${state_path}/runs/${safe_claim_run}/state/vm_01")
+file(WRITE "${state_path}/runs/${safe_claim_run}/task.json" "${safe_claim_task}")
+file(WRITE "${state_path}/runs/${safe_claim_run}/state/vm_01/echo.claim.json" "${safe_claim}")
 execute_process(
     COMMAND "${VM_EXE}" --config "${TEST_ROOT}/agent.json" --once
     RESULT_VARIABLE safe_claim_result
@@ -1097,20 +1098,19 @@ execute_process(
 if(NOT safe_claim_result EQUAL 0)
     message(FATAL_ERROR "Safe claim recovery failed: ${safe_claim_error}\n${safe_claim_output}")
 endif()
-set(safe_execution "${share_path}/runs/${safe_claim_run}/results/vm_01/echo/execution.json")
+set(safe_execution "${state_path}/runs/${safe_claim_run}/results/vm_01/echo/execution.json")
 if(NOT EXISTS "${safe_execution}")
     message(FATAL_ERROR "Expired safe claim was not executed")
 endif()
-file(READ "${share_path}/runs/${safe_claim_run}/state/vm_01/echo.claim.json" safe_claim_after)
+file(READ "${state_path}/runs/${safe_claim_run}/state/vm_01/echo.claim.json" safe_claim_after)
 string(FIND "${safe_claim_after}" "\"attempt\": 2" safe_attempt_position)
 if(safe_attempt_position EQUAL -1)
     message(FATAL_ERROR "Recovered safe claim did not increment attempt: ${safe_claim_after}")
 endif()
-file(GLOB safe_expired_claims
-    "${share_path}/runs/${safe_claim_run}/state/vm_01/echo.claim.json.expired-attempt-1-*")
-list(LENGTH safe_expired_claims safe_expired_count)
-if(NOT safe_expired_count EQUAL 1)
-    message(FATAL_ERROR "Safe claim recovery did not preserve exactly one expired claim")
+set(safe_expired_claim
+    "${state_path}/runs/${safe_claim_run}/state/vm_01/echo.claim.json.attempt-1.json")
+if(NOT EXISTS "${safe_expired_claim}")
+    message(FATAL_ERROR "Safe claim recovery did not preserve the expired claim")
 endif()
 
 set(unsafe_claim_run "claim_unsafe_recovery")
@@ -1118,9 +1118,9 @@ string(REPLACE "@RUN_ID@" "${unsafe_claim_run}" unsafe_claim_task "${claim_task_
 string(REPLACE "@RETRY_SAFE@" "false" unsafe_claim_task "${unsafe_claim_task}")
 string(REPLACE "@RUN_ID@" "${unsafe_claim_run}" unsafe_claim "${claim_template}")
 string(REPLACE "@RETRY_SAFE@" "false" unsafe_claim "${unsafe_claim}")
-file(MAKE_DIRECTORY "${share_path}/runs/${unsafe_claim_run}/state/vm_01")
-file(WRITE "${share_path}/runs/${unsafe_claim_run}/task.json" "${unsafe_claim_task}")
-file(WRITE "${share_path}/runs/${unsafe_claim_run}/state/vm_01/echo.claim.json" "${unsafe_claim}")
+file(MAKE_DIRECTORY "${state_path}/runs/${unsafe_claim_run}/state/vm_01")
+file(WRITE "${state_path}/runs/${unsafe_claim_run}/task.json" "${unsafe_claim_task}")
+file(WRITE "${state_path}/runs/${unsafe_claim_run}/state/vm_01/echo.claim.json" "${unsafe_claim}")
 execute_process(
     COMMAND "${VM_EXE}" --config "${TEST_ROOT}/agent.json" --once
     RESULT_VARIABLE unsafe_claim_result
@@ -1130,11 +1130,11 @@ execute_process(
 if(NOT unsafe_claim_result EQUAL 0)
     message(FATAL_ERROR "Unsafe claim audit failed: ${unsafe_claim_error}\n${unsafe_claim_output}")
 endif()
-if(EXISTS "${share_path}/runs/${unsafe_claim_run}/results/vm_01/echo/execution.json")
+if(EXISTS "${state_path}/runs/${unsafe_claim_run}/results/vm_01/echo/execution.json")
     message(FATAL_ERROR "Expired unsafe claim was executed without manual approval")
 endif()
 set(unsafe_recovery
-    "${share_path}/runs/${unsafe_claim_run}/state/vm_01/echo.claim-recovery.json")
+    "${state_path}/runs/${unsafe_claim_run}/state/vm_01/echo.claim-recovery.json")
 if(NOT EXISTS "${unsafe_recovery}")
     message(FATAL_ERROR "Expired unsafe claim did not publish a recovery gate")
 endif()
@@ -1194,9 +1194,9 @@ string(REPLACE
     "\"lease_expires_unix_ms\": 4102444800000"
     pending_claim
     "${pending_claim}")
-file(MAKE_DIRECTORY "${share_path}/runs/${pending_run}/state/vm_01")
-file(WRITE "${share_path}/runs/${pending_run}/task.json" "${pending_task}")
-file(WRITE "${share_path}/runs/${pending_run}/state/vm_01/echo.claim.json" "${pending_claim}")
+file(MAKE_DIRECTORY "${state_path}/runs/${pending_run}/state/vm_01")
+file(WRITE "${state_path}/runs/${pending_run}/task.json" "${pending_task}")
+file(WRITE "${state_path}/runs/${pending_run}/state/vm_01/echo.claim.json" "${pending_claim}")
 execute_process(
     COMMAND "${HOST_EXE}" report
         --config "${TEST_ROOT}/lab.json"
@@ -1251,7 +1251,7 @@ if(check_tools_position EQUAL -1 OR
    check_capacity_position EQUAL -1)
     message(FATAL_ERROR "SatsumaHost active check omitted Tools or capacity details: ${check_output}")
 endif()
-file(GLOB diagnostic_claims "${share_path}/runs/check-*/state/vm_01/vm_01.claim.json")
+file(GLOB diagnostic_claims "${state_path}/runs/check-*/state/vm_01/vm_01.claim.json")
 list(LENGTH diagnostic_claims diagnostic_claim_count)
 if(diagnostic_claim_count LESS 1)
     message(FATAL_ERROR "SatsumaHost active check did not create a diagnostic claim")
@@ -1263,47 +1263,47 @@ if(diagnostic_retry_position EQUAL -1)
     message(FATAL_ERROR "Diagnostic echo claim was not marked retry-safe: ${diagnostic_claim_json}")
 endif()
 
-# Shared Folder 无法发布任务时仍返回完整机器可读失败报告。
-file(WRITE "${TEST_ROOT}/blocked-share" "not a directory\n")
-file(TO_CMAKE_PATH "${TEST_ROOT}/blocked-share" blocked_share_path)
-string(REPLACE "${share_path}" "${blocked_share_path}" blocked_share_lab_json "${lab_json}")
-file(WRITE "${TEST_ROOT}/lab-blocked-share.json" "${blocked_share_lab_json}")
+# Host 状态目录不可用时仍返回完整机器可读失败报告。
+file(WRITE "${TEST_ROOT}/blocked-state" "not a directory\n")
+file(TO_CMAKE_PATH "${TEST_ROOT}/blocked-state" blocked_state_path)
+string(REPLACE "${state_path}" "${blocked_state_path}" blocked_state_lab_json "${lab_json}")
+file(WRITE "${TEST_ROOT}/lab-blocked-state.json" "${blocked_state_lab_json}")
 execute_process(
     COMMAND "${HOST_EXE}" check
-        --config "${TEST_ROOT}/lab-blocked-share.json"
+        --config "${TEST_ROOT}/lab-blocked-state.json"
         --vm vm_01
         --timeout-seconds 2
-    RESULT_VARIABLE blocked_share_result
-    OUTPUT_VARIABLE blocked_share_output
-    ERROR_VARIABLE blocked_share_error
+    RESULT_VARIABLE blocked_state_result
+    OUTPUT_VARIABLE blocked_state_output
+    ERROR_VARIABLE blocked_state_error
 )
-if(NOT blocked_share_result EQUAL 1)
+if(NOT blocked_state_result EQUAL 1)
     message(FATAL_ERROR
-        "Blocked Shared Folder check returned ${blocked_share_result}: "
-        "${blocked_share_error}\n${blocked_share_output}")
+        "Blocked transport-state check returned ${blocked_state_result}: "
+        "${blocked_state_error}\n${blocked_state_output}")
 endif()
-string(FIND "${blocked_share_output}" "\"mode\": \"full\"" blocked_share_mode_position)
-string(FIND "${blocked_share_output}" "\"run_id\": null" blocked_share_run_position)
+string(FIND "${blocked_state_output}" "\"mode\": \"full\"" blocked_state_mode_position)
+string(FIND "${blocked_state_output}" "\"run_id\": null" blocked_state_run_position)
 string(FIND
-    "${blocked_share_output}"
+    "${blocked_state_output}"
     "Agent diagnostic was skipped because the transport state is unavailable"
-    blocked_share_skip_position)
-if(blocked_share_mode_position EQUAL -1 OR
-   blocked_share_run_position EQUAL -1 OR
-   blocked_share_skip_position EQUAL -1)
-    message(FATAL_ERROR "Blocked transport-state check lost its JSON report: ${blocked_share_output}")
+    blocked_state_skip_position)
+if(blocked_state_mode_position EQUAL -1 OR
+   blocked_state_run_position EQUAL -1 OR
+   blocked_state_skip_position EQUAL -1)
+    message(FATAL_ERROR "Blocked transport-state check lost its JSON report: ${blocked_state_output}")
 endif()
 execute_process(
-    COMMAND "${HOST_EXE}" lab status --config "${TEST_ROOT}/lab-blocked-share.json"
-    RESULT_VARIABLE blocked_share_status_result
-    OUTPUT_VARIABLE blocked_share_status_output
-    ERROR_VARIABLE blocked_share_status_error
+    COMMAND "${HOST_EXE}" lab status --config "${TEST_ROOT}/lab-blocked-state.json"
+    RESULT_VARIABLE blocked_state_status_result
+    OUTPUT_VARIABLE blocked_state_status_output
+    ERROR_VARIABLE blocked_state_status_error
 )
-if(NOT blocked_share_status_result EQUAL 0 OR
-   NOT blocked_share_status_output MATCHES "\"status\": \"available\"")
+if(NOT blocked_state_status_result EQUAL 0 OR
+   NOT blocked_state_status_output MATCHES "\"status\": \"available\"")
     message(FATAL_ERROR
         "Failed diagnostic retained the lab lease: "
-        "${blocked_share_status_error}\n${blocked_share_status_output}")
+        "${blocked_state_status_error}\n${blocked_state_status_output}")
 endif()
 
 # 归档根不可用时无法创建持久租约，必须在发布诊断任务前失败。
@@ -1606,14 +1606,14 @@ if(failed_position EQUAL -1)
     message(FATAL_ERROR "Host report did not contain one timed-out step: ${report_output}")
 endif()
 
-set(result_root "${share_path}/runs/integration_run/results/vm_01/execute_fixture")
+set(result_root "${state_path}/runs/integration_run/results/vm_01/execute_fixture")
 if(NOT EXISTS "${result_root}/execution.json" OR
    NOT EXISTS "${result_root}/stdout.log" OR
    NOT EXISTS "${result_root}/files/generated/result.json")
     message(FATAL_ERROR "Expected execution evidence was not created")
 endif()
 
-set(timeout_result "${share_path}/runs/integration_run/results/vm_01/timeout_fixture/execution.json")
+set(timeout_result "${state_path}/runs/integration_run/results/vm_01/timeout_fixture/execution.json")
 if(NOT EXISTS "${timeout_result}")
     message(FATAL_ERROR "Timed-out execution evidence was not created")
 endif()

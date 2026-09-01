@@ -75,7 +75,6 @@ foreach(required_text IN ITEMS
     "Join-Path $agentRoot 'bin'"
     "Join-Path $InstallRoot 'work'"
     "storage_root"
-    "local_work_root"
     "Set-SatsumaProtectedAcl"
     "BUILTIN\\Administrators"
     "SatsumaVM.new.exe"

@@ -4,8 +4,8 @@ if(NOT DEFINED VM_EXE OR NOT DEFINED AGENT_CONFIG OR NOT DEFINED LIFECYCLE_STATE
 endif()
 
 foreach(attempt RANGE 1 300)
-    if(DEFINED SHARED_ROOT AND INJECT_ATOMIC_JSON_TEMPORARY)
-        file(GLOB published_manifests "${SHARED_ROOT}/runs/*/task.json")
+    if(DEFINED STATE_ROOT AND INJECT_ATOMIC_JSON_TEMPORARY)
+        file(GLOB published_manifests "${STATE_ROOT}/runs/*/task.json")
         foreach(published_manifest IN LISTS published_manifests)
             get_filename_component(run_directory "${published_manifest}" DIRECTORY)
             file(MAKE_DIRECTORY "${run_directory}/state")

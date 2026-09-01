@@ -10,8 +10,7 @@
     "request_timeout_ms": 10000
   },
   "storage_root": "D:\\SatsumaTestLab",
-  "channel_root": "D:\\SatsumaTestLab\\channel",
-  "local_work_root": "D:\\SatsumaTestLab\\work",
+  "mirror_root": "D:\\SatsumaTestLab\\mirror",
   "poll_interval_ms": 1000,
   "reconnect_interval_ms": 1000
 }

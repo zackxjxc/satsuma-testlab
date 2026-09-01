@@ -1,4 +1,4 @@
-// Host 权威 claim 事务、续租 sidecar 和结果 fencing 接口。
+// Host 权威 claim 租约和结果 fencing 接口。
 #pragma once
 
 #include <cstdint>
@@ -29,7 +29,6 @@ enum class StepClaimAcquireStatus {
 struct StepClaimAcquireResult {
     StepClaimAcquireStatus status{StepClaimAcquireStatus::Wait};
     std::optional<StepClaimLease> claim;
-    std::optional<std::filesystem::path> archived_claim_path;
 };
 
 enum class StepClaimRenewStatus {
@@ -54,22 +53,15 @@ struct StepResultEvidenceFile {
     std::filesystem::path canonical_path;
 };
 
-[[nodiscard]] std::filesystem::path step_claim_lock_path(
-    const std::filesystem::path& claim_path);
-
 [[nodiscard]] StepClaimAcquireResult acquire_step_claim_transaction(
     const std::filesystem::path& claim_path,
     const std::filesystem::path& canonical_result_path,
-    const StepClaimLease& proposed_claim,
-    const std::string& current_boot_id);
+    const StepClaimLease& proposed_claim);
 
 [[nodiscard]] StepClaimRenewResult renew_step_claim_transaction(
     const std::filesystem::path& claim_path,
     const StepClaimLease& expected_owner,
     std::int64_t lease_duration_ms);
-
-[[nodiscard]] StepClaimLease load_effective_step_claim(
-    const std::filesystem::path& claim_path);
 
 [[nodiscard]] StepResultPublishStatus publish_step_result_if_owned(
     const std::filesystem::path& claim_path,

@@ -46,8 +46,8 @@ struct OrchestrationArchive {
     bool resumed{false}; // 是否从已有归档恢复
 };
 
-constexpr std::chrono::seconds kSharedRunDeleteTimeout{5}; // 等待本机状态句柄释放的上限
-constexpr std::chrono::milliseconds kSharedRunDeleteDelay{100}; // 状态目录删除重试间隔
+constexpr std::chrono::seconds kHostRunDeleteTimeout{5}; // 等待本机状态句柄释放的上限
+constexpr std::chrono::milliseconds kHostRunDeleteDelay{100}; // 状态目录删除重试间隔
 constexpr std::chrono::seconds kEvidenceArchiveStabilityTimeout{5}; // 等待运行证据停止变化的上限
 constexpr std::chrono::milliseconds kEvidenceArchiveStabilityDelay{100}; // 证据稳定性重试间隔
 
@@ -258,7 +258,7 @@ void validate_managed_snapshot(
     const std::chrono::seconds timeout) {
     const auto deadline = std::chrono::steady_clock::now() + timeout;
     nlohmann::json report;
-    std::string last_io_error; // 共享层瞬时读取失败的最后一条诊断
+    std::string last_io_error; // 状态存储瞬时读取失败的最后一条诊断
     do {
         try {
             report = controller.build_report(run_id);
@@ -412,7 +412,7 @@ void archive_run_evidence(
                 }
                 last_archive_error = "Run evidence changed while it was being archived";
             } catch (const std::exception& error) {
-                // Agent 可能仍短暂持有 claim.lock；在稳定窗口内清理 staging 后重试。
+                // 网关可能仍在发布最后一份运行状态；清理 staging 后有限重试。
                 last_archive_error = error.what();
             }
 
@@ -512,17 +512,17 @@ void archive_run_evidence(
 }
 
 // 删除已经归档并完成 Guest 清理的 Host 状态运行目录。
-void delete_shared_run(const LabConfig& config, const std::string& run_id) {
+void delete_host_run(const LabConfig& config, const std::string& run_id) {
     const std::filesystem::path run_directory = resolve_under_root(
         config.transport.state_root,
         std::filesystem::path(L"runs") / path_from_utf8(run_id));
     const DWORD attributes = GetFileAttributesW(run_directory.c_str());
     if (attributes == INVALID_FILE_ATTRIBUTES ||
         (attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
-        throw Error("Shared run directory is missing or unsafe: " + run_id);
+        throw Error("Host run directory is missing or unsafe: " + run_id);
     }
 
-    const auto deadline = std::chrono::steady_clock::now() + kSharedRunDeleteTimeout;
+    const auto deadline = std::chrono::steady_clock::now() + kHostRunDeleteTimeout;
     std::error_code last_error;
     while (true) {
         std::error_code remove_error;
@@ -539,10 +539,10 @@ void delete_shared_run(const LabConfig& config, const std::string& run_id) {
                 ? last_error.message()
                 : "directory still exists";
             throw Error(
-                "Failed to delete Shared run directory within retry timeout: " +
+                "Failed to delete Host run directory within retry timeout: " +
                 run_id + ": " + detail);
         }
-        std::this_thread::sleep_for(kSharedRunDeleteDelay);
+        std::this_thread::sleep_for(kHostRunDeleteDelay);
     }
 }
 
@@ -615,11 +615,11 @@ void apply_terminal_state_output(
         const GuestWorkCleanupAction guest_action = business_success
             ? task_cleanup.guest_work_on_success
             : task_cleanup.guest_work_on_failure;
-        const SharedRunCleanupAction shared_action = business_success
-            ? task_cleanup.shared_run_on_success
-            : task_cleanup.shared_run_on_failure;
+        const HostRunCleanupAction host_action = business_success
+            ? task_cleanup.host_run_on_success
+            : task_cleanup.host_run_on_failure;
         output["guest_work_cleanup"] = guest_work_cleanup_action_name(guest_action);
-        output["shared_run_cleanup"] = shared_run_cleanup_action_name(shared_action);
+        output["host_run_cleanup"] = host_run_cleanup_action_name(host_action);
         if (policies.size() == 1) {
             const VmCleanupPolicy& cleanup = business_success
                 ? policies.front().on_success
@@ -1043,11 +1043,11 @@ nlohmann::json Orchestrator::execute(
     const GuestWorkCleanupAction guest_cleanup = business_success
         ? plan.cleanup.guest_work_on_success
         : plan.cleanup.guest_work_on_failure;
-    const SharedRunCleanupAction shared_cleanup = business_success
-        ? plan.cleanup.shared_run_on_success
-        : plan.cleanup.shared_run_on_failure;
+    const HostRunCleanupAction host_cleanup = business_success
+        ? plan.cleanup.host_run_on_success
+        : plan.cleanup.host_run_on_failure;
     output["guest_work_cleanup"] = guest_work_cleanup_action_name(guest_cleanup);
-    output["shared_run_cleanup"] = shared_run_cleanup_action_name(shared_cleanup);
+    output["host_run_cleanup"] = host_run_cleanup_action_name(host_cleanup);
 
     std::vector<std::string> execution_run_ids;
     if (main_published) {
@@ -1081,10 +1081,10 @@ nlohmann::json Orchestrator::execute(
         }
     }
 
-    if (!cleanup_failed && shared_cleanup == SharedRunCleanupAction::ArchiveThenDelete) {
+    if (!cleanup_failed && host_cleanup == HostRunCleanupAction::ArchiveThenDelete) {
         try {
             for (const std::string& execution_run_id : execution_run_ids) {
-                delete_shared_run(config_, execution_run_id);
+                delete_host_run(config_, execution_run_id);
             }
         } catch (const std::exception& error) {
             cleanup_failed = true;

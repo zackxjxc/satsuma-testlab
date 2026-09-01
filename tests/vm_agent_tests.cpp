@@ -1,4 +1,4 @@
-// VM Agent 文件通道和进程取消测试。
+// VM Agent 本地镜像、VMCI 状态和进程取消测试。
 #include <chrono>
 #include <exception>
 #include <filesystem>
@@ -44,7 +44,7 @@ void expect(const bool condition, const std::string& message) {
     };
 }
 
-// 在有限时间内等待文件通道证据出现。
+// 在有限时间内等待本地镜像证据出现。
 [[nodiscard]] bool wait_for_file(
     const std::filesystem::path& path,
     const std::chrono::milliseconds timeout) {
@@ -59,30 +59,30 @@ void expect(const bool condition, const std::string& message) {
 }
 
 // 创建一个只包含 echo 步骤的文件任务。
-void write_echo_run(const std::filesystem::path& shared_root) {
+void write_echo_run(const std::filesystem::path& mirror_root) {
     satsuma::RunManifest manifest;
     manifest.lab_id = "vm_agent_test";
     manifest.run_id = "run_file_success";
     manifest.request_id = "request_file_success";
-    manifest.name = "file-channel-success";
+    manifest.name = "local-mirror-success";
     manifest.created_at = satsuma::utc_timestamp();
     satsuma::TaskStep step;
     step.id = "echo_success";
     step.vm = "vm_01";
     step.type = "echo";
-    step.message = "file channel completed without Host";
+    step.message = "VMCI channel completed without Host";
     step.retry_safe = true;
     manifest.steps.push_back(std::move(step));
 
-    const std::filesystem::path run_directory = shared_root / L"runs" / L"run_file_success";
+    const std::filesystem::path run_directory = mirror_root / L"runs" / L"run_file_success";
     satsuma::write_json_atomic(run_directory / L"task.json", nlohmann::json(manifest));
 }
 
 // 创建一个长时间运行的 execute 步骤，供 Agent 停止测试取消。
 void write_cancellable_run(
-    const std::filesystem::path& shared_root,
+    const std::filesystem::path& mirror_root,
     const std::filesystem::path& fixture) {
-    const std::filesystem::path run_directory = shared_root / L"runs" / L"run_stop_execution";
+    const std::filesystem::path run_directory = mirror_root / L"runs" / L"run_stop_execution";
     const std::filesystem::path artifact = run_directory / L"artifacts" / L"vm_01" / L"fixture.exe";
     std::filesystem::create_directories(artifact.parent_path());
     std::filesystem::copy_file(fixture, artifact, std::filesystem::copy_options::overwrite_existing);
@@ -115,12 +115,12 @@ void write_cancellable_run(
 
 // 创建一个交互用户 execute 步骤，可附带后续 echo 证明 Agent 继续运行。
 void write_interactive_run(
-    const std::filesystem::path& shared_root,
+    const std::filesystem::path& mirror_root,
     const std::filesystem::path& fixture,
     const std::string& run_id,
     const bool append_echo) {
     const std::filesystem::path run_directory =
-        shared_root / L"runs" / satsuma::path_from_utf8(run_id);
+        mirror_root / L"runs" / satsuma::path_from_utf8(run_id);
     const std::filesystem::path artifact =
         run_directory / L"artifacts" / L"vm_01" / L"fixture.exe";
     std::filesystem::create_directories(artifact.parent_path());
@@ -172,9 +172,9 @@ void write_interactive_run(
 }
 
 // 创建一个 Windows PowerShell Artifact 脚本任务。
-void write_powershell_run(const std::filesystem::path& shared_root) {
+void write_powershell_run(const std::filesystem::path& mirror_root) {
     const std::filesystem::path run_directory =
-        shared_root / L"runs" / L"run_powershell_script";
+        mirror_root / L"runs" / L"run_powershell_script";
     const std::filesystem::path artifact =
         run_directory / L"artifacts" / L"vm_01" / L"script.ps1";
     std::filesystem::create_directories(artifact.parent_path());
@@ -214,8 +214,8 @@ void write_powershell_run(const std::filesystem::path& shared_root) {
 }
 
 // 创建一个 CMD Artifact 脚本任务，覆盖 CMD 元字符参数。
-void write_cmd_run(const std::filesystem::path& shared_root) {
-    const std::filesystem::path run_directory = shared_root / L"runs" / L"run_cmd_script";
+void write_cmd_run(const std::filesystem::path& mirror_root) {
+    const std::filesystem::path run_directory = mirror_root / L"runs" / L"run_cmd_script";
     const std::filesystem::path artifact =
         run_directory / L"artifacts" / L"vm_01" / L"script.cmd";
     std::filesystem::create_directories(artifact.parent_path());
@@ -322,15 +322,15 @@ void test_process_runner_output_limit(
 void test_file_watch_and_agent_stop(
     const std::filesystem::path& root,
     const std::filesystem::path& fixture) {
-    const std::filesystem::path shared_root = root / L"share";
-    write_echo_run(shared_root);
-    write_cancellable_run(shared_root, fixture);
+    const std::filesystem::path mirror_root = root / L"mirror";
+    write_echo_run(mirror_root);
+    write_cancellable_run(mirror_root, fixture);
 
     satsuma::AgentConfig config;
     config.lab_id = "vm_agent_test";
     config.vm_id = "vm_01";
     config.agent_version = "0.1.0";
-    config.channel_root = shared_root;
+    config.mirror_root = mirror_root;
     config.local_work_root = root / L"work";
     config.poll_interval_ms = 30'000;
     config.reconnect_interval_ms = 30'000;
@@ -347,7 +347,7 @@ void test_file_watch_and_agent_stop(
     });
 
     const std::filesystem::path echo_result =
-        shared_root / L"runs" / L"run_file_success" / L"results" / L"vm_01" /
+        mirror_root / L"runs" / L"run_file_success" / L"results" / L"vm_01" /
         L"echo_success" / L"execution.json";
     const std::filesystem::path execute_ready =
         root / L"work" / L"vm_agent_test" / L"run_stop_execution" / L"vm_01" /
@@ -362,26 +362,26 @@ void test_file_watch_and_agent_stop(
         std::rethrow_exception(worker_error);
     }
 
-    expect(echo_completed, "Agent did not complete a file task without a Host control channel");
+    expect(echo_completed, "Agent did not complete a mirrored task in the test backend");
     expect(execute_started, "Agent did not start the cancellable file task");
     expect(stop_duration < 5s, "Agent stop exceeded five seconds");
     expect(
-        std::filesystem::is_regular_file(shared_root / L"agents" / L"vm_01.json"),
-        "Agent did not publish presence through the file channel");
+        std::filesystem::is_regular_file(mirror_root / L"agents" / L"vm_01.json"),
+        "Agent did not publish presence through the VMCI channel");
     const nlohmann::json presence = satsuma::load_json(
-        shared_root / L"agents" / L"vm_01.json");
+        mirror_root / L"agents" / L"vm_01.json");
     expect(
         presence.value("agent_version", std::string{}) == "0.1.0" &&
             presence.value("update_id", std::string{}).empty() &&
             presence.value("binary_sha256", std::string{}).size() == 64 &&
             presence.at("runtime").value("started_at", std::string{}).size() > 10 &&
-            presence.at("runtime").value("file_channel_failure_count", 1) == 0 &&
-            !presence.at("runtime").contains("last_file_channel_error_at") &&
-            !presence.at("runtime").contains("last_file_channel_recovered_at") &&
+            presence.at("runtime").value("vmci_channel_failure_count", 1) == 0 &&
+            !presence.at("runtime").contains("last_vmci_channel_error_at") &&
+            !presence.at("runtime").contains("last_vmci_channel_recovered_at") &&
             presence.at("inventory").value("sha256", std::string{}).size() == 64,
         "Agent presence did not publish its build and runtime identity");
     expect(
-        std::filesystem::is_regular_file(shared_root / L"agents" / L"vm_01.inventory.json"),
+        std::filesystem::is_regular_file(mirror_root / L"agents" / L"vm_01.inventory.json"),
         "Agent did not publish its environment inventory");
 
     const satsuma::ExecutionResult echo =
@@ -389,7 +389,7 @@ void test_file_watch_and_agent_stop(
     expect(echo.status == "exited" && echo.exit_code == 0, "file-only echo task did not succeed");
 
     const std::filesystem::path stopped_result =
-        shared_root / L"runs" / L"run_stop_execution" / L"results" / L"vm_01" /
+        mirror_root / L"runs" / L"run_stop_execution" / L"results" / L"vm_01" /
         L"execute_until_stopped" / L"execution.json";
     expect(std::filesystem::is_regular_file(stopped_result), "Agent stop did not publish execution.json");
     const satsuma::ExecutionResult stopped =
@@ -401,19 +401,19 @@ void test_file_watch_and_agent_stop(
     expect(stopped.error == "Agent stop requested", "Agent stop did not preserve the stable error text");
 }
 
-// 验证共享目录恢复后，Agent 保留累计故障并清零连续故障状态。
-void test_file_channel_runtime_recovery(const std::filesystem::path& root) {
+// 验证本地镜像恢复后，Agent 保留累计故障并清零连续故障状态。
+void test_vmci_channel_runtime_recovery(const std::filesystem::path& root) {
     std::filesystem::create_directories(root);
-    const std::filesystem::path shared_root = root / L"share";
-    std::ofstream blocker(shared_root, std::ios::binary);
-    blocker << "shared folder unavailable";
+    const std::filesystem::path mirror_root = root / L"mirror";
+    std::ofstream blocker(mirror_root, std::ios::binary);
+    blocker << "local mirror unavailable";
     blocker.close();
 
     satsuma::AgentConfig config;
     config.lab_id = "vm_agent_test";
     config.vm_id = "vm_01";
     config.agent_version = "0.1.0";
-    config.channel_root = shared_root;
+    config.mirror_root = mirror_root;
     config.local_work_root = root / L"work";
     config.poll_interval_ms = 20;
     config.reconnect_interval_ms = 20;
@@ -431,23 +431,23 @@ void test_file_channel_runtime_recovery(const std::filesystem::path& root) {
 
     std::this_thread::sleep_for(250ms);
     std::error_code recovery_error;
-    const bool blocker_removed = std::filesystem::remove(shared_root, recovery_error);
+    const bool blocker_removed = std::filesystem::remove(mirror_root, recovery_error);
     if (blocker_removed) {
-        std::filesystem::create_directories(shared_root, recovery_error);
+        std::filesystem::create_directories(mirror_root, recovery_error);
     }
 
     bool recovered = false;
     nlohmann::json presence;
-    const std::filesystem::path presence_path = shared_root / L"agents" / L"vm_01.json";
+    const std::filesystem::path presence_path = mirror_root / L"agents" / L"vm_01.json";
     const auto deadline = std::chrono::steady_clock::now() + 5s;
     while (!recovery_error && std::chrono::steady_clock::now() < deadline) {
         try {
             if (std::filesystem::is_regular_file(presence_path)) {
                 presence = satsuma::load_json(presence_path);
                 const nlohmann::json& runtime = presence.at("runtime");
-                recovered = runtime.value("file_channel_failure_count", 0) > 0 &&
-                    runtime.value("consecutive_file_channel_failures", 1) == 0 &&
-                    !runtime.value("last_file_channel_recovered_at", std::string{}).empty();
+                recovered = runtime.value("vmci_channel_failure_count", 0) > 0 &&
+                    runtime.value("consecutive_vmci_channel_failures", 1) == 0 &&
+                    !runtime.value("last_vmci_channel_recovered_at", std::string{}).empty();
                 if (recovered) {
                     break;
                 }
@@ -462,13 +462,13 @@ void test_file_channel_runtime_recovery(const std::filesystem::path& root) {
     if (worker_error != nullptr) {
         std::rethrow_exception(worker_error);
     }
-    expect(blocker_removed && !recovery_error, "test could not restore the shared folder");
-    expect(recovered, "Agent did not publish recovered file-channel runtime state");
+    expect(blocker_removed && !recovery_error, "test could not restore the local mirror");
+    expect(recovered, "Agent did not publish recovered VMCI-channel runtime state");
     const nlohmann::json& runtime = presence.at("runtime");
     expect(
-        !runtime.value("last_file_channel_error", std::string{}).empty() &&
-            !runtime.value("last_file_channel_error_at", std::string{}).empty(),
-        "Agent recovery presence omitted the previous file-channel failure");
+        !runtime.value("last_vmci_channel_error", std::string{}).empty() &&
+            !runtime.value("last_vmci_channel_error_at", std::string{}).empty(),
+        "Agent recovery presence omitted the previous VMCI-channel failure");
 }
 
 // 验证清单在会话内缓存、自愈，并只响应显式刷新重新采集。
@@ -476,12 +476,12 @@ void test_inventory_cache_and_refresh(const std::filesystem::path& root) {
     satsuma::AgentConfig config;
     config.lab_id = "vm_agent_test";
     config.vm_id = "vm_01";
-    config.channel_root = root / L"inventory-channel";
+    config.mirror_root = root / L"inventory-mirror";
     satsuma::vm::InventoryPublisher publisher(config, "boot_inventory_test");
     publisher.synchronize();
 
     const std::filesystem::path inventory_path =
-        config.channel_root / L"agents" / L"vm_01.inventory.json";
+        config.mirror_root / L"agents" / L"vm_01.inventory.json";
     const nlohmann::json original = satsuma::load_json(inventory_path);
     const std::string original_digest = publisher.digest();
     satsuma::vm::InventoryPublisher restarted(config, "boot_inventory_restart");
@@ -498,7 +498,7 @@ void test_inventory_cache_and_refresh(const std::filesystem::path& root) {
         "Agent inventory cache did not restore the original snapshot");
 
     satsuma::write_json_atomic(
-        config.channel_root / L"agents" / L"vm_01.inventory-refresh.json",
+        config.mirror_root / L"agents" / L"vm_01.inventory-refresh.json",
         {
             {"schema_version", 1},
             {"lab_id", config.lab_id},
@@ -520,11 +520,11 @@ void test_inventory_rebind_without_restart(const std::filesystem::path& root) {
     config.vm_id = "564d1234-abcd-4321-9876-001122334455";
     config.hardware_id = config.vm_id;
     config.identity_unbound = true;
-    config.channel_root = root / L"channel";
+    config.mirror_root = root / L"mirror";
     config.local_work_root = root / L"work";
-    std::filesystem::create_directories(config.channel_root / L"agents");
+    std::filesystem::create_directories(config.mirror_root / L"agents");
     satsuma::write_json_atomic(
-        config.channel_root / L"agents" /
+        config.mirror_root / L"agents" /
             L"564d1234-abcd-4321-9876-001122334455.binding.json",
         {
             {"schema_version", 1},
@@ -537,10 +537,10 @@ void test_inventory_rebind_without_restart(const std::filesystem::path& root) {
     static_cast<void>(agent.run_once());
 
     const nlohmann::json inventory = satsuma::load_json(
-        root / L"channel" / L"agents" /
+        root / L"mirror" / L"agents" /
             L"564d1234-abcd-4321-9876-001122334455.inventory.json");
     const nlohmann::json presence = satsuma::load_json(
-        root / L"channel" / L"agents" /
+        root / L"mirror" / L"agents" /
             L"564d1234-abcd-4321-9876-001122334455.json");
     expect(
         inventory.value("vm_id", std::string{}) == "vm_01" &&
@@ -552,17 +552,17 @@ void test_inventory_rebind_without_restart(const std::filesystem::path& root) {
 
 // 验证 script 复用进程树、日志、退出码和精确文件收集。
 void test_powershell_script_execution(const std::filesystem::path& root) {
-    const std::filesystem::path shared_root = root / L"share";
-    write_powershell_run(shared_root);
+    const std::filesystem::path mirror_root = root / L"mirror";
+    write_powershell_run(mirror_root);
     satsuma::AgentConfig config;
     config.lab_id = "vm_agent_test";
     config.vm_id = "vm_01";
-    config.channel_root = shared_root;
+    config.mirror_root = mirror_root;
     config.local_work_root = root / L"work";
     satsuma::vm::Agent agent(std::move(config));
     expect(agent.run_once() == 1, "Agent did not execute the PowerShell script step");
 
-    const std::filesystem::path result_root = shared_root / L"runs" /
+    const std::filesystem::path result_root = mirror_root / L"runs" /
         L"run_powershell_script" / L"results" / L"vm_01" / L"powershell";
     const satsuma::ExecutionResult result =
         satsuma::load_json(result_root / L"execution.json").get<satsuma::ExecutionResult>();
@@ -579,7 +579,7 @@ void test_powershell_script_execution(const std::filesystem::path& root) {
     expect(std::filesystem::is_directory(local_run_directory),
         "Agent deleted Guest work before an explicit cleanup request");
     const std::filesystem::path state_directory =
-        shared_root / L"runs" / L"run_powershell_script" / L"state";
+        mirror_root / L"runs" / L"run_powershell_script" / L"state";
     satsuma::write_json_atomic(state_directory / L"vm_01-cleanup-request.json", {
         {"schema_version", 1},
         {"lab_id", "vm_agent_test"},
@@ -601,17 +601,17 @@ void test_powershell_script_execution(const std::filesystem::path& root) {
 
 // 验证 CMD 固定启动模板不会解释任务参数中的元字符。
 void test_cmd_script_execution(const std::filesystem::path& root) {
-    const std::filesystem::path shared_root = root / L"share";
-    write_cmd_run(shared_root);
+    const std::filesystem::path mirror_root = root / L"mirror";
+    write_cmd_run(mirror_root);
     satsuma::AgentConfig config;
     config.lab_id = "vm_agent_test";
     config.vm_id = "vm_01";
-    config.channel_root = shared_root;
+    config.mirror_root = mirror_root;
     config.local_work_root = root / L"work";
     satsuma::vm::Agent agent(std::move(config));
     expect(agent.run_once() == 1, "Agent did not execute the CMD script step");
 
-    const std::filesystem::path result_root = shared_root / L"runs" / L"run_cmd_script" /
+    const std::filesystem::path result_root = mirror_root / L"runs" / L"run_cmd_script" /
         L"results" / L"vm_01" / L"cmd";
     const satsuma::ExecutionResult result =
         satsuma::load_json(result_root / L"execution.json").get<satsuma::ExecutionResult>();
@@ -631,13 +631,13 @@ void test_cmd_script_execution(const std::filesystem::path& root) {
 void test_file_cancellation(
     const std::filesystem::path& root,
     const std::filesystem::path& fixture) {
-    const std::filesystem::path shared_root = root / L"share";
-    write_cancellable_run(shared_root, fixture);
+    const std::filesystem::path mirror_root = root / L"mirror";
+    write_cancellable_run(mirror_root, fixture);
     satsuma::AgentConfig config;
     config.lab_id = "vm_agent_test";
     config.vm_id = "vm_01";
     config.agent_version = "0.1.0";
-    config.channel_root = shared_root;
+    config.mirror_root = mirror_root;
     config.local_work_root = root / L"work";
     config.poll_interval_ms = 30'000;
     config.reconnect_interval_ms = 30'000;
@@ -650,7 +650,7 @@ void test_file_cancellation(
         L"ready.marker";
     expect(wait_for_file(ready, 5s), "cancellable task did not start");
     const std::filesystem::path run_directory =
-        shared_root / L"runs" / L"run_stop_execution";
+        mirror_root / L"runs" / L"run_stop_execution";
     satsuma::write_json_atomic(run_directory / L"cancel.json", {
         {"schema_version", 1},
         {"run_id", "run_stop_execution"},
@@ -674,21 +674,21 @@ void test_agent_interactive_execution(
     const std::filesystem::path& root,
     const std::filesystem::path& fixture,
     const std::filesystem::path& helper) {
-    const std::filesystem::path shared_root = root / L"share";
+    const std::filesystem::path mirror_root = root / L"mirror";
     const std::string run_id = "run_interactive_success";
-    write_interactive_run(shared_root, fixture, run_id, false);
+    write_interactive_run(mirror_root, fixture, run_id, false);
 
     satsuma::AgentConfig config;
     config.lab_id = "vm_agent_test";
     config.vm_id = "vm_01";
     config.agent_version = "0.1.0";
-    config.channel_root = shared_root;
+    config.mirror_root = mirror_root;
     config.local_work_root = root / L"system-work";
     satsuma::vm::Agent agent(config, helper);
     expect(agent.run_once() == 1, "Agent did not claim the interactive step");
 
     const std::filesystem::path result_path =
-        shared_root / L"runs" / satsuma::path_from_utf8(run_id) /
+        mirror_root / L"runs" / satsuma::path_from_utf8(run_id) /
         L"results" / L"vm_01" / L"interactive_execute" / L"execution.json";
     const satsuma::ExecutionResult result =
         satsuma::load_json(result_path).get<satsuma::ExecutionResult>();
@@ -733,15 +733,15 @@ void test_agent_no_interactive_session(
     const std::filesystem::path& root,
     const std::filesystem::path& fixture,
     const std::filesystem::path& helper) {
-    const std::filesystem::path shared_root = root / L"share";
+    const std::filesystem::path mirror_root = root / L"mirror";
     const std::string run_id = "run_no_interactive_session";
-    write_interactive_run(shared_root, fixture, run_id, true);
+    write_interactive_run(mirror_root, fixture, run_id, true);
 
     satsuma::AgentConfig config;
     config.lab_id = "vm_agent_test";
     config.vm_id = "vm_01";
     config.agent_version = "0.1.0";
-    config.channel_root = shared_root;
+    config.mirror_root = mirror_root;
     config.local_work_root = root / L"system-work";
     satsuma::vm::Agent agent(std::move(config), helper);
 
@@ -757,7 +757,7 @@ void test_agent_no_interactive_session(
     expect(executed == 2, "Agent did not continue after the interactive identity failure");
 
     const std::filesystem::path results =
-        shared_root / L"runs" / satsuma::path_from_utf8(run_id) /
+        mirror_root / L"runs" / satsuma::path_from_utf8(run_id) /
         L"results" / L"vm_01";
     const satsuma::ExecutionResult failed = satsuma::load_json(
         results / L"interactive_execute" / L"execution.json")
@@ -783,17 +783,17 @@ void test_agent_no_interactive_session(
 
 // 验证一个损坏运行不会阻塞按名称排在它之后的合法任务。
 void test_invalid_run_is_isolated(const std::filesystem::path& root) {
-    const std::filesystem::path shared_root = root / L"share";
-    const std::filesystem::path invalid_run = shared_root / L"runs" / L"a-invalid-run";
+    const std::filesystem::path mirror_root = root / L"mirror";
+    const std::filesystem::path invalid_run = mirror_root / L"runs" / L"a-invalid-run";
     std::filesystem::create_directories(invalid_run);
     std::ofstream(invalid_run / L"task.json", std::ios::binary) << "{invalid json";
-    write_echo_run(shared_root);
+    write_echo_run(mirror_root);
 
     satsuma::AgentConfig config;
     config.lab_id = "vm_agent_test";
     config.vm_id = "vm_01";
     config.agent_version = "0.1.0";
-    config.channel_root = shared_root;
+    config.mirror_root = mirror_root;
     config.local_work_root = root / L"work";
     satsuma::vm::Agent agent(std::move(config));
 
@@ -804,28 +804,28 @@ void test_invalid_run_is_isolated(const std::filesystem::path& root) {
         "invalid run did not receive a stable Agent error record");
     expect(
         std::filesystem::is_regular_file(
-            shared_root / L"runs" / L"run_file_success" / L"results" /
+            mirror_root / L"runs" / L"run_file_success" / L"results" /
             L"vm_01" / L"echo_success" / L"execution.json"),
         "valid run after an invalid run did not complete");
 }
 
-// 验证兼容读取的 v1 配置不能构造生产 Agent。
-void test_agent_rejects_legacy_file_protocol(const std::filesystem::path& root) {
+// 验证不受支持的协议配置不能构造生产 Agent。
+void test_agent_rejects_unsupported_protocol(const std::filesystem::path& root) {
     satsuma::AgentConfig config;
-    config.protocol_version = satsuma::kLegacyRunManifestProtocolVersion;
+    config.protocol_version = 1;
     config.lab_id = "vm_agent_test";
     config.vm_id = "vm_01";
     config.agent_version = "0.1.0";
-    config.channel_root = root / L"channel";
+    config.mirror_root = root / L"mirror";
     config.local_work_root = root / L"work";
     bool rejected = false;
     try {
         satsuma::vm::Agent agent(std::move(config));
     } catch (const satsuma::Error& error) {
         rejected = std::string(error.what()) ==
-            "Agent execution requires the current file protocol version";
+            "Agent execution requires the current VMCI protocol version";
     }
-    expect(rejected, "production Agent accepted a legacy v1 file protocol config");
+    expect(rejected, "production Agent accepted an unsupported protocol config");
 }
 
 // 验证首次发现、Host 绑定、本地回退和硬件变化迁移记录。
@@ -835,7 +835,7 @@ void test_agent_hardware_identity(const std::filesystem::path& root) {
     satsuma::AgentConfig config;
     config.lab_id = "vm_agent_test";
     config.agent_version = "0.1.0";
-    config.channel_root = root / L"channel";
+    config.mirror_root = root / L"mirror";
     config.local_work_root = root / L"work";
     satsuma::vm::prepare_agent_hardware_identity(config, first_hardware);
     expect(
@@ -844,7 +844,7 @@ void test_agent_hardware_identity(const std::filesystem::path& root) {
         "new hardware did not enter unbound discovery mode");
 
     satsuma::write_json_atomic(
-        config.channel_root / L"agents" / L"564d1234-abcd-4321-9876-001122334455.binding.json",
+        config.mirror_root / L"agents" / L"564d1234-abcd-4321-9876-001122334455.binding.json",
         {
             {"schema_version", 1},
             {"lab_id", config.lab_id},
@@ -857,13 +857,13 @@ void test_agent_hardware_identity(const std::filesystem::path& root) {
         "Host hardware binding was not applied without rewriting agent.json");
 
     const std::filesystem::path binding_path =
-        config.channel_root / L"agents" /
+        config.mirror_root / L"agents" /
         L"564d1234-abcd-4321-9876-001122334455.binding.json";
     std::filesystem::remove(binding_path);
     satsuma::AgentConfig restarted;
     restarted.lab_id = config.lab_id;
     restarted.agent_version = config.agent_version;
-    restarted.channel_root = config.channel_root;
+    restarted.mirror_root = config.mirror_root;
     restarted.local_work_root = config.local_work_root;
     satsuma::vm::prepare_agent_hardware_identity(restarted, first_hardware);
     expect(
@@ -884,7 +884,7 @@ void test_agent_hardware_identity(const std::filesystem::path& root) {
     satsuma::AgentConfig migrated;
     migrated.lab_id = config.lab_id;
     migrated.agent_version = config.agent_version;
-    migrated.channel_root = config.channel_root;
+    migrated.mirror_root = config.mirror_root;
     migrated.local_work_root = config.local_work_root;
     satsuma::vm::prepare_agent_hardware_identity(migrated, second_hardware);
     expect(
@@ -894,24 +894,24 @@ void test_agent_hardware_identity(const std::filesystem::path& root) {
     satsuma::vm::write_hardware_migration_marker(migrated);
     expect(
         std::filesystem::is_regular_file(
-            migrated.channel_root / L"agents" /
+            migrated.mirror_root / L"agents" /
                 L"564d1234-abcd-4321-9876-001122334455.migrated.json"),
         "hardware change did not publish its migration marker");
 
-    satsuma::AgentConfig legacy = migrated;
-    legacy.vm_id = "vm_02";
-    legacy.vm_id_configured = true;
+    satsuma::AgentConfig configured = migrated;
+    configured.vm_id = "vm_02";
+    configured.vm_id_configured = true;
     satsuma::vm::prepare_agent_hardware_identity(
-        legacy,
+        configured,
         "564d9999-abcd-4321-9876-001122334455");
     expect(
-        !legacy.identity_unbound && legacy.vm_id == "vm_02",
-        "legacy configured vm_id did not retain priority");
+        !configured.identity_unbound && configured.vm_id == "vm_02",
+        "explicitly configured vm_id did not retain priority");
 }
 
 }  // namespace
 
-// 运行文件通道和取消测试并清理专用临时目录。
+// 运行本地镜像、VMCI 状态和取消测试并清理专用临时目录。
 int main(const int argc, char* argv[]) {
     if (argc != 3) {
         std::cerr << "Usage: SatsumaVmAgentTests <fixture.exe> <SatsumaVM.exe>\n";
@@ -926,7 +926,7 @@ int main(const int argc, char* argv[]) {
         test_process_runner_cancellation(root / L"process-runner", fixture);
         test_process_runner_output_limit(root / L"process-output-limit", fixture);
         test_file_watch_and_agent_stop(root / L"agent-watch", fixture);
-        test_file_channel_runtime_recovery(root / L"file-channel-recovery");
+        test_vmci_channel_runtime_recovery(root / L"vmci-channel-recovery");
         test_inventory_cache_and_refresh(root / L"inventory");
         test_inventory_rebind_without_restart(root / L"inventory-rebind");
         test_powershell_script_execution(root / L"powershell-script");
@@ -941,7 +941,7 @@ int main(const int argc, char* argv[]) {
             fixture,
             helper);
         test_invalid_run_is_isolated(root / L"invalid-run-isolation");
-        test_agent_rejects_legacy_file_protocol(root / L"legacy-protocol");
+        test_agent_rejects_unsupported_protocol(root / L"unsupported-protocol");
         test_agent_hardware_identity(root / L"hardware-identity");
         std::filesystem::remove_all(root);
         std::cout << "SatsumaVmAgentTests passed\n";

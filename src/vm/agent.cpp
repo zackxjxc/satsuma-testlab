@@ -20,7 +20,7 @@
 #include "satsuma/core/id.hpp"
 #include "satsuma/core/json_io.hpp"
 #include "satsuma/core/path.hpp"
-#include "claim_store.hpp"
+#include "satsuma/core/claim_store.hpp"
 #include "hardware_identity.hpp"
 #include "satsuma/core/sha256.hpp"
 #include "interactive_process.hpp"
@@ -30,11 +30,11 @@
 namespace satsuma::vm {
 namespace {
 
-[[nodiscard]] bool use_test_local_channel() noexcept {
-#ifdef SATSUMA_TEST_LOCAL_CHANNEL
+[[nodiscard]] bool use_test_local_mirror() noexcept {
+#ifdef SATSUMA_TEST_LOCAL_MIRROR
     wchar_t value[2]{};
     return GetEnvironmentVariableW(
-        L"SATSUMA_TEST_LOCAL_CHANNEL",
+        L"SATSUMA_TEST_LOCAL_MIRROR",
         value,
         static_cast<DWORD>(std::size(value))) == 1 && value[0] == L'1';
 #else
@@ -305,17 +305,16 @@ Agent::Agent(
       runtime_options_(std::move(runtime_options)),
       inventory_(config_, boot_id_) {
     if (config_.protocol_version != kRunManifestProtocolVersion) {
-        throw Error("Agent execution requires the current file protocol version");
+        throw Error("Agent execution requires the current VMCI protocol version");
     }
     validate_claim_lease_policy(runtime_options_.claim_lease_policy);
-    if (config_.transport.vmci_port != 0 && !use_test_local_channel()) {
+    if (config_.transport.vmci_port != 0 && !use_test_local_mirror()) {
         vmci_channel_ = std::make_unique<VmciChannel>(config_, session_id_);
         if (!runtime_options_.claim_acquire_operation) {
             runtime_options_.claim_acquire_operation = [this](
                 const std::filesystem::path&,
                 const std::filesystem::path&,
-                const StepClaimLease& claim,
-                const std::string&) {
+                const StepClaimLease& claim) {
                 return vmci_channel_->acquire_claim(claim);
             };
         }
@@ -378,7 +377,7 @@ int Agent::execute_pending_runs(const std::stop_token stop_token) {
     if (stop_token.stop_requested() || config_.identity_unbound) {
         return 0;
     }
-    const std::filesystem::path runs_root = config_.channel_root / L"runs";
+    const std::filesystem::path runs_root = config_.mirror_root / L"runs";
     std::filesystem::create_directories(runs_root);
 
     std::vector<std::filesystem::path> run_directories;
@@ -452,9 +451,9 @@ int Agent::execute_pending_runs(const std::stop_token stop_token) {
                 try {
                     acquisition = runtime_options_.claim_acquire_operation
                         ? runtime_options_.claim_acquire_operation(
-                            claim_path, result_path, proposed_claim, boot_id_)
+                            claim_path, result_path, proposed_claim)
                         : acquire_step_claim_transaction(
-                            claim_path, result_path, proposed_claim, boot_id_);
+                            claim_path, result_path, proposed_claim);
                 } catch (const StepClaimStateError& error) {
                     write_json_atomic(recovery_path, {
                         {"schema_version", 1},
@@ -528,7 +527,7 @@ int Agent::execute_pending_runs(const std::stop_token stop_token) {
 
 void Agent::run_watch(const std::stop_token stop_token) {
     while (!stop_token.stop_requested()) {
-        bool file_channel_available = false;
+        bool vmci_channel_available = false;
         try {
             if (vmci_channel_) {
                 vmci_channel_->synchronize_inbound();
@@ -557,22 +556,22 @@ void Agent::run_watch(const std::stop_token stop_token) {
             if (vmci_channel_) {
                 vmci_channel_->synchronize_outbound();
             }
-            file_channel_available = true;
+            vmci_channel_available = true;
         } catch (const std::exception& error) {
             if (stop_token.stop_requested()) {
                 break;
             }
-            ++file_channel_failure_count_;
-            ++consecutive_file_channel_failures_;
-            last_file_channel_error_ = bounded_runtime_error(error.what());
-            last_file_channel_error_at_ = utc_timestamp();
-            std::cerr << "SatsumaVM file channel unavailable: " << error.what() << '\n';
+            ++vmci_channel_failure_count_;
+            ++consecutive_vmci_channel_failures_;
+            last_vmci_channel_error_ = bounded_runtime_error(error.what());
+            last_vmci_channel_error_at_ = utc_timestamp();
+            std::cerr << "SatsumaVM VMCI channel unavailable: " << error.what() << '\n';
         }
-        if (file_channel_available && consecutive_file_channel_failures_ != 0) {
-            consecutive_file_channel_failures_ = 0;
-            last_file_channel_recovered_at_ = utc_timestamp();
+        if (vmci_channel_available && consecutive_vmci_channel_failures_ != 0) {
+            consecutive_vmci_channel_failures_ = 0;
+            last_vmci_channel_recovered_at_ = utc_timestamp();
         }
-        const int delay_ms = file_channel_available
+        const int delay_ms = vmci_channel_available
             ? config_.poll_interval_ms
             : config_.reconnect_interval_ms;
         if (wait_for_stop(stop_token, std::chrono::milliseconds(delay_ms))) {
@@ -585,17 +584,17 @@ void Agent::write_presence() const {
     nlohmann::json runtime = {
         {"schema_version", 1},
         {"started_at", session_started_at_},
-        {"file_channel_failure_count", file_channel_failure_count_},
-        {"consecutive_file_channel_failures", consecutive_file_channel_failures_},
+        {"vmci_channel_failure_count", vmci_channel_failure_count_},
+        {"consecutive_vmci_channel_failures", consecutive_vmci_channel_failures_},
     }; // 无事件时不发布无效的空时间戳
-    if (!last_file_channel_error_.empty()) {
-        runtime["last_file_channel_error"] = last_file_channel_error_;
+    if (!last_vmci_channel_error_.empty()) {
+        runtime["last_vmci_channel_error"] = last_vmci_channel_error_;
     }
-    if (!last_file_channel_error_at_.empty()) {
-        runtime["last_file_channel_error_at"] = last_file_channel_error_at_;
+    if (!last_vmci_channel_error_at_.empty()) {
+        runtime["last_vmci_channel_error_at"] = last_vmci_channel_error_at_;
     }
-    if (!last_file_channel_recovered_at_.empty()) {
-        runtime["last_file_channel_recovered_at"] = last_file_channel_recovered_at_;
+    if (!last_vmci_channel_recovered_at_.empty()) {
+        runtime["last_vmci_channel_recovered_at"] = last_vmci_channel_recovered_at_;
     }
     const nlohmann::json presence = {
         {"schema_version", 1},
@@ -629,14 +628,14 @@ void Agent::write_presence() const {
     write_json_atomic(hardware_presence_path(config_), published);
     if (!config_.hardware_id.empty()) {
         write_json_atomic(
-            config_.channel_root / L"agents" / L"sessions" /
+            config_.mirror_root / L"agents" / L"sessions" /
                 path_from_utf8(config_.hardware_id) /
                 path_from_utf8(session_id_ + ".json"),
             published);
     }
     if (config_.vm_id_configured && config_.vm_id != config_.hardware_id) {
         write_json_atomic(
-            config_.channel_root / L"agents" / path_from_utf8(config_.vm_id + ".json"),
+            config_.mirror_root / L"agents" / path_from_utf8(config_.vm_id + ".json"),
             published);
     }
     write_hardware_migration_marker(config_);
@@ -654,20 +653,20 @@ void Agent::deploy_artifacts(
             continue;
         }
 
-        const std::filesystem::path shared_file = resolve_under_root(run_directory, artifact.path);
-        if (!std::filesystem::is_regular_file(shared_file) ||
-            std::filesystem::file_size(shared_file) > kMaxArtifactBytes ||
-            sha256_file(shared_file) != artifact.sha256) {
+        const std::filesystem::path artifact_file = resolve_under_root(run_directory, artifact.path);
+        if (!std::filesystem::is_regular_file(artifact_file) ||
+            std::filesystem::file_size(artifact_file) > kMaxArtifactBytes ||
+            sha256_file(artifact_file) != artifact.sha256) {
             throw Error("Artifact is missing or has an invalid hash: " + path_to_utf8(artifact.path));
         }
 
         const std::filesystem::path local_file = interactive_session != nullptr
-            ? interactive_session->deploy_file(shared_file, artifact.path)
+            ? interactive_session->deploy_file(artifact_file, artifact.path)
             : resolve_under_root(local_run_directory, artifact.path);
         if (interactive_session == nullptr) {
             std::filesystem::create_directories(local_file.parent_path());
             std::filesystem::copy_file(
-                shared_file,
+                artifact_file,
                 local_file,
                 std::filesystem::copy_options::overwrite_existing);
         }

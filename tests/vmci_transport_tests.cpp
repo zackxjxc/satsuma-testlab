@@ -1,21 +1,26 @@
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <memory>
 #include <stop_token>
 #include <string>
 #include <thread>
 #include <vector>
 
 #include <zmq.h>
+#include <zmq.hpp>
 
 #include "gateway.hpp"
+#include "satsuma/core/claim.hpp"
 #include "satsuma/core/id.hpp"
 #include "satsuma/core/json_io.hpp"
 #include "satsuma/core/path.hpp"
 #include "satsuma/core/sha256.hpp"
+#include "satsuma/core/task.hpp"
 #include "satsuma/core/vmci.hpp"
 
 namespace {
@@ -67,6 +72,25 @@ int main() {
     expect(response.metadata.at("operation") == "echo", "metadata was not preserved");
     expect(response.metadata.at("payload_size") == payload.size(), "payload size changed");
     expect(response.payload == payload, "binary payload changed");
+
+    {
+        zmq::context_t malformed_context(1);
+        zmq::socket_t malformed_client(malformed_context, zmq::socket_type::req);
+        malformed_client.set(zmq::sockopt::linger, 0);
+        malformed_client.set(zmq::sockopt::rcvtimeo, 250);
+        malformed_client.connect(endpoint);
+        malformed_client.send(zmq::str_buffer("not-json"), zmq::send_flags::none);
+        zmq::message_t ignored_reply;
+        expect(
+            !malformed_client.recv(ignored_reply, zmq::recv_flags::none),
+            "malformed request unexpectedly received a reply");
+    }
+    std::this_thread::sleep_for(100ms);
+    const satsuma::transport::Message recovered = client.request(
+        {{"operation", "recovered"}});
+    expect(
+        recovered.metadata.at("operation") == "recovered",
+        "server did not recover after malformed metadata");
     worker.request_stop();
     worker.join();
 
@@ -77,7 +101,16 @@ int main() {
     config.lab_id = "vmci_test_lab";
     config.transport.state_root = test_root;
     config.transport.vmci_port = 42510;
-    satsuma::host::Gateway gateway(config);
+    auto gateway = std::make_unique<satsuma::host::Gateway>(config);
+    bool duplicate_gateway_rejected = false;
+    try {
+        satsuma::host::Gateway duplicate(config);
+    } catch (const std::exception&) {
+        duplicate_gateway_rejected = true;
+    }
+    expect(
+        duplicate_gateway_rejected,
+        "two VMCI gateways acquired the same Host state root");
     nlohmann::json base_request = {
         {"schema_version", 1},
         {"lab_id", config.lab_id},
@@ -88,7 +121,7 @@ int main() {
 
     nlohmann::json ping_request = base_request;
     ping_request["operation"] = "ping";
-    const auto ping = gateway.handle({ping_request, {}});
+    const auto ping = gateway->handle({ping_request, {}});
     expect(ping.metadata.at("status") == "ready", "gateway ping failed");
 
     const std::filesystem::path binding_path =
@@ -97,14 +130,14 @@ int main() {
     nlohmann::json index_request = base_request;
     index_request["operation"] = "index";
     index_request["after"] = "";
-    const auto index = gateway.handle({index_request, {}});
+    const auto index = gateway->handle({index_request, {}});
     expect(index.metadata.at("files").size() == 1, "gateway index omitted binding");
 
     nlohmann::json download_request = base_request;
     download_request["operation"] = "download";
     download_request["path"] = "agents/hardware_01.binding.json";
     download_request["offset"] = 0;
-    const auto download = gateway.handle({download_request, {}});
+    const auto download = gateway->handle({download_request, {}});
     expect(download.metadata.at("eof") == true, "gateway download did not finish");
     expect(!download.payload.empty(), "gateway download payload is empty");
 
@@ -126,7 +159,7 @@ int main() {
         {"offset", 0},
         {"total_size", presence_payload.size()},
     });
-    const auto upload = gateway.handle({upload_request, presence_payload});
+    const auto upload = gateway->handle({upload_request, presence_payload});
     expect(upload.metadata.at("complete") == true, "gateway upload did not commit");
     expect(
         std::filesystem::is_regular_file(
@@ -136,11 +169,123 @@ int main() {
     bool traversal_rejected = false;
     try {
         upload_request["path"] = "../outside.json";
-        static_cast<void>(gateway.handle({upload_request, presence_payload}));
+        static_cast<void>(gateway->handle({upload_request, presence_payload}));
     } catch (const std::exception&) {
         traversal_rejected = true;
     }
     expect(traversal_rejected, "gateway accepted path traversal");
+
+    satsuma::RunManifest manifest;
+    manifest.lab_id = config.lab_id;
+    manifest.run_id = "run_stale_cache";
+    manifest.request_id = "request_stale_cache";
+    manifest.name = "stale cache boundary";
+    manifest.created_at = satsuma::utc_timestamp();
+    satsuma::TaskStep step;
+    step.id = "echo";
+    step.vm = "vm_01";
+    step.type = "echo";
+    step.message = "stale cache";
+    step.retry_safe = true;
+    manifest.steps.push_back(step);
+    const std::filesystem::path stale_run =
+        test_root / L"runs" / L"run_stale_cache";
+    satsuma::write_json_atomic(stale_run / L"task.json", manifest);
+    const auto index_contains = [&gateway, &index_request](const std::string& path) {
+        const auto current = gateway->handle({index_request, {}});
+        return std::any_of(
+            current.metadata.at("files").begin(),
+            current.metadata.at("files").end(),
+            [&path](const nlohmann::json& file) {
+                return file.at("path").get<std::string>() == path;
+            });
+    };
+    expect(
+        index_contains("runs/run_stale_cache/task.json"),
+        "gateway index omitted a pending Host task");
+
+    satsuma::write_json_atomic(
+        stale_run / L"results" / L"vm_01" / L"echo" / L"execution.json",
+        {{"status", "exited"}});
+    expect(
+        !index_contains("runs/run_stale_cache/task.json"),
+        "gateway retained a completed run in the Guest mirror index");
+    satsuma::write_json_atomic(
+        stale_run / L"state" / L"vm_01-cleanup-request.json",
+        {
+            {"schema_version", 1},
+            {"lab_id", config.lab_id},
+            {"run_id", manifest.run_id},
+            {"vm_id", "vm_01"},
+            {"request_id", "cleanup_01"},
+            {"target", "guest_work"},
+        });
+    expect(
+        index_contains("runs/run_stale_cache/task.json") &&
+            index_contains("runs/run_stale_cache/state/vm_01-cleanup-request.json"),
+        "gateway omitted a pending Guest cleanup request");
+    satsuma::write_json_atomic(
+        stale_run / L"state" / L"vm_01-cleanup.json",
+        {{"request_id", "wrong_request"}, {"status", "deleted"}});
+    expect(
+        index_contains("runs/run_stale_cache/state/vm_01-cleanup-request.json"),
+        "gateway accepted an invalid Guest cleanup result as terminal");
+    satsuma::write_json_atomic(
+        stale_run / L"state" / L"vm_01-cleanup.json",
+        {
+            {"schema_version", 1},
+            {"lab_id", config.lab_id},
+            {"run_id", manifest.run_id},
+            {"vm_id", "vm_01"},
+            {"request_id", "cleanup_01"},
+            {"target", "guest_work"},
+            {"status", "deleted"},
+        });
+    expect(
+        !index_contains("runs/run_stale_cache/task.json"),
+        "gateway retained a completed cleanup in the Guest mirror index");
+
+    upload_request.update({
+        {"path", "runs/run_stale_cache/state/vm_01-agent.json"},
+        {"transfer_id", "transfer_run_state"},
+    });
+    const auto run_upload = gateway->handle({upload_request, presence_payload});
+    expect(run_upload.metadata.at("complete") == true, "authorized run state upload failed");
+    std::filesystem::remove_all(stale_run);
+
+    bool stale_upload_rejected = false;
+    try {
+        upload_request["transfer_id"] = "transfer_stale_state";
+        static_cast<void>(gateway->handle({upload_request, presence_payload}));
+    } catch (const std::exception&) {
+        stale_upload_rejected = true;
+    }
+    expect(
+        stale_upload_rejected && !std::filesystem::exists(stale_run),
+        "stale Guest mirror recreated a deleted Host run through upload");
+
+    nlohmann::json claim_request = base_request;
+    claim_request["operation"] = "claim_acquire";
+    claim_request["claim"] = satsuma::make_step_claim_lease(
+        "run_stale_cache",
+        "vm_01",
+        "echo",
+        "job_stale_cache",
+        "session_01",
+        "boot_01",
+        satsuma::unix_time_ms(),
+        5'000,
+        true);
+    bool stale_claim_rejected = false;
+    try {
+        static_cast<void>(gateway->handle({claim_request, {}}));
+    } catch (const std::exception&) {
+        stale_claim_rejected = true;
+    }
+    expect(
+        stale_claim_rejected && !std::filesystem::exists(stale_run),
+        "stale Guest mirror recreated a deleted Host run through claim acquisition");
+    gateway.reset();
     std::filesystem::remove_all(test_root);
 
     if (failures != 0) {

@@ -220,7 +220,7 @@ void test_run_management(const std::filesystem::path& root) {
     const satsuma::RunManifest pending = controller.create_run(make_plan("pending_for_cancel"));
 
     const nlohmann::json listed = controller.list_runs();
-    expect(listed.at("runs").size() == 2, "run list omitted a shared run");
+    expect(listed.at("runs").size() == 2, "run list omitted a Host run");
     const nlohmann::json cancelled = controller.cancel_run(
         pending.run_id,
         "controller test cancellation");
@@ -243,7 +243,7 @@ void test_run_management(const std::filesystem::path& root) {
 // 验证硬件发现、Host 配置写回和共享绑定发布。
 void test_agent_hardware_discovery_and_binding(const std::filesystem::path& root) {
     constexpr char hardware_id[] = "564d1234-abcd-4321-9876-001122334455";
-    const std::filesystem::path shared_root = root / L"share";
+    const std::filesystem::path mirror_root = root / L"mirror";
     const std::filesystem::path config_path = root / L"lab.json";
     satsuma::write_json_atomic(config_path, {
         {"schema_version", 1},
@@ -254,7 +254,7 @@ void test_agent_hardware_discovery_and_binding(const std::filesystem::path& root
         }},
         {"host", {{"archive_root", satsuma::path_to_utf8(root / L"archive")}}},
         {"transport", {
-            {"state_root", satsuma::path_to_utf8(shared_root)},
+            {"state_root", satsuma::path_to_utf8(mirror_root)},
             {"vmci_port", 42510},
         }},
         {"vms", nlohmann::json::array({{
@@ -269,10 +269,10 @@ void test_agent_hardware_discovery_and_binding(const std::filesystem::path& root
         }})},
     });
     satsuma::write_json_atomic(
-        shared_root / L"agents" / L"564d1234-abcd-4321-9876-001122334455.json",
+        mirror_root / L"agents" / L"564d1234-abcd-4321-9876-001122334455.json",
         {
             {"schema_version", 1},
-            {"protocol_version", 2},
+            {"protocol_version", satsuma::kRunManifestProtocolVersion},
             {"lab_id", "host_identity_test"},
             {"vm_id", hardware_id},
             {"hardware_id", hardware_id},
@@ -290,10 +290,10 @@ void test_agent_hardware_discovery_and_binding(const std::filesystem::path& root
         "Host discovery did not expose the unbound hardware presence");
 
     satsuma::write_json_atomic(
-        shared_root / L"agents" / L"vm_02.json",
+        mirror_root / L"agents" / L"vm_02.json",
         {
             {"schema_version", 1},
-            {"protocol_version", 2},
+            {"protocol_version", satsuma::kRunManifestProtocolVersion},
             {"lab_id", "host_identity_test"},
             {"vm_id", "vm_02"},
             {"hardware_id", hardware_id},
@@ -315,16 +315,16 @@ void test_agent_hardware_discovery_and_binding(const std::filesystem::path& root
         conflict_rejected = true;
     }
     expect(conflict_rejected, "Host binding accepted a duplicated SMBIOS UUID");
-    std::filesystem::remove(shared_root / L"agents" / L"vm_02.json");
+    std::filesystem::remove(mirror_root / L"agents" / L"vm_02.json");
 
     const std::filesystem::path sessions =
-        shared_root / L"agents" / L"sessions" /
+        mirror_root / L"agents" / L"sessions" /
             L"564d1234-abcd-4321-9876-001122334455";
     satsuma::write_json_atomic(
         sessions / L"session-before-restart.json",
         {
             {"schema_version", 1},
-            {"protocol_version", 2},
+            {"protocol_version", satsuma::kRunManifestProtocolVersion},
             {"lab_id", "host_identity_test"},
             {"vm_id", hardware_id},
             {"hardware_id", hardware_id},
@@ -337,7 +337,7 @@ void test_agent_hardware_discovery_and_binding(const std::filesystem::path& root
         sessions / L"session-after-restart.json",
         {
             {"schema_version", 1},
-            {"protocol_version", 2},
+            {"protocol_version", satsuma::kRunManifestProtocolVersion},
             {"lab_id", "host_identity_test"},
             {"vm_id", hardware_id},
             {"hardware_id", hardware_id},
@@ -357,7 +357,7 @@ void test_agent_hardware_discovery_and_binding(const std::filesystem::path& root
             sessions / satsuma::path_from_utf8(session_id + ".json"),
             {
                 {"schema_version", 1},
-                {"protocol_version", 2},
+                {"protocol_version", satsuma::kRunManifestProtocolVersion},
                 {"lab_id", "host_identity_test"},
                 {"vm_id", hardware_id},
                 {"hardware_id", hardware_id},
@@ -382,7 +382,7 @@ void test_agent_hardware_discovery_and_binding(const std::filesystem::path& root
     expect(
         updated.vms.at(0).hardware_id == hardware_id &&
             std::filesystem::is_regular_file(
-                shared_root / L"agents" /
+                mirror_root / L"agents" /
                     L"564d1234-abcd-4321-9876-001122334455.binding.json"),
         "Host hardware binding did not persist both sides of the mapping");
 }

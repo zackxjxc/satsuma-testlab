@@ -60,25 +60,27 @@ struct UpdateFixture {
     const std::string& name) {
     UpdateFixture fixture;
     fixture.root = parent / satsuma::path_from_utf8(name);
-    const std::filesystem::path install_root = fixture.root / L"install";
+    const std::filesystem::path storage_root = fixture.root / L"storage";
+    const std::filesystem::path install_root = storage_root / L"agent";
     const std::filesystem::path bin_root = install_root / L"bin";
-    const std::filesystem::path shared_root = install_root / L"channel";
+    const std::filesystem::path mirror_root = storage_root / L"mirror";
     const std::filesystem::path update_directory =
-        shared_root / L"updates" / L"vm_01" / L"update_001";
+        mirror_root / L"updates" / L"vm_01" / L"update_001";
     std::filesystem::create_directories(update_directory);
-    std::filesystem::create_directories(install_root / L"work");
+    std::filesystem::create_directories(storage_root / L"work");
     write_text(bin_root / L"SatsumaVM.exe", "old-binary");
     write_text(bin_root / L"SatsumaVM.new.exe", "new-binary");
 
     const std::filesystem::path config_path = install_root / L"agent.json";
     satsuma::write_json_atomic(config_path, {
         {"schema_version", 1},
-        {"protocol_version", 1},
+        {"protocol_version", satsuma::kRunManifestProtocolVersion},
         {"lab_id", "test_lab"},
         {"vm_id", "vm_01"},
         {"agent_version", "0.1.0"},
         {"transport", {{"host_cid", 2}, {"vmci_port", 42510}}},
-        {"local_work_root", satsuma::path_to_utf8(install_root / L"work")},
+        {"storage_root", satsuma::path_to_utf8(storage_root)},
+        {"mirror_root", satsuma::path_to_utf8(mirror_root)},
         {"poll_interval_ms", 100},
         {"reconnect_interval_ms", 100},
     });
@@ -122,7 +124,7 @@ void test_successful_update(const std::filesystem::path& root) {
     const satsuma::AgentConfig original_config =
         satsuma::load_agent_config(fixture.paths.config);
     const std::filesystem::path canonical_presence =
-        original_config.channel_root / L"agents" / L"vm_01.json";
+        original_config.mirror_root / L"agents" / L"vm_01.json";
     satsuma::write_json_atomic(canonical_presence, {{"status", "idle"}});
     int stop_calls = 0;
     int start_calls = 0;
@@ -227,7 +229,7 @@ void test_rebind_target_collision(const std::filesystem::path& root) {
     const satsuma::AgentConfig config =
         satsuma::load_agent_config(fixture.paths.config);
     satsuma::write_json_atomic(
-        config.channel_root / L"agents" / L"vm_02.json",
+        config.mirror_root / L"agents" / L"vm_02.json",
         {{"vm_id", "vm_02"}});
     bool service_called = false;
     const satsuma::vm::AgentUpdateOperations operations{
@@ -277,7 +279,7 @@ void test_rebind_presence_failure_rollback(const std::filesystem::path& root) {
             if (presence_calls == 1) {
                 expect(config.vm_id == "vm_02", "rebind did not start with target config");
                 satsuma::write_json_atomic(
-                    config.channel_root / L"agents" / L"vm_02.json",
+                    config.mirror_root / L"agents" / L"vm_02.json",
                     {
                         {"schema_version", 1},
                         {"protocol_version", config.protocol_version},
@@ -311,7 +313,7 @@ void test_rebind_presence_failure_rollback(const std::filesystem::path& root) {
     expect(satsuma::load_agent_config(fixture.paths.config).vm_id == "vm_01",
         "rebind rollback retained the target identity");
     expect(!std::filesystem::exists(
-            fixture.root / L"install" / L"channel" / L"agents" / L"vm_02.json"),
+            fixture.root / L"storage" / L"mirror" / L"agents" / L"vm_02.json"),
         "rebind rollback retained its candidate target presence");
 }
 
@@ -566,10 +568,10 @@ void test_start_failure_rollback(const std::filesystem::path& root) {
     expect(read_text(fixture.paths.new_binary) == "new-binary",
         "start failure did not move the failed candidate back to new");
     const nlohmann::json config = satsuma::load_json(fixture.paths.config);
-    expect(config.at("protocol_version") == satsuma::kLegacyRunManifestProtocolVersion &&
+    expect(config.at("protocol_version") == satsuma::kRunManifestProtocolVersion &&
         config.at("agent_version") == "0.1.0" &&
         !config.contains("last_update_id"),
-        "start failure did not restore the old protocol and config");
+        "start failure did not restore the previous config");
 }
 
 // 验证第二次改名失败会立即把 bak 恢复为正式文件。
@@ -621,7 +623,7 @@ void test_presence_failure_rollback(const std::filesystem::path& root) {
     const satsuma::AgentConfig original_config =
         satsuma::load_agent_config(fixture.paths.config);
     const std::filesystem::path canonical_presence =
-        original_config.channel_root / L"agents" / L"vm_01.json";
+        original_config.mirror_root / L"agents" / L"vm_01.json";
     satsuma::write_json_atomic(canonical_presence, {{"status", "idle"}});
     int stop_calls = 0;
     int start_calls = 0;
@@ -792,7 +794,7 @@ void test_presence_identity(const std::filesystem::path& root) {
     const std::filesystem::path presence = fixture.root / L"presence.json";
     satsuma::write_json_atomic(presence, {
         {"schema_version", 1},
-        {"protocol_version", 1},
+        {"protocol_version", satsuma::kRunManifestProtocolVersion},
         {"lab_id", "test_lab"},
         {"vm_id", "vm_01"},
         {"agent_version", "0.1.1"},

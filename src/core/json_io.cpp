@@ -24,15 +24,6 @@ namespace {
 constexpr std::chrono::seconds kAtomicReplaceTimeout{2}; // 短于 claim 安全余量和锁等待上限
 constexpr std::chrono::milliseconds kAtomicReplaceRetryDelay{10}; // 替换重试间隔
 
-// 某些文件系统不提供可预测的写穿时延；原子替换仍要限制等待时间。
-[[nodiscard]] bool is_remote_json_path(const std::filesystem::path& path) {
-    const std::wstring& native = path.native();
-    if (native.starts_with(L"\\\\?\\UNC\\")) {
-        return true;
-    }
-    return native.starts_with(L"\\\\") && !native.starts_with(L"\\\\?\\");
-}
-
 // 判断目标文件的短暂占用是否允许复用同一临时文件重试。
 [[nodiscard]] bool is_transient_replace_error(const DWORD error) noexcept {
     return error == ERROR_ACCESS_DENIED ||
@@ -40,13 +31,12 @@ constexpr std::chrono::milliseconds kAtomicReplaceRetryDelay{10}; // 替换重�
         error == ERROR_LOCK_VIOLATION;
 }
 
-// 在有限时间内重试原子替换，兼容共享文件系统延迟释放读取 lease。
+// 在有限时间内重试原子替换，容忍扫描器或并发读取短暂持有文件句柄。
 void replace_json_file(
     const std::filesystem::path& temporary,
     const std::filesystem::path& destination) {
     const auto deadline = std::chrono::steady_clock::now() + kAtomicReplaceTimeout;
-    const DWORD move_flags = MOVEFILE_REPLACE_EXISTING |
-        (is_remote_json_path(destination) ? 0 : MOVEFILE_WRITE_THROUGH);
+    constexpr DWORD move_flags = MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH;
     DWORD move_error = ERROR_SUCCESS; // 最后一次 MoveFileExW 错误
     for (;;) {
         if (MoveFileExW(
@@ -137,9 +127,7 @@ static void write_json_atomic_impl(
     const std::filesystem::path temporary =
         parent / path_from_utf8(".tmp-" + make_id("write"));
     const std::string payload = value.dump(2) + "\n";
-    const bool remote_path = is_remote_json_path(path);
-    const DWORD file_flags = FILE_ATTRIBUTE_NORMAL |
-        (remote_path ? 0 : FILE_FLAG_WRITE_THROUGH);
+    constexpr DWORD file_flags = FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH;
 
     HANDLE file = CreateFileW(
         temporary.c_str(),
@@ -163,8 +151,7 @@ static void write_json_atomic_impl(
         &bytes_written,
         nullptr);
     const DWORD write_error = write_ok ? ERROR_SUCCESS : GetLastError();
-    // 远端关闭句柄后直接原子发布，避免 HGFS 的 FlushFileBuffers 长时间阻塞 Agent。
-    const BOOL flush_ok = write_ok && (remote_path || FlushFileBuffers(file));
+    const BOOL flush_ok = write_ok && FlushFileBuffers(file);
     const DWORD flush_error = flush_ok ? ERROR_SUCCESS : GetLastError();
     CloseHandle(file);
 

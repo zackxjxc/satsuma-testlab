@@ -20,7 +20,7 @@ target_compile_definitions(
         SATSUMA_INTERACTIVE_TESTS
         SATSUMA_SERVICE_TESTS
         SATSUMA_UPDATE_TESTS
-        SATSUMA_TEST_LOCAL_CHANNEL
+        SATSUMA_TEST_LOCAL_MIRROR
 )
 target_link_libraries(
     SatsumaVmTestLib
@@ -29,6 +29,16 @@ target_link_libraries(
 if(MSVC)
     target_compile_options(
         SatsumaVmTestLib
+        PRIVATE /W4 /permissive- /utf-8 /EHsc /external:anglebrackets /external:W0
+    )
+endif()
+
+# 端到端测试使用独立 Agent，确保生产 SatsumaVM 不包含本地镜像旁路。
+add_executable(SatsumaVMTestAgent ../src/vm/main.cpp)
+target_link_libraries(SatsumaVMTestAgent PRIVATE SatsumaVmTestLib)
+if(MSVC)
+    target_compile_options(
+        SatsumaVMTestAgent
         PRIVATE /W4 /permissive- /utf-8 /EHsc /external:anglebrackets /external:W0
     )
 endif()
@@ -299,7 +309,7 @@ add_test(
     NAME SatsumaHostVmFlow
     COMMAND "${CMAKE_COMMAND}"
         "-DHOST_EXE=$<TARGET_FILE:SatsumaHost>"
-        "-DVM_EXE=$<TARGET_FILE:SatsumaVM>"
+        "-DVM_EXE=$<TARGET_FILE:SatsumaVMTestAgent>"
         "-DFIXTURE_EXE=$<TARGET_FILE:SatsumaTestFixture>"
         "-DVMRUN_EXE=$<TARGET_FILE:SatsumaFakeVmrun>"
         "-DTEST_ROOT=${CMAKE_CURRENT_BINARY_DIR}/host-vm-flow"
@@ -310,7 +320,7 @@ add_test(
     NAME SatsumaHostMultiVmLifecycleFlow
     COMMAND "${CMAKE_COMMAND}"
         "-DHOST_EXE=$<TARGET_FILE:SatsumaHost>"
-        "-DVM_EXE=$<TARGET_FILE:SatsumaVM>"
+        "-DVM_EXE=$<TARGET_FILE:SatsumaVMTestAgent>"
         "-DFIXTURE_EXE=$<TARGET_FILE:SatsumaTestFixture>"
         "-DVMRUN_EXE=$<TARGET_FILE:SatsumaMultiVmFakeVmrun>"
         "-DTEST_ROOT=${CMAKE_CURRENT_BINARY_DIR}/multi-vm-lifecycle-flow"
