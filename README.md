@@ -1,12 +1,41 @@
 # Satsuma TestLab
 
-Satsuma TestLab 是专为 AI 代理设计的 Windows 虚拟机自动化测试工具。它让 AI 能够在 VMware Workstation
-虚拟机中部署和执行测试、收集完整证据，并自动管理快照与故障恢复。Host 通过 VMware VMCI 网关向 Guest
-传输任务与 Artifact；每台 Guest 中的 Windows Service 在本机工作目录执行任务，再通过 VMCI 分块上传退出码、
-日志和声明的结果文件。该通道不依赖 Guest 网卡、IP、DNS 或 VPN 状态。
+Satsuma TestLab 是一个面向 AI、运行于 Windows 与 VMware Workstation 环境的虚拟机任务下发器。AI 可以在宿主机上把程序、脚本和测试计划可靠地下发到指定虚拟机，在 Guest 中执行任务，再取回退出码、日志和结果文件；同时还能按测试策略管理虚拟机启动、快照恢复、失败清理和证据归档。
 
-项目适合可信实验室中的软件安装验证、网络客户端联调、升级回归和多虚拟机测试。它不是恶意样本沙箱，
-也不提供租户隔离：任务计划、Artifact、Host 和 Guest 管理员均属于同一信任边界。
+Host 与 Guest 通过 VMware VMCI 通信，不经过 Guest 的网络栈。即使测试过程中启用了 VPN、修改了路由、禁用了网卡，甚至卸载了网络驱动，任务通道仍可继续工作。
+
+## 最快的使用方式
+
+从 [GitHub Releases](https://github.com/zackxjxc/satsuma-testlab/releases) 下载发行包，把 ZIP 文件或解压后的完整目录交给能够读取本地文件并执行终端命令的 AI，然后让它阅读包内的 `AI-START-HERE.md`。AI 会根据随包提供的 Skill 说明环境要求、询问必要的虚拟机信息，并引导你完成配置、任务执行、结果收集和故障恢复。
+
+如果所用 AI 不能直接读取 ZIP，先解压发行包即可；正常使用不需要下载源码，也不需要自行构建项目。
+
+## 适合用它测试什么
+
+- VPN、代理和网络安全客户端：安装驱动、切换隧道、修改 DNS 或路由后，仍需从宿主机持续控制测试并取回证据。
+- 安装程序与升级器：验证静默安装、服务注册、驱动更新、重启恢复、升级与回滚，并在失败后恢复测试基线。
+- Windows 桌面应用：分别以 SYSTEM 或已登录用户身份执行安装和功能验证，收集日志、退出码与声明的结果文件。
+- 多虚拟机联调：按顺序启动多台虚拟机，执行客户端与服务端任务，并统一处理成功、失败和最终清理流程。
+- 容易破坏测试环境的回归任务：在隔离快照中重复执行系统配置、故障恢复或兼容性测试，保留可审阅证据。
+
+Satsuma 适合 Host 与 Guest 管理员处于同一信任边界的测试实验室。它不是恶意样本沙箱，也不提供跨租户隔离。
+
+## 人工准备环境，AI 接管测试
+
+Satsuma 的首次部署需要用户和 AI 配合完成，之后日常测试可以由 AI 自主执行。用户负责安装 VMware Workstation、创建测试虚拟机、安装 VMware Tools、选择允许操作的虚拟机与基础快照，并在 Guest 中确认 UAC、安装 SatsumaVM Agent Service。AI 会读取发行包文档，协助发现路径、生成配置、执行绑定和连通性检查，但不会替用户决定虚拟机范围、快照或可能丢失数据的操作。
+
+当环境通过 `check` 并达到 `ready` 状态后，AI 就可以通过宿主机上的 Satsuma CLI 启动和关闭已授权虚拟机、恢复用户指定的快照、下发程序与脚本、等待任务完成、收集日志和结果，并按策略清理或保留失败现场。正常测试过程中通常不需要用户反复进入虚拟机操作。
+
+## 每个步骤都可以选择执行身份
+
+任务计划中的每个 `execute` 或 `script` 步骤都可以单独设置 `run_as`：
+
+| `run_as` | 实际身份 | 适合的任务 |
+|---|---|---|
+| `system` | Windows `LocalSystem`，具有系统管理员级权限 | 安装程序、Windows Service、驱动、HKLM 和其他需要提权的系统变更 |
+| `interactive_user` | 当前登录到虚拟机控制台的用户 | GUI、桌面交互、HKCU、用户配置、普通应用、编译和单元测试 |
+
+同一个任务可以混合两种身份，例如先用 `system` 安装软件，再用 `interactive_user` 验证真实用户场景。`interactive_user` 要求 Guest 中存在已登录的控制台用户；条件不满足时步骤会明确失败，不会静默回退为 SYSTEM。
 
 ## 主要能力
 
@@ -14,7 +43,7 @@ Satsuma TestLab 是专为 AI 代理设计的 Windows 虚拟机自动化测试工
 - 多 VM 顺序启动、可选快照恢复、失败清理和始终执行的 `finally` 步骤。
 - Guest inventory 首次上报、缓存自愈和 Host 显式刷新。
 - 同一实验室的进程互斥、持久租约、崩溃恢复与人工解锁门禁。
-- 统一 Guest 存储根、按运行授权交互用户，以及可确认的本机/Host 状态清理。
+- 每个执行或脚本步骤可独立选择 SYSTEM 或已登录用户身份，并在同一任务中组合使用。
 - VMCI 专用传输，不依赖 VMware Shared Folder 或 Guest 网络栈。
 - 步骤 claim、租约续期、结果 fencing、崩溃恢复和人工介入门禁。
 - 文件取消、运行列表与安全保留策略；失败运行不会阻塞其他运行。
@@ -25,8 +54,7 @@ Satsuma TestLab 是专为 AI 代理设计的 Windows 虚拟机自动化测试工
 
 ## 快速开始
 
-使用发行物只需要 Windows 10/11、VMware Workstation，以及 Host/Guest 内可用的 VMware VMCI 驱动。
-已经取得版本目录或 ZIP 时可直接进入下面的配置步骤，不需要 CMake，也不会在 Host 安装程序。
+使用发行物只需要 Windows 10/11、VMware Workstation，以及 Host/Guest 内可用的 VMware VMCI 驱动。已经取得版本目录或 ZIP 时可直接进入下面的配置步骤，不需要 CMake，也不会在 Host 安装程序。
 
 从源码生成发行物还需要 Visual Studio 2022 C++ 工具链、CMake 3.25+ 和 Git：
 
@@ -37,12 +65,7 @@ ctest --preset windows-release
 cmake --build --preset windows-release --target SatsumaPackage
 ```
 
-发布目标会在根目录 `output` 同时生成可直接使用的版本目录和同名 ZIP，不会向系统安装文件。进入版本目录后，
-将 [`lab.template.json`](config/lab.template.json) 复制为 `config/lab.local.json`，并把通用的
-[`agent.template.json`](config/agent.template.json) 填写为 `agent.json`。将 `agent.json`、
-`bin/SatsumaVM.exe` 和 `scripts/install-agent.ps1` 复制到 Guest 的同一个本机目录（可用只读 ISO、VMware
-控制台或其他一次性安装介质），再在管理员 PowerShell 中运行安装脚本。Agent 使用 SMBIOS UUID 自动声明
-硬件身份，不需要为每台 VM 准备不同配置文件。
+发布目标会在根目录 `output` 同时生成可直接使用的版本目录和同名 ZIP，不会向系统安装文件。进入版本目录后，将 [`lab.template.json`](config/lab.template.json) 复制为 `config/lab.local.json`，并把通用的 [`agent.template.json`](config/agent.template.json) 填写为 `agent.json`。将 `agent.json`、`bin/SatsumaVM.exe` 和 `scripts/install-agent.ps1` 复制到 Guest 的同一个本机目录（可用只读 ISO、VMware 控制台或其他一次性安装介质），再在管理员 PowerShell 中运行安装脚本。Agent 使用 SMBIOS UUID 自动声明硬件身份，不需要为每台 VM 准备不同配置文件。
 
 ```powershell
 bin\SatsumaHost.exe gateway --config config\lab.local.json
@@ -58,20 +81,13 @@ bin\SatsumaHost.exe lab status --config config\lab.local.json
 bin\SatsumaHost.exe orchestrate --config config\lab.local.json --plan examples\multi-vm-task.json --timeout-seconds 900
 ```
 
-`gateway` 是常驻的 Host 传输进程，应先在独立终端或服务管理器中启动。自动化默认使用 `orchestrate`，它会
-在取得实验室独占租约后启动目标 VM、验证 inventory 和内部 echo、归档
-证据并按策略清理。普通 `run` 仍可用于无生命周期任务，但发布后会保持持久租约，必须在报告终态后执行
-`runs finalize`。
+`gateway` 是常驻的 Host 传输进程，应先在独立终端或服务管理器中启动。自动化默认使用 `orchestrate`，它会在取得实验室独占租约后启动目标 VM、验证 inventory 和内部 echo、归档证据并按策略清理。普通 `run` 仍可用于无生命周期任务，但发布后会保持持久租约，必须在报告终态后执行 `runs finalize`。
 
-## 让 AI 使用
+## AI Skill
 
-GitHub Release 发行包会携带与二进制版本配套的 [`satsuma-testlab` Skill](skills/satsuma-testlab/SKILL.md)
-和 `AI-START-HERE.md`。将解压目录提供给能够读取本地文件并执行终端命令的 AI 代理，然后让它先读取
-`AI-START-HERE.md`，即可进入环境配置、任务生成、执行、取证和恢复流程。
+发行包会携带与二进制版本配套的 [`satsuma-testlab` Skill](skills/satsuma-testlab/SKILL.md) 和 `AI-START-HERE.md`，让 AI 在不了解本项目的情况下也能找到正确入口，并按需读取首次配置、任务编写和恢复流程。
 
-支持 [Agent Skills](https://agentskills.io/) 的客户端可以直接加载发行包中的 `skills/satsuma-testlab/`，也可以
-把整个 Skill 目录安装到客户端自己的 Skill 目录。不支持自动发现的 AI 仍可把 `SKILL.md` 当作结构化操作手册
-读取。升级 Satsuma 时应同步使用新发行包内的 Skill，避免 AI 按旧命令或旧 Schema 操作新程序。
+支持 [Agent Skills](https://agentskills.io/) 的客户端可以直接加载发行包中的 `skills/satsuma-testlab/`，也可以把整个 Skill 目录安装到客户端自己的 Skill 目录。不支持自动发现的 AI 仍可把 `SKILL.md` 当作结构化操作手册读取。升级 Satsuma 时应同步使用新发行包内的 Skill，避免 AI 按旧命令或旧 Schema 操作新程序。
 
 ## 文档
 
@@ -89,8 +105,6 @@ GitHub Release 发行包会携带与二进制版本配套的 [`satsuma-testlab` 
 
 ## 项目状态
 
-当前只支持 Windows 与 VMware Workstation。真实 VMware 故障注入测试默认关闭，必须在专用实验 VM 上显式
-启用并确认。`master` 分支文档描述正在开发的版本；稳定版本请查看对应 Git Tag 或 GitHub Release，发行包内
-的程序、Schema、示例、文档和 Skill 属于同一个版本快照。
+当前只支持 Windows 与 VMware Workstation。真实 VMware 故障注入测试默认关闭，必须在专用实验 VM 上显式启用并确认。`master` 分支文档描述正在开发的版本；稳定版本请查看对应 Git Tag 或 GitHub Release，发行包内的程序、Schema、示例、文档和 Skill 属于同一个版本快照。
 
 项目许可证尚未指定。在根目录出现明确的 `LICENSE` 前，源码默认不授予复制、修改或再分发许可。
