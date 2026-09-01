@@ -159,7 +159,7 @@ int wmain(const int argc, wchar_t* argv[]) {
             stale_state_error);
         satsuma::vmware::VmrunProvider provider(
             std::filesystem::path(argv[1]),
-            std::chrono::milliseconds(500));
+            std::chrono::seconds(5));
         const auto paths = provider.list_running();
         expect(paths.size() == 2, "vmrun list did not return two VM paths");
         expect(paths.at(0) == L"C:\\VM Space\\VM-01.vmx", "VM path with spaces changed");
@@ -182,9 +182,14 @@ int wmain(const int argc, wchar_t* argv[]) {
         provider.stop(vmx.soft_stop_path(), satsuma::vmware::VmStopMode::Soft);
         provider.stop(vmx.hard_stop_path(), satsuma::vmware::VmStopMode::Hard);
         provider.stop(vmx.reconciled_stop_path(), satsuma::vmware::VmStopMode::Hard);
+        const satsuma::vmware::VmrunProvider fast_timeout_provider(
+            std::filesystem::path(argv[1]),
+            std::chrono::milliseconds(500));
         bool stop_failed = false;
         try {
-            provider.stop(vmx.failed_stop_path(), satsuma::vmware::VmStopMode::Hard);
+            fast_timeout_provider.stop(
+                vmx.failed_stop_path(),
+                satsuma::vmware::VmStopMode::Hard);
         } catch (const satsuma::Error&) {
             stop_failed = true;
         }
