@@ -3,8 +3,8 @@ name: satsuma-testlab
 description: 使用 Satsuma TestLab 配置和操作可信的 Windows VMware 测试虚拟机，编写并校验任务计划，通过 VMCI 执行测试、收集证据并安全恢复。用户要求 AI 运行、诊断或管理基于 Satsuma 的虚拟机测试流程时使用。
 metadata:
   author: zackxjxc
-  version: "0.3.0"
-  satsuma-version: "0.3.0"
+  version: "0.3.1"
+  satsuma-version: "0.3.1"
 ---
 
 # Satsuma TestLab
@@ -24,7 +24,7 @@ bin\SatsumaHost.exe --version
 bin\SatsumaVM.exe --version
 ```
 
-两个程序都必须报告 `0.3.0`，并与 `metadata.satsuma-version` 一致。如果版本不同，应停止操作，并请用户改用该发行版本附带的 Skill。以发行包内 CLI 的 `--help`、JSON Schema 和模板为权威接口。
+两个程序都必须报告 `0.3.1`，并与 `metadata.satsuma-version` 一致。如果版本不同，应停止操作，并请用户改用该发行版本附带的 Skill。以发行包内 CLI 的 `--help`、JSON Schema 和模板为权威接口。
 
 ## 遵守授权边界
 

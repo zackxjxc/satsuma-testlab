@@ -17,7 +17,7 @@
     {
       "id": "replace_with_vm_id",
       "vmx": "C:\\REQUIRED\\machine.vmx",
-      "agent_version": "0.3.0",
+      "agent_version": "0.3.1",
       "snapshots": {
         "base": "replace_with_base_snapshot",
         "ai_prefix": "satsuma-ai-",
