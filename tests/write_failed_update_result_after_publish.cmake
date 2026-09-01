@@ -3,16 +3,19 @@ if(NOT DEFINED UPDATE_ROOT OR NOT DEFINED VM_ID)
     message(FATAL_ERROR "Failed update result driver arguments are incomplete")
 endif()
 
-foreach(attempt RANGE 1 100)
+foreach(attempt RANGE 1 300)
     file(GLOB manifests "${UPDATE_ROOT}/${VM_ID}/*/update.json")
-    list(LENGTH manifests manifest_count)
-    if(manifest_count GREATER 0)
-        list(GET manifests 0 manifest_path)
+    foreach(manifest_path IN LISTS manifests)
+        get_filename_component(update_directory "${manifest_path}" DIRECTORY)
+        get_filename_component(update_directory_name "${update_directory}" NAME)
+        if(update_directory_name MATCHES "^\\.")
+            continue()
+        endif()
+
         file(READ "${manifest_path}" manifest_json)
         string(JSON update_id GET "${manifest_json}" update_id)
         string(JSON version GET "${manifest_json}" version)
         string(JSON manifest_vm_id GET "${manifest_json}" vm_id)
-        get_filename_component(update_directory "${manifest_path}" DIRECTORY)
         set(result_json [=[
 {
   "schema_version": 1,
@@ -34,7 +37,7 @@ foreach(attempt RANGE 1 100)
             "${update_directory}/.result.test.tmp"
             "${update_directory}/result.json")
         return()
-    endif()
+    endforeach()
     execute_process(COMMAND "${CMAKE_COMMAND}" -E sleep 0.1)
 endforeach()
 
