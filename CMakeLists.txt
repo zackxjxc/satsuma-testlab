@@ -396,10 +396,11 @@ install(
 )
 install(
     FILES
-        更新日志.md
-        贡献指南.md
-        安全策略.md
-        第三方声明.md
+        CHANGELOG.md
+        CODE_OF_CONDUCT.md
+        CONTRIBUTING.md
+        SECURITY.md
+        THIRD_PARTY_NOTICES.md
     DESTINATION .
     COMPONENT SatsumaRuntime
 )

@@ -29,7 +29,7 @@ git diff --check
 ## Review 标准
 
 变更应保持 Host `transport.state_root` 作为唯一任务事实源，显式限定 VM 范围，使用原子协议写入，并为取消和超时设置
-有限边界。新增依赖必须有明确的维护收益、精确版本，并在 `第三方声明.md` 中登记。
+有限边界。新增依赖必须有明确的维护收益、精确版本，并在 `THIRD_PARTY_NOTICES.md` 中登记。
 
 不得提交真实 VM 凭据、VMX 内容、本机绝对路径、VMCI 传输证据、私有 Artifact 或包含用户数据的测试
 日志。真实 VMware 测试必须保持显式启用，并且不得在普通 CI 中运行。

@@ -100,10 +100,11 @@ bin\SatsumaHost.exe orchestrate --config config\lab.local.json --plan examples\m
 - [开发指南](docs/开发指南.md)：构建、测试、打包和真实 VMware 验收。
 - [`satsuma-testlab` Skill](skills/satsuma-testlab/SKILL.md)：AI 可直接加载的操作流程、安全边界与按需参考资料。
 - [AI 集成说明](docs/AI操作契约.md)：Skill、CLI、Schema 和人类授权之间的职责边界。
-- [更新日志](更新日志.md)：版本变化和兼容性调整。
-- [贡献指南](贡献指南.md)：开发流程和 Review 要求。
-- [安全策略](安全策略.md)：安全边界和漏洞报告方式。
-- [第三方声明](第三方声明.md)：依赖许可证和商标说明。
+- [更新日志](CHANGELOG.md)：版本变化和兼容性调整。
+- [贡献指南](CONTRIBUTING.md)：开发流程和 Review 要求。
+- [社区行为准则](CODE_OF_CONDUCT.md)：参与项目时共同遵守的协作边界。
+- [安全策略](SECURITY.md)：安全边界和漏洞报告方式。
+- [第三方声明](THIRD_PARTY_NOTICES.md)：依赖许可证和商标说明。
 
 ## 项目状态
 

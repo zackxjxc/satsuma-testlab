@@ -104,7 +104,7 @@ The detailed documentation is currently maintained in Chinese:
 - [Development guide](docs/开发指南.md): build, test, package, and real VMware validation.
 - [`satsuma-testlab` Skill](skills/satsuma-testlab/SKILL.md): AI-operable workflows and safety boundaries.
 - [AI integration contract](docs/AI操作契约.md): responsibilities of the Skill, CLI, schemas, and human authorization.
-- [Changelog](更新日志.md), [contribution guide](贡献指南.md), [security policy](安全策略.md), and [third-party notices](第三方声明.md).
+- [Changelog](CHANGELOG.md), [contribution guide](CONTRIBUTING.md), [code of conduct](CODE_OF_CONDUCT.md), [security policy](SECURITY.md), and [third-party notices](THIRD_PARTY_NOTICES.md).
 
 ## Project status
 
