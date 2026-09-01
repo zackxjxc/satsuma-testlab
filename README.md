@@ -1,5 +1,7 @@
 # Satsuma TestLab
 
+简体中文 | [English](README_EN.md)
+
 Satsuma TestLab 是一个面向 AI、运行于 Windows 与 VMware Workstation 环境的虚拟机任务下发器。AI 可以在宿主机上把程序、脚本和测试计划可靠地下发到指定虚拟机，在 Guest 中执行任务，再取回退出码、日志和结果文件；同时还能按测试策略管理虚拟机启动、快照恢复、失败清理和证据归档。
 
 Host 与 Guest 通过 VMware VMCI 通信，不经过 Guest 的网络栈。即使测试过程中启用了 VPN、修改了路由、禁用了网卡，甚至卸载了网络驱动，任务通道仍可继续工作。
