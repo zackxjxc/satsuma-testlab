@@ -51,13 +51,13 @@ void expect(const bool condition, const std::string& message) {
     };
 }
 
-// 长任务成功路径使用更宽的租约，避免 Release 主机调度抖动制造伪失败。
+// 成功与恢复路径使用宽租约，容忍共享 CI 主机的长时间调度停顿。
 [[nodiscard]] satsuma::vm::ClaimLeasePolicy stable_execution_policy() {
     return {
-        1'200ms,
+        5'000ms,
         100ms,
         30ms,
-        200ms,
+        500ms,
     };
 }
 

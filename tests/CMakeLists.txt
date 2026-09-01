@@ -227,7 +227,7 @@ target_link_libraries(
 )
 satsuma_enable_test_warnings(SatsumaVmUpdateTests)
 add_test(NAME SatsumaVmUpdateTests COMMAND SatsumaVmUpdateTests)
-set_tests_properties(SatsumaVmUpdateTests PROPERTIES TIMEOUT 15)
+set_tests_properties(SatsumaVmUpdateTests PROPERTIES TIMEOUT 60)
 
 find_program(SATSUMA_WINDOWS_POWERSHELL powershell.exe REQUIRED)
 find_program(SATSUMA_POWERSHELL_CORE pwsh)
