@@ -118,14 +118,32 @@ void ensure_win32(const BOOL success, const char* operation) {
     }
 }
 
-// 终止已分配到 Job Object 的进程树并返回稳定停止错误。
-[[noreturn]] void cancel_job(const HANDLE job, const HANDLE process) {
-    if (!TerminateJobObject(job, ERROR_OPERATION_ABORTED)) {
+// 等待 Job 中所有进程进入终态。
+void wait_for_job_tree(const HANDLE job) {
+    const DWORD wait_result = WaitForSingleObject(job, 5'000);
+    if (wait_result == WAIT_TIMEOUT) {
+        throw Error("Process Job tree did not exit within 5 seconds");
+    }
+    if (wait_result != WAIT_OBJECT_0) {
         throw Error(
-            "Agent stop requested; TerminateJobObject failed with Win32 error " +
+            "WaitForSingleObject(process Job) failed with Win32 error " +
             std::to_string(GetLastError()));
     }
-    WaitForSingleObject(process, 5'000);
+}
+
+// 终止并确认已分配到 Job Object 的完整进程树退出。
+void terminate_job_tree(const HANDLE job, const DWORD exit_code) {
+    ensure_win32(TerminateJobObject(job, exit_code), "TerminateJobObject");
+    wait_for_job_tree(job);
+}
+
+// 终止已分配到 Job Object 的进程树并返回稳定停止错误。
+[[noreturn]] void cancel_job(const HANDLE job) {
+    try {
+        terminate_job_tree(job, ERROR_OPERATION_ABORTED);
+    } catch (const std::exception& error) {
+        throw Error("Agent stop requested; " + std::string(error.what()));
+    }
     throw Error("Agent stop requested");
 }
 
@@ -219,13 +237,14 @@ ProcessResult ProcessRunner::run(const ProcessRequest& request) const {
     try {
         ensure_win32(AssignProcessToJobObject(job.get(), process.get()), "AssignProcessToJobObject");
         if (WaitForSingleObject(cancel_event.get(), 0) == WAIT_OBJECT_0) {
-            cancel_job(job.get(), process.get());
+            cancel_job(job.get());
         }
         if (ResumeThread(thread.get()) == static_cast<DWORD>(-1)) {
             throw Error("ResumeThread failed with Win32 error " + std::to_string(GetLastError()));
         }
 
         ProcessResult result;
+        bool job_tree_stopped = false;
         const HANDLE wait_handles[] = {process.get(), cancel_event.get()};
         const auto deadline = start_time + request.timeout;
         for (;;) {
@@ -241,7 +260,7 @@ ProcessResult ProcessRunner::run(const ProcessRequest& request) const {
                 break;
             }
             if (wait_result == WAIT_OBJECT_0 + 1) {
-                cancel_job(job.get(), process.get());
+                cancel_job(job.get());
             }
             if (wait_result != WAIT_TIMEOUT) {
                 throw Error("WaitForMultipleObjects failed with Win32 error " + std::to_string(GetLastError()));
@@ -251,14 +270,14 @@ ProcessResult ProcessRunner::run(const ProcessRequest& request) const {
                     standard_error.get(),
                     request.max_output_bytes)) {
                 result.output_limit_exceeded = true;
-                ensure_win32(TerminateJobObject(job.get(), ERROR_FILE_TOO_LARGE), "TerminateJobObject");
-                WaitForSingleObject(process.get(), 5'000);
+                terminate_job_tree(job.get(), ERROR_FILE_TOO_LARGE);
+                job_tree_stopped = true;
                 break;
             }
             if (std::chrono::steady_clock::now() >= deadline) {
                 result.timed_out = true;
-                ensure_win32(TerminateJobObject(job.get(), ERROR_TIMEOUT), "TerminateJobObject");
-                WaitForSingleObject(process.get(), 5'000);
+                terminate_job_tree(job.get(), ERROR_TIMEOUT);
+                job_tree_stopped = true;
                 break;
             }
         }
@@ -266,6 +285,18 @@ ProcessResult ProcessRunner::run(const ProcessRequest& request) const {
         DWORD exit_code = 0;
         if (GetExitCodeProcess(process.get(), &exit_code) && exit_code != STILL_ACTIVE) {
             result.exit_code = exit_code;
+        }
+        if (!job_tree_stopped) {
+            const DWORD job_wait_result = WaitForSingleObject(job.get(), 0);
+            if (job_wait_result == WAIT_TIMEOUT) {
+                terminate_job_tree(
+                    job.get(),
+                    result.exit_code.value_or(ERROR_PROCESS_ABORTED));
+            } else if (job_wait_result != WAIT_OBJECT_0) {
+                throw Error(
+                    "WaitForSingleObject(process Job) failed with Win32 error " +
+                    std::to_string(GetLastError()));
+            }
         }
         result.duration_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - start_time).count();

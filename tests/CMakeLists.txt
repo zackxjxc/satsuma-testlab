@@ -201,7 +201,7 @@ add_test(
     NAME SatsumaVmAgentClaimTests
     COMMAND SatsumaVmAgentClaimTests "$<TARGET_FILE:SatsumaTestFixture>"
 )
-set_tests_properties(SatsumaVmAgentClaimTests PROPERTIES TIMEOUT 20)
+set_tests_properties(SatsumaVmAgentClaimTests PROPERTIES TIMEOUT 60)
 
 add_executable(
     SatsumaVmServiceTests

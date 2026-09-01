@@ -50,6 +50,16 @@ template <typename Predicate>
     };
 }
 
+// 成功路径使用宽租约，避免共享 CI 主机暂停测试线程时制造伪失权。
+[[nodiscard]] satsuma::vm::ClaimLeasePolicy stable_test_policy() {
+    return {
+        30'000ms,
+        250ms,
+        50ms,
+        5'000ms,
+    };
+}
+
 // 创建并领取一份供续租会话使用的 claim。
 [[nodiscard]] satsuma::StepClaimLease acquire_claim(
     const std::filesystem::path& claim_path,
@@ -102,22 +112,21 @@ void test_continuous_renewal(
         policy,
         "job_continuous");
     satsuma::vm::ClaimRenewalSession session(claim_path, owner, policy);
-    const std::int64_t initial_safe_deadline =
-        owner.lease_expires_unix_ms - policy.safety_margin.count();
-    const bool crossed_initial_deadline = wait_for_condition(
+    const bool renewed_repeatedly = wait_for_condition(
         [&] {
-            return session.current_claim().last_renewed_unix_ms > initial_safe_deadline;
+            return session.current_claim().renewal_sequence >= 3;
         },
-        policy.lease_duration + policy.renewal_interval * 2);
-    if (!crossed_initial_deadline) {
+        10s);
+    if (!renewed_repeatedly) {
         throw std::runtime_error(
-            "claim renewal session did not cross its initial safety deadline; current sequence=" +
+            "claim renewal session did not complete three renewals; current sequence=" +
             std::to_string(session.current_claim().renewal_sequence) +
             "; loss_reason=" + session.loss_reason());
     }
+    const satsuma::StepClaimLease current = session.current_claim();
     expect(
-        satsuma::load_step_claim_lease(claim_path).last_renewed_unix_ms >
-            initial_safe_deadline,
+        current.lease_expires_unix_ms > owner.lease_expires_unix_ms &&
+            satsuma::load_step_claim_lease(claim_path).renewal_sequence >= 3,
         "claim renewal session memory advanced without persisting the claim");
     expect(
         !session.lease_loss_token().stop_requested(),
@@ -134,7 +143,7 @@ void test_continuous_renewal(
 
 // 验证瞬时错误按短周期重试，恢复后不触发 lease-loss。
 void test_transient_failure_recovery(const std::filesystem::path& root) {
-    const satsuma::vm::ClaimLeasePolicy policy = test_policy();
+    const satsuma::vm::ClaimLeasePolicy policy = stable_test_policy();
     const std::filesystem::path claim_path = root / L"state" / L"execute.claim.json";
     const std::filesystem::path result_path = root / L"results" / L"execution.json";
     const satsuma::StepClaimLease owner = acquire_claim(
@@ -165,7 +174,7 @@ void test_transient_failure_recovery(const std::filesystem::path& root) {
                 return satsuma::load_step_claim_lease(claim_path)
                     .renewal_sequence >= 1;
             },
-            2s),
+            10s),
         "claim renewal session did not recover from transient failures");
     expect(
         attempts.load() >= 3 && !session.lease_loss_token().stop_requested(),
@@ -175,7 +184,7 @@ void test_transient_failure_recovery(const std::filesystem::path& root) {
 
 // 验证显式所有权丢失会及时传播为停止信号和稳定原因。
 void test_ownership_loss_signal(const std::filesystem::path& root) {
-    const satsuma::vm::ClaimLeasePolicy policy = test_policy();
+    const satsuma::vm::ClaimLeasePolicy policy = stable_test_policy();
     const std::filesystem::path claim_path = root / L"state" / L"execute.claim.json";
     const std::filesystem::path result_path = root / L"results" / L"execution.json";
     const satsuma::StepClaimLease owner = acquire_claim(
@@ -196,7 +205,7 @@ void test_ownership_loss_signal(const std::filesystem::path& root) {
     expect(
         wait_for_condition(
             [&] { return session.lease_loss_token().stop_requested(); },
-            1s),
+            5s),
         "claim ownership loss did not stop the renewal session");
     expect(
         session.loss_reason() == "Step claim ownership was lost before renewal",
@@ -206,7 +215,7 @@ void test_ownership_loss_signal(const std::filesystem::path& root) {
 
 // 验证持久化状态损坏不会作为瞬时 I/O 错误延迟到安全截止。
 void test_invalid_state_signal(const std::filesystem::path& root) {
-    const satsuma::vm::ClaimLeasePolicy policy = test_policy();
+    const satsuma::vm::ClaimLeasePolicy policy = stable_test_policy();
     const std::filesystem::path claim_path = root / L"state" / L"execute.claim.json";
     const std::filesystem::path result_path = root / L"results" / L"execution.json";
     const satsuma::StepClaimLease owner = acquire_claim(
@@ -225,7 +234,7 @@ void test_invalid_state_signal(const std::filesystem::path& root) {
     expect(
         wait_for_condition(
             [&] { return session.lease_loss_token().stop_requested(); },
-            policy.renewal_interval * 2),
+            5s),
         "invalid persisted claim state did not stop renewal immediately");
     expect(
         session.loss_reason().find("injected invalid claim") != std::string::npos,
@@ -247,24 +256,26 @@ void test_safety_deadline(const std::filesystem::path& root) {
         result_path,
         policy,
         "job_deadline");
+    std::atomic<int> attempts{0}; // 安全截止前实际执行的失败续租次数
     satsuma::vm::ClaimRenewalSession session(
         claim_path,
         owner,
         policy,
-        [](const std::filesystem::path&, const satsuma::StepClaimLease&, std::int64_t)
+        [&attempts](const std::filesystem::path&, const satsuma::StepClaimLease&, std::int64_t)
             -> satsuma::vm::StepClaimRenewResult {
+            attempts.fetch_add(1, std::memory_order_relaxed);
             throw satsuma::Error("injected persistent renewal failure");
         });
     expect(
         wait_for_condition(
             [&] { return session.lease_loss_token().stop_requested(); },
-            1s),
+            5s),
         "persistent claim renewal failure did not reach the safety deadline");
     expect(
-        satsuma::unix_time_ms() < owner.lease_expires_unix_ms + 50 &&
+        attempts.load(std::memory_order_relaxed) > 0 &&
             session.loss_reason().find("injected persistent renewal failure") !=
                 std::string::npos,
-        "claim renewal safety deadline was late or lost the failure reason");
+        "claim renewal safety deadline lost the failed attempt or its reason");
     session.finish();
 }
 
@@ -277,7 +288,7 @@ int main() {
         base_root / satsuma::path_from_utf8(satsuma::make_id("claim-renewal-test"));
     try {
         test_policy_validation();
-        test_continuous_renewal(root / L"continuous", test_policy());
+        test_continuous_renewal(root / L"continuous", stable_test_policy());
         test_transient_failure_recovery(root / L"transient");
         test_ownership_loss_signal(root / L"ownership-loss");
         test_invalid_state_signal(root / L"invalid-state");

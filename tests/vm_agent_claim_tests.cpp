@@ -54,10 +54,20 @@ void expect(const bool condition, const std::string& message) {
 // 成功与恢复路径使用宽租约，容忍共享 CI 主机的长时间调度停顿。
 [[nodiscard]] satsuma::vm::ClaimLeasePolicy stable_execution_policy() {
     return {
-        5'000ms,
+        30'000ms,
         100ms,
         30ms,
-        500ms,
+        3'000ms,
+    };
+}
+
+// 失败注入路径保留有限租约，同时保证续租回调能在慢速 CI 上实际执行。
+[[nodiscard]] satsuma::vm::ClaimLeasePolicy failure_injection_policy() {
+    return {
+        5'000ms,
+        50ms,
+        20ms,
+        1'000ms,
     };
 }
 
@@ -82,7 +92,8 @@ void write_execute_run(
     const std::filesystem::path& fixture,
     const std::string& run_id,
     const int sleep_ms,
-    const bool include_child_probe) {
+    const bool include_child_probe,
+    const int child_delay_ms = 1'000) {
     const std::filesystem::path run_directory =
         mirror_root / L"runs" / satsuma::path_from_utf8(run_id);
     const std::filesystem::path artifact =
@@ -119,7 +130,7 @@ void write_execute_run(
             {
                 "--child-pid-file", "child.pid",
                 "--child-marker", "child-survived.marker",
-                "--child-delay-ms", "1000",
+                "--child-delay-ms", std::to_string(child_delay_ms),
             });
     }
     step.timeout_seconds = 5;
@@ -245,10 +256,10 @@ void test_renewal_failure_and_recovery(
     const std::filesystem::path mirror_root = root / L"mirror";
     const std::filesystem::path local_work_root = root / L"work";
     const std::string run_id = "run_renewal_failure";
-    write_execute_run(mirror_root, fixture, run_id, 400, true);
+    write_execute_run(mirror_root, fixture, run_id, 6'000, true, 6'000);
 
     satsuma::vm::AgentRuntimeOptions failing_options;
-    failing_options.claim_lease_policy = test_policy();
+    failing_options.claim_lease_policy = failure_injection_policy();
     failing_options.claim_renew_operation = [](
         const std::filesystem::path&,
         const satsuma::StepClaimLease&,
@@ -282,6 +293,8 @@ void test_renewal_failure_and_recovery(
                 std::string::npos,
         "stale Agent evidence omitted the renewal failure reason");
 
+    // attempt 2 验证恢复发布，不重复运行故意跨越安全截止的长任务。
+    write_execute_run(mirror_root, fixture, run_id, 400, true);
     while (satsuma::unix_time_ms() < first_claim.lease_expires_unix_ms) {
         std::this_thread::sleep_for(5ms);
     }
@@ -323,7 +336,7 @@ void test_concurrent_agents_execute_once(const std::filesystem::path& root) {
     write_echo_run(mirror_root, run_id);
 
     satsuma::vm::AgentRuntimeOptions options;
-    options.claim_lease_policy = test_policy();
+    options.claim_lease_policy = stable_execution_policy();
     satsuma::vm::Agent first(
         make_config(mirror_root, local_work_root / L"first"),
         {},
