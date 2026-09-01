@@ -536,6 +536,15 @@ struct HelperTermination {
             result.error =
                 "TerminateJobObject failed with Win32 error " +
                 std::to_string(GetLastError());
+        } else {
+            const DWORD job_wait_result = WaitForSingleObject(job.get(), 5'000);
+            if (job_wait_result == WAIT_TIMEOUT) {
+                result.error = "interactive process tree did not exit within 5 seconds";
+            } else if (job_wait_result != WAIT_OBJECT_0) {
+                result.error =
+                    "WaitForSingleObject(interactive Job) failed with Win32 error " +
+                    std::to_string(GetLastError());
+            }
         }
     } else if (!TerminateProcess(process, exit_code)) {
         result.error =
