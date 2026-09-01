@@ -2,6 +2,7 @@
 /.vscode/*
 !/.vscode/settings.json
 /build/
+/.build/
 /out/
 /output/
 /cmake-build-*/
