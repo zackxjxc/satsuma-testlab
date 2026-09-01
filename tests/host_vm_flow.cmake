@@ -1,4 +1,4 @@
-# 在本机目录中模拟共享文件夹并验证完整 Host/VM 流程。
+# 在本机目录中模拟 VMCI 两端持久状态并验证完整 Host/VM 流程。
 if(NOT DEFINED HOST_EXE OR
    NOT DEFINED VM_EXE OR
    NOT DEFINED FIXTURE_EXE OR
@@ -8,10 +8,11 @@ if(NOT DEFINED HOST_EXE OR
 endif()
 
 file(REMOVE_RECURSE "${TEST_ROOT}")
-file(MAKE_DIRECTORY "${TEST_ROOT}/share" "${TEST_ROOT}/local" "${TEST_ROOT}/archive")
+file(MAKE_DIRECTORY "${TEST_ROOT}/storage/channel" "${TEST_ROOT}/storage/work" "${TEST_ROOT}/archive")
 
-file(TO_CMAKE_PATH "${TEST_ROOT}/share" share_path)
-file(TO_CMAKE_PATH "${TEST_ROOT}/local" local_path)
+file(TO_CMAKE_PATH "${TEST_ROOT}/storage/channel" share_path)
+file(TO_CMAKE_PATH "${TEST_ROOT}/storage" storage_path)
+file(TO_CMAKE_PATH "${TEST_ROOT}/storage/work" local_path)
 file(TO_CMAKE_PATH "${TEST_ROOT}/archive" archive_path)
 file(TO_CMAKE_PATH "${FIXTURE_EXE}" fixture_path)
 file(TO_CMAKE_PATH "${VMRUN_EXE}" vmrun_path)
@@ -31,8 +32,9 @@ set(lab_json [=[
     "vmrun": "@VMRUN@"
   },
   "host": {"archive_root": "@ARCHIVE@"},
-  "shared_folder": {
-    "host_root": "@SHARE@"
+  "transport": {
+    "state_root": "@SHARE@",
+    "vmci_port": 42510
   },
   "vms": [
     {
@@ -83,15 +85,18 @@ set(agent_json [=[
   "lab_id": "integration_lab",
   "vm_id": "vm_01",
   "agent_version": "0.1.0",
-  "shared_root": "@SHARE@",
+  "transport": {"host_cid": 2, "vmci_port": 42510},
+  "storage_root": "@STORAGE@",
   "local_work_root": "@LOCAL@",
   "poll_interval_ms": 100,
   "reconnect_interval_ms": 100
 }
 ]=])
 string(REPLACE "@SHARE@" "${share_path}" agent_json "${agent_json}")
+string(REPLACE "@STORAGE@" "${storage_path}" agent_json "${agent_json}")
 string(REPLACE "@LOCAL@" "${local_path}" agent_json "${agent_json}")
 file(WRITE "${TEST_ROOT}/agent.json" "${agent_json}")
+set(ENV{SATSUMA_TEST_LOCAL_CHANNEL} "1")
 
 # 独立故障场景确认保留租约后，由测试操作者显式放弃现场。
 function(force_unlock_lab context)
@@ -372,7 +377,7 @@ execute_process(
         "-DVM_EXE=${VM_EXE}"
         "-DAGENT_CONFIG=${TEST_ROOT}/agent.json"
         "-DLIFECYCLE_STATE=${lifecycle_state}"
-        "-DSHARED_ROOT=${TEST_ROOT}/share"
+        "-DSHARED_ROOT=${share_path}"
         -DINJECT_ATOMIC_JSON_TEMPORARY=ON
         -P "${CMAKE_CURRENT_LIST_DIR}/run_agent_until_lifecycle_terminal.cmake"
     COMMAND "${HOST_EXE}" orchestrate
@@ -1281,12 +1286,12 @@ string(FIND "${blocked_share_output}" "\"mode\": \"full\"" blocked_share_mode_po
 string(FIND "${blocked_share_output}" "\"run_id\": null" blocked_share_run_position)
 string(FIND
     "${blocked_share_output}"
-    "Agent diagnostic was skipped because the shared folder is unavailable"
+    "Agent diagnostic was skipped because the transport state is unavailable"
     blocked_share_skip_position)
 if(blocked_share_mode_position EQUAL -1 OR
    blocked_share_run_position EQUAL -1 OR
    blocked_share_skip_position EQUAL -1)
-    message(FATAL_ERROR "Blocked Shared Folder check lost its JSON report: ${blocked_share_output}")
+    message(FATAL_ERROR "Blocked transport-state check lost its JSON report: ${blocked_share_output}")
 endif()
 execute_process(
     COMMAND "${HOST_EXE}" lab status --config "${TEST_ROOT}/lab-blocked-share.json"
@@ -1601,14 +1606,14 @@ if(failed_position EQUAL -1)
     message(FATAL_ERROR "Host report did not contain one timed-out step: ${report_output}")
 endif()
 
-set(result_root "${TEST_ROOT}/share/runs/integration_run/results/vm_01/execute_fixture")
+set(result_root "${share_path}/runs/integration_run/results/vm_01/execute_fixture")
 if(NOT EXISTS "${result_root}/execution.json" OR
    NOT EXISTS "${result_root}/stdout.log" OR
    NOT EXISTS "${result_root}/files/generated/result.json")
     message(FATAL_ERROR "Expected execution evidence was not created")
 endif()
 
-set(timeout_result "${TEST_ROOT}/share/runs/integration_run/results/vm_01/timeout_fixture/execution.json")
+set(timeout_result "${share_path}/runs/integration_run/results/vm_01/timeout_fixture/execution.json")
 if(NOT EXISTS "${timeout_result}")
     message(FATAL_ERROR "Timed-out execution evidence was not created")
 endif()

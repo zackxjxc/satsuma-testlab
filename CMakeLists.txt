@@ -16,11 +16,6 @@ option(
     "Expose the explicitly confirmed real Host/Agent crash recovery target"
     OFF
 )
-option(
-    SATSUMA_ENABLE_REAL_VMWARE_FAULT_RECOVERY
-    "Expose the explicitly confirmed real VMware fault recovery target"
-    OFF
-)
 set(SATSUMA_REAL_LAB_CONFIG "" CACHE FILEPATH "lab.json used by real VMware targets")
 set(SATSUMA_REAL_VM_ID "" CACHE STRING "VM ID used by real VMware targets")
 set(SATSUMA_REAL_SNAPSHOT "" CACHE STRING "Snapshot restored by the real VMware smoke target")
@@ -60,24 +55,6 @@ set(
     CACHE STRING
     "Explicit confirmation for Host and Agent forced termination"
 )
-set(
-    SATSUMA_REAL_FAULT_TIMEOUT_SECONDS
-    300
-    CACHE STRING
-    "Per-process timeout for real VMware fault recovery"
-)
-set(
-    SATSUMA_REAL_SHARED_OUTAGE_SECONDS
-    35
-    CACHE STRING
-    "Runtime Shared Folder outage duration"
-)
-set(
-    SATSUMA_REAL_FAULT_CONFIRM
-    ""
-    CACHE STRING
-    "Explicit confirmation for real VMware runtime fault injection"
-)
 
 if(MSVC)
     # 使用静态 MSVC Runtime，避免 Guest 依赖与构建机完全一致的 Redistributable。
@@ -85,6 +62,54 @@ if(MSVC)
 endif()
 
 include(FetchContent)
+
+# VMCI transport 使用固定版本的 libzmq/cppzmq；VMware 公共 vSockets ABI
+# 头文件直接来自固定提交的 open-vm-tools，不在仓库中复制第三方源码。
+set(CMAKE_POLICY_VERSION_MINIMUM 3.5 CACHE STRING "" FORCE)
+set(BUILD_SHARED OFF CACHE BOOL "" FORCE)
+set(BUILD_STATIC ON CACHE BOOL "" FORCE)
+set(BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(ZMQ_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(WITH_PERF_TOOL OFF CACHE BOOL "" FORCE)
+set(ENABLE_DRAFTS OFF CACHE BOOL "" FORCE)
+set(ENABLE_CURVE OFF CACHE BOOL "" FORCE)
+set(WITH_LIBSODIUM OFF CACHE BOOL "" FORCE)
+set(WITH_LIBBSD OFF CACHE BOOL "" FORCE)
+set(ENABLE_CPACK OFF CACHE BOOL "" FORCE)
+set(CPPZMQ_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(WITH_VMCI ON CACHE BOOL "" FORCE)
+set(POLLER select CACHE STRING "" FORCE)
+set(ZMQ_HAVE_IPC OFF CACHE BOOL "" FORCE)
+
+FetchContent_Declare(
+    open_vm_tools
+    GIT_REPOSITORY https://github.com/vmware/open-vm-tools.git
+    GIT_TAG 3c28b6f4d9af2df2027a9df9c82e2f0196bd8bf7
+    GIT_SHALLOW TRUE
+)
+FetchContent_MakeAvailable(open_vm_tools)
+set(
+    VMCI_INCLUDE_DIRS
+    "${open_vm_tools_SOURCE_DIR}/open-vm-tools/lib/include"
+    CACHE PATH "" FORCE
+)
+
+FetchContent_Declare(
+    libzmq
+    GIT_REPOSITORY https://github.com/zeromq/libzmq.git
+    GIT_TAG 4d9c8f8ccf4f659e8397cad42f8496551f534597
+    GIT_SHALLOW TRUE
+    PATCH_COMMAND
+        "${CMAKE_COMMAND}" -DLIBZMQ_SOURCE_DIR=<SOURCE_DIR>
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/patch-libzmq-vmci.cmake"
+)
+FetchContent_Declare(
+    cppzmq
+    GIT_REPOSITORY https://github.com/zeromq/cppzmq.git
+    GIT_TAG c94c20743ed7d4aa37835a5c46567ab0790d4acc
+    GIT_SHALLOW TRUE
+)
+FetchContent_MakeAvailable(libzmq cppzmq)
 
 # 优先复用精确版本的包管理器依赖；未提供时下载固定提交。
 find_package(nlohmann_json 3.12.0 EXACT CONFIG QUIET)
@@ -100,6 +125,7 @@ endif()
 
 add_library(SatsumaCore STATIC
     src/core/claim.cpp
+    src/vm/claim_store.cpp
     src/core/config.cpp
     src/core/hardware_identity.cpp
     src/core/id.cpp
@@ -128,16 +154,28 @@ target_compile_definitions(
 )
 target_link_libraries(SatsumaCore PUBLIC nlohmann_json::nlohmann_json PRIVATE bcrypt)
 
+add_library(SatsumaVmci STATIC
+    src/transport/vmci.cpp
+)
+target_include_directories(SatsumaVmci PUBLIC include PRIVATE "${VMCI_INCLUDE_DIRS}")
+target_compile_features(SatsumaVmci PUBLIC cxx_std_20)
+target_compile_definitions(
+    SatsumaVmci
+    PUBLIC ZMQ_STATIC NOMINMAX WIN32_LEAN_AND_MEAN
+)
+target_link_libraries(SatsumaVmci PUBLIC SatsumaCore cppzmq-static)
+
 add_library(SatsumaHostLib STATIC
     src/host/controller.cpp
     src/host/diagnostics.cpp
+    src/host/gateway.cpp
     src/host/identity.cpp
     src/host/lab_lease.cpp
     src/host/orchestrator.cpp
     src/vmware/vmrun_provider.cpp
 )
 target_include_directories(SatsumaHostLib PUBLIC src/host src/vmware)
-target_link_libraries(SatsumaHostLib PUBLIC SatsumaCore)
+target_link_libraries(SatsumaHostLib PUBLIC SatsumaCore SatsumaVmci)
 
 add_executable(SatsumaHost src/host/main.cpp)
 target_link_libraries(SatsumaHost PRIVATE SatsumaHostLib)
@@ -145,7 +183,6 @@ target_link_libraries(SatsumaHost PRIVATE SatsumaHostLib)
 add_library(SatsumaVmLib STATIC
     src/vm/agent.cpp
     src/vm/claim_renewal.cpp
-    src/vm/claim_store.cpp
     src/vm/hardware_identity.cpp
     src/vm/inventory.cpp
     src/vm/interactive_process.cpp
@@ -153,12 +190,14 @@ add_library(SatsumaVmLib STATIC
     src/vm/process_environment.cpp
     src/vm/service.cpp
     src/vm/update.cpp
+    src/vm/vmci_channel.cpp
 )
 target_include_directories(SatsumaVmLib PUBLIC src/vm)
 target_link_libraries(
     SatsumaVmLib
     PUBLIC
         SatsumaCore
+        SatsumaVmci
         advapi32
         shell32
         userenv
@@ -225,7 +264,7 @@ file(GENERATE
 )
 
 if(MSVC)
-    foreach(target SatsumaCore SatsumaHostLib SatsumaHost SatsumaVmLib SatsumaVM SatsumaDemoApp)
+    foreach(target SatsumaCore SatsumaVmci SatsumaHostLib SatsumaHost SatsumaVmLib SatsumaVM SatsumaDemoApp)
         target_compile_options(${target} PRIVATE /W4 /permissive- /utf-8 /EHsc)
     endforeach()
     target_compile_options(SatsumaHostLib PRIVATE /external:anglebrackets /external:W0)
@@ -233,6 +272,7 @@ if(MSVC)
 endif()
 
 if(SATSUMA_BUILD_TESTS)
+    target_compile_definitions(SatsumaVmLib PRIVATE SATSUMA_TEST_LOCAL_CHANNEL)
     enable_testing()
     add_subdirectory(tests)
 endif()

@@ -155,7 +155,7 @@ nlohmann::json Diagnostics::inspect_environment(const std::optional<std::string>
             add_check(checks, name, "failed", error.what(), std::move(details));
         }
     };
-    inspect_directory("shared_folder", config_.shared_folder.host_root);
+    inspect_directory("transport_state", config_.transport.state_root);
     inspect_directory("archive", config_.host.archive_root);
 
     std::unique_ptr<vmware::VmrunProvider> provider;
@@ -283,18 +283,9 @@ nlohmann::json Diagnostics::inspect_environment(const std::optional<std::string>
                 {"power_state", "running"},
             };
             if (tools_state == "installed") {
-                try {
-                    static_cast<void>(provider->get_guest_ip_address(vm->vmx));
-                    running = true;
-                    tools_message =
-                        "VMware Tools responded to the Guest IP probe";
-                    tools_details["guest_ip_probe"] = "passed";
-                } catch (const std::exception& error) {
-                    tools_message =
-                        "VMware Tools is installed but its Guest channel is not ready";
-                    tools_details["guest_ip_probe"] = "failed";
-                    tools_details["guest_ip_probe_error"] = error.what();
-                }
+                running = true;
+                tools_message =
+                    "VMware Tools is installed; VMCI Agent probe determines channel readiness";
             }
             add_check(
                 checks,
@@ -343,13 +334,13 @@ nlohmann::json Diagnostics::run_probe(
         {"checks", report.at("checks")},
     }; // 冷启动复检时保留最初的机器可读证据
 
-    if (!check_group_passed(report, "shared_folder")) {
+    if (!check_group_passed(report, "transport_state")) {
         nlohmann::json agents = nlohmann::json::array();
         for (const VmConfig* vm : targets) {
             agents.push_back({
                 {"vm_id", vm->id},
                 {"status", "skipped"},
-                {"message", "Agent diagnostic was skipped because the shared folder is unavailable"},
+                {"message", "Agent diagnostic was skipped because the transport state is unavailable"},
             });
         }
         report["mode"] = "full";
@@ -497,7 +488,7 @@ nlohmann::json Diagnostics::run_probe(
     Controller controller(config_);
     const RunManifest manifest = controller.create_run(plan);
     const std::filesystem::path run_directory = resolve_under_root(
-        config_.shared_folder.host_root,
+        config_.transport.state_root,
         std::filesystem::path(L"runs") / path_from_utf8(manifest.run_id));
     nlohmann::json agents = nlohmann::json::array();
     std::map<std::string, nlohmann::json> latest_presence; // 与本次 echo 对应的 Agent 会话证据

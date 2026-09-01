@@ -27,12 +27,12 @@ namespace {
 
 // 返回当前硬件身份对应的清单文件。
 [[nodiscard]] std::filesystem::path inventory_path(const AgentConfig& config) {
-    return config.shared_root / L"agents" / path_from_utf8(inventory_key(config) + ".inventory.json");
+    return config.channel_root / L"agents" / path_from_utf8(inventory_key(config) + ".inventory.json");
 }
 
 // 返回 Host 显式刷新请求文件。
 [[nodiscard]] std::filesystem::path refresh_path(const AgentConfig& config) {
-    return config.shared_root / L"agents" /
+    return config.channel_root / L"agents" /
         path_from_utf8(inventory_key(config) + ".inventory-refresh.json");
 }
 
@@ -212,7 +212,7 @@ void InventoryPublisher::update_config(const AgentConfig& config) {
     if (config_.lab_id == config.lab_id &&
         config_.vm_id == config.vm_id &&
         config_.hardware_id == config.hardware_id &&
-        config_.shared_root == config.shared_root) {
+        config_.channel_root == config.channel_root) {
         return;
     }
     config_ = config;

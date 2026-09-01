@@ -730,7 +730,7 @@ $matchingVms = @($lab.vms | Where-Object { $_.id -ceq $VmId })
 if ($matchingVms.Count -ne 1) {
     throw "Lab config must contain exactly one VM with id $VmId"
 }
-$sharedRoot = [System.IO.Path]::GetFullPath([string]$lab.shared_folder.host_root)
+$sharedRoot = [System.IO.Path]::GetFullPath([string]$lab.transport.state_root)
 $archiveRoot = [System.IO.Path]::GetFullPath([string]$lab.host.archive_root)
 if (-not (Test-Path -LiteralPath $sharedRoot -PathType Container)) {
     throw "Shared root does not exist: $sharedRoot"

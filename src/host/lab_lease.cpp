@@ -98,7 +98,7 @@ private:
 
 // 返回共享运行是否已经产生全部规范执行结果。
 [[nodiscard]] bool run_is_terminal(const LabConfig& config, const std::string& run_id) {
-    const std::filesystem::path run_directory = config.shared_folder.host_root /
+    const std::filesystem::path run_directory = config.transport.state_root /
         L"runs" / path_from_utf8(run_id);
     if (!std::filesystem::is_regular_file(run_directory / L"task.json")) {
         return false;

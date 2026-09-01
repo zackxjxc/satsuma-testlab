@@ -23,7 +23,7 @@ void prepare_agent_hardware_identity(
 // 返回硬件维度的规范 presence 路径。
 [[nodiscard]] std::filesystem::path hardware_presence_path(const AgentConfig& config);
 
-// 在共享目录可用后发布一次硬件迁移诊断记录。
+// 在传输通道可用后发布一次硬件迁移诊断记录。
 void write_hardware_migration_marker(const AgentConfig& config);
 
 }  // namespace satsuma::vm

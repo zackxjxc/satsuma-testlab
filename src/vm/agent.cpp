@@ -24,10 +24,23 @@
 #include "hardware_identity.hpp"
 #include "satsuma/core/sha256.hpp"
 #include "interactive_process.hpp"
+#include "vmci_channel.hpp"
 #include "update.hpp"
 
 namespace satsuma::vm {
 namespace {
+
+[[nodiscard]] bool use_test_local_channel() noexcept {
+#ifdef SATSUMA_TEST_LOCAL_CHANNEL
+    wchar_t value[2]{};
+    return GetEnvironmentVariableW(
+        L"SATSUMA_TEST_LOCAL_CHANNEL",
+        value,
+        static_cast<DWORD>(std::size(value))) == 1 && value[0] == L'1';
+#else
+    return false;
+#endif
+}
 
 // 在轮询间隔内等待停止请求，收到请求时立即返回。
 [[nodiscard]] bool wait_for_stop(
@@ -94,7 +107,7 @@ void append_result_error(ExecutionResult& result, const std::string& error) {
     result.error += error;
 }
 
-// 尽力记录单个损坏运行，避免它阻塞共享目录中的后续任务。
+// 尽力记录单个损坏运行，避免它阻塞本地镜像中的后续任务。
 void write_run_error_best_effort(
     const std::filesystem::path& run_directory,
     const AgentConfig& config,
@@ -295,25 +308,77 @@ Agent::Agent(
         throw Error("Agent execution requires the current file protocol version");
     }
     validate_claim_lease_policy(runtime_options_.claim_lease_policy);
+    if (config_.transport.vmci_port != 0 && !use_test_local_channel()) {
+        vmci_channel_ = std::make_unique<VmciChannel>(config_, session_id_);
+        if (!runtime_options_.claim_acquire_operation) {
+            runtime_options_.claim_acquire_operation = [this](
+                const std::filesystem::path&,
+                const std::filesystem::path&,
+                const StepClaimLease& claim,
+                const std::string&) {
+                return vmci_channel_->acquire_claim(claim);
+            };
+        }
+        if (!runtime_options_.claim_renew_operation) {
+            runtime_options_.claim_renew_operation = [this](
+                const std::filesystem::path&,
+                const StepClaimLease& claim,
+                const std::int64_t duration) {
+                return vmci_channel_->renew_claim(claim, duration);
+            };
+        }
+        if (!runtime_options_.result_publish_operation) {
+            runtime_options_.result_publish_operation = [this](
+                const std::filesystem::path&,
+                const StepClaimLease& claim,
+                const std::filesystem::path&,
+                const nlohmann::json& result,
+                const std::vector<StepResultEvidenceFile>& evidence) {
+                return vmci_channel_->publish_result(claim, result, evidence);
+            };
+        }
+        if (!runtime_options_.cancellation_check) {
+            runtime_options_.cancellation_check = [this](
+                const std::filesystem::path&,
+                const std::string& run_id) {
+                return vmci_channel_->cancelled(run_id);
+            };
+        }
+    }
 }
+
+Agent::~Agent() = default;
 
 int Agent::run_once(const std::stop_token stop_token) {
     if (stop_token.stop_requested()) {
         return 0;
     }
+    if (vmci_channel_) {
+        vmci_channel_->synchronize_inbound();
+    }
     if (refresh_agent_binding(config_)) {
         inventory_.update_config(config_);
+        if (vmci_channel_) {
+            vmci_channel_->update_config(config_);
+        }
     }
     inventory_.synchronize();
     write_presence();
-    return execute_pending_runs(stop_token);
+    if (vmci_channel_) {
+        vmci_channel_->synchronize_outbound();
+    }
+    const int executed = execute_pending_runs(stop_token);
+    if (vmci_channel_) {
+        vmci_channel_->synchronize_outbound();
+    }
+    return executed;
 }
 
 int Agent::execute_pending_runs(const std::stop_token stop_token) {
     if (stop_token.stop_requested() || config_.identity_unbound) {
         return 0;
     }
-    const std::filesystem::path runs_root = config_.shared_root / L"runs";
+    const std::filesystem::path runs_root = config_.channel_root / L"runs";
     std::filesystem::create_directories(runs_root);
 
     std::vector<std::filesystem::path> run_directories;
@@ -385,11 +450,11 @@ int Agent::execute_pending_runs(const std::stop_token stop_token) {
                     step.retry_safe);
                 StepClaimAcquireResult acquisition;
                 try {
-                    acquisition = acquire_step_claim_transaction(
-                        claim_path,
-                        result_path,
-                        proposed_claim,
-                        boot_id_);
+                    acquisition = runtime_options_.claim_acquire_operation
+                        ? runtime_options_.claim_acquire_operation(
+                            claim_path, result_path, proposed_claim, boot_id_)
+                        : acquire_step_claim_transaction(
+                            claim_path, result_path, proposed_claim, boot_id_);
                 } catch (const StepClaimStateError& error) {
                     write_json_atomic(recovery_path, {
                         {"schema_version", 1},
@@ -403,6 +468,11 @@ int Agent::execute_pending_runs(const std::stop_token stop_token) {
                 }
                 if (acquisition.status == StepClaimAcquireStatus::Completed ||
                     acquisition.status == StepClaimAcquireStatus::Wait) {
+                    if (acquisition.status == StepClaimAcquireStatus::Completed &&
+                        vmci_channel_) {
+                        std::filesystem::create_directories(result_directory);
+                        write_text(result_directory / L".vmci-complete", "completed\n");
+                    }
                     continue;
                 }
                 if (acquisition.status == StepClaimAcquireStatus::ManualInterventionRequired) {
@@ -439,9 +509,12 @@ int Agent::execute_pending_runs(const std::stop_token stop_token) {
                 manifest.steps.begin(),
                 manifest.steps.end(),
                 [&run_directory, this](const TaskStep& step) {
-                    return step.vm != config_.vm_id || std::filesystem::is_regular_file(
+                    const std::filesystem::path result_directory =
                         run_directory / L"results" / path_from_utf8(config_.vm_id) /
-                        path_from_utf8(step.id) / L"execution.json");
+                        path_from_utf8(step.id);
+                    return step.vm != config_.vm_id ||
+                        std::filesystem::is_regular_file(result_directory / L"execution.json") ||
+                        std::filesystem::is_regular_file(result_directory / L".vmci-complete");
                 });
             if (current_vm_complete) {
                 process_guest_cleanup_request(run_directory, manifest, config_);
@@ -457,17 +530,32 @@ void Agent::run_watch(const std::stop_token stop_token) {
     while (!stop_token.stop_requested()) {
         bool file_channel_available = false;
         try {
+            if (vmci_channel_) {
+                vmci_channel_->synchronize_inbound();
+            }
             if (refresh_agent_binding(config_)) {
                 inventory_.update_config(config_);
+                if (vmci_channel_) {
+                    vmci_channel_->update_config(config_);
+                }
             }
             inventory_.synchronize();
             write_presence();
+            if (vmci_channel_) {
+                vmci_channel_->synchronize_outbound();
+            }
             if (!config_.identity_unbound &&
                 process_pending_agent_update(config_, stop_token)) {
+                if (vmci_channel_) {
+                    vmci_channel_->synchronize_outbound();
+                }
                 break;
             }
             if (!config_.identity_unbound) {
                 static_cast<void>(execute_pending_runs(stop_token));
+            }
+            if (vmci_channel_) {
+                vmci_channel_->synchronize_outbound();
             }
             file_channel_available = true;
         } catch (const std::exception& error) {
@@ -541,14 +629,14 @@ void Agent::write_presence() const {
     write_json_atomic(hardware_presence_path(config_), published);
     if (!config_.hardware_id.empty()) {
         write_json_atomic(
-            config_.shared_root / L"agents" / L"sessions" /
+            config_.channel_root / L"agents" / L"sessions" /
                 path_from_utf8(config_.hardware_id) /
                 path_from_utf8(session_id_ + ".json"),
             published);
     }
     if (config_.vm_id_configured && config_.vm_id != config_.hardware_id) {
         write_json_atomic(
-            config_.shared_root / L"agents" / path_from_utf8(config_.vm_id + ".json"),
+            config_.channel_root / L"agents" / path_from_utf8(config_.vm_id + ".json"),
             published);
     }
     write_hardware_migration_marker(config_);
@@ -611,12 +699,19 @@ void Agent::execute_step(
         [&execution_stop_source] { execution_stop_source.request_stop(); });
     const std::stop_token execution_stop_token = execution_stop_source.get_token();
     const std::filesystem::path cancellation_path = run_directory / L"cancel.json";
+    const CancellationCheck cancellation_check = runtime_options_.cancellation_check;
     std::jthread cancellation_monitor(
-        [&execution_stop_source, cancellation_path, run_id = manifest.run_id](
+        [&execution_stop_source, cancellation_path, run_id = manifest.run_id,
+         cancellation_check](
             const std::stop_token monitor_stop) {
             while (!monitor_stop.stop_requested()) {
                 try {
-                    if (std::filesystem::is_regular_file(cancellation_path)) {
+                    if (cancellation_check && cancellation_check(cancellation_path, run_id)) {
+                        execution_stop_source.request_stop();
+                        return;
+                    }
+                    if (!cancellation_check &&
+                        std::filesystem::is_regular_file(cancellation_path)) {
                         const nlohmann::json cancellation = load_json(cancellation_path);
                         if (cancellation.value("schema_version", 0) == 1 &&
                             cancellation.value("run_id", std::string{}) == run_id) {
@@ -822,12 +917,19 @@ void Agent::execute_step(
         return;
     }
 
-    const StepResultPublishStatus publish_status = publish_step_result_if_owned(
-        claim_path,
-        claim,
-        result_directory / L"execution.json",
-        result,
-        evidence_files);
+    const StepResultPublishStatus publish_status = runtime_options_.result_publish_operation
+        ? runtime_options_.result_publish_operation(
+            claim_path,
+            claim,
+            result_directory / L"execution.json",
+            result,
+            evidence_files)
+        : publish_step_result_if_owned(
+            claim_path,
+            claim,
+            result_directory / L"execution.json",
+            result,
+            evidence_files);
     renewal_session.finish();
     if (publish_status != StepResultPublishStatus::Published) {
         const std::string claim_status = publish_status == StepResultPublishStatus::LeaseExpired
@@ -839,6 +941,9 @@ void Agent::execute_step(
             claim_status,
             renewal_session.loss_reason());
         return;
+    }
+    if (vmci_channel_) {
+        write_text(result_directory / L".vmci-complete", "completed\n");
     }
 
     std::error_code cleanup_error;

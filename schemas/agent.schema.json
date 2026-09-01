@@ -9,7 +9,8 @@
     "protocol_version",
     "lab_id",
     "agent_version",
-    "shared_root",
+    "transport",
+    "storage_root",
     "local_work_root"
   ],
   "properties": {
@@ -20,8 +21,18 @@
     "vm_id": {"$ref": "#/$defs/identifier"},
     "agent_version": {"type": "string", "minLength": 1, "maxLength": 64},
     "last_update_id": {"$ref": "#/$defs/identifier"},
-    "shared_root": {"type": "string", "minLength": 1},
+    "transport": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["host_cid", "vmci_port"],
+      "properties": {
+        "host_cid": {"type": "integer", "minimum": 0, "maximum": 4294967294},
+        "vmci_port": {"type": "integer", "minimum": 1, "maximum": 4294967294},
+        "request_timeout_ms": {"type": "integer", "minimum": 100, "maximum": 60000}
+      }
+    },
     "storage_root": {"type": "string", "minLength": 1},
+    "channel_root": {"type": "string", "minLength": 1},
     "local_work_root": {"type": "string", "minLength": 1},
     "poll_interval_ms": {"type": "integer", "minimum": 100, "maximum": 60000},
     "reconnect_interval_ms": {"type": "integer", "minimum": 100, "maximum": 60000}

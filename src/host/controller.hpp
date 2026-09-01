@@ -15,7 +15,7 @@
 
 namespace satsuma::host {
 
-// 管理 Host 侧共享目录中的运行生命周期。
+// 管理 Host 侧传输状态根中的运行生命周期。
 class Controller {
 public:
     // 使用已验证的实验室配置创建 Controller。
@@ -30,7 +30,7 @@ public:
     // 汇总指定运行当前已落盘的执行结果。
     [[nodiscard]] nlohmann::json build_report(const std::string& run_id) const;
 
-    // 列出共享目录中的运行及其当前状态。
+    // 列出传输状态根中的运行及其当前状态。
     [[nodiscard]] nlohmann::json list_runs() const;
 
     // 原子发布单个运行的取消请求。

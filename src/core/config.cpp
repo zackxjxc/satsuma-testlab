@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <initializer_list>
+#include <limits>
 #include <set>
 #include <string_view>
 
@@ -89,7 +90,7 @@ LabConfig load_lab_config(const std::filesystem::path& path) {
     const nlohmann::json value = load_json(path);
     reject_unknown_fields(
         value,
-        {"$schema", "schema_version", "lab_id", "provider", "host", "shared_folder", "vms"},
+        {"$schema", "schema_version", "lab_id", "provider", "host", "transport", "vms"},
         "lab configuration");
     validate_schema_version(value, "lab.json");
 
@@ -112,10 +113,18 @@ LabConfig load_lab_config(const std::filesystem::path& path) {
     config.host.archive_root = path_from_utf8(required_string(host, "archive_root"));
     require_absolute_path(config.host.archive_root, "host.archive_root");
 
-    const auto& shared_folder = value.at("shared_folder");
-    reject_unknown_fields(shared_folder, {"host_root"}, "shared folder configuration");
-    config.shared_folder.host_root = path_from_utf8(required_string(shared_folder, "host_root"));
-    require_absolute_path(config.shared_folder.host_root, "shared_folder.host_root");
+    const auto& transport = value.at("transport");
+    reject_unknown_fields(
+        transport,
+        {"state_root", "vmci_port"},
+        "Host transport configuration");
+    config.transport.state_root = path_from_utf8(required_string(transport, "state_root"));
+    require_absolute_path(config.transport.state_root, "transport.state_root");
+    const std::uint64_t vmci_port = transport.at("vmci_port").get<std::uint64_t>();
+    if (vmci_port == 0 || vmci_port >= std::numeric_limits<std::uint32_t>::max()) {
+        throw Error("transport.vmci_port must be between 1 and 4294967294");
+    }
+    config.transport.vmci_port = static_cast<std::uint32_t>(vmci_port);
 
     if (!value.contains("vms") || !value.at("vms").is_array() || value.at("vms").empty()) {
         throw Error("lab.json must contain at least one VM");
@@ -169,8 +178,8 @@ AgentConfig load_agent_config(const std::filesystem::path& path) {
     reject_unknown_fields(
         value,
         {"$schema", "schema_version", "protocol_version", "lab_id", "vm_id",
-         "agent_version", "last_update_id", "shared_root", "local_work_root",
-         "storage_root", "poll_interval_ms", "reconnect_interval_ms"},
+         "agent_version", "last_update_id", "transport", "local_work_root",
+         "storage_root", "channel_root", "poll_interval_ms", "reconnect_interval_ms"},
         "Agent configuration");
     validate_schema_version(value, "agent.json");
 
@@ -188,18 +197,24 @@ AgentConfig load_agent_config(const std::filesystem::path& path) {
     if (config.vm_id_configured) {
         validate_identifier(config.vm_id, "vm_id");
     }
-    config.shared_root = path_from_utf8(required_string(value, "shared_root"));
     config.local_work_root = path_from_utf8(required_string(value, "local_work_root"));
-    require_absolute_path(config.shared_root, "shared_root");
     require_absolute_path(config.local_work_root, "local_work_root");
     config.legacy_storage_layout = !value.contains("storage_root");
     config.storage_root = config.legacy_storage_layout
         ? config.local_work_root.parent_path()
         : path_from_utf8(required_string(value, "storage_root"));
     require_absolute_path(config.storage_root, "storage_root");
+    config.channel_root = value.contains("channel_root")
+        ? path_from_utf8(required_string(value, "channel_root"))
+        : config.storage_root / L"channel";
+    require_absolute_path(config.channel_root, "channel_root");
     const std::filesystem::path storage_drive = config.storage_root.root_path();
     if (storage_drive.empty() || GetDriveTypeW(storage_drive.c_str()) != DRIVE_FIXED) {
         throw Error("storage_root must be located on a local fixed drive");
+    }
+    const std::filesystem::path channel_drive = config.channel_root.root_path();
+    if (channel_drive.empty() || GetDriveTypeW(channel_drive.c_str()) != DRIVE_FIXED) {
+        throw Error("channel_root must be located on a local fixed drive");
     }
     if (!config.legacy_storage_layout) {
         const std::filesystem::path expected_work =
@@ -209,6 +224,26 @@ AgentConfig load_agent_config(const std::filesystem::path& path) {
                 config.local_work_root.lexically_normal().native().c_str()) != 0) {
             throw Error("local_work_root must equal <storage_root>/work");
         }
+    }
+    const auto& transport = value.at("transport");
+    reject_unknown_fields(
+        transport,
+        {"host_cid", "vmci_port", "request_timeout_ms"},
+        "Agent transport configuration");
+    const std::uint64_t host_cid = transport.at("host_cid").get<std::uint64_t>();
+    const std::uint64_t vmci_port = transport.at("vmci_port").get<std::uint64_t>();
+    if (host_cid >= std::numeric_limits<std::uint32_t>::max()) {
+        throw Error("transport.host_cid must be between 0 and 4294967294");
+    }
+    if (vmci_port == 0 || vmci_port >= std::numeric_limits<std::uint32_t>::max()) {
+        throw Error("transport.vmci_port must be between 1 and 4294967294");
+    }
+    config.transport.host_cid = static_cast<std::uint32_t>(host_cid);
+    config.transport.vmci_port = static_cast<std::uint32_t>(vmci_port);
+    config.transport.request_timeout_ms = transport.value("request_timeout_ms", 10'000);
+    if (config.transport.request_timeout_ms < 100 ||
+        config.transport.request_timeout_ms > 60'000) {
+        throw Error("transport.request_timeout_ms must be between 100 and 60000");
     }
     config.poll_interval_ms = value.value("poll_interval_ms", 1000);
     config.reconnect_interval_ms = value.value("reconnect_interval_ms", 1000);

@@ -292,7 +292,7 @@ void validate_snapshot_name(const std::string& snapshot, const std::string_view 
     return lifecycle;
 }
 
-// 解析 Guest 工作目录和 Shared Folder 运行目录的结束清理策略。
+// 解析 Guest 工作目录和 Host 状态运行目录的结束清理策略。
 [[nodiscard]] TaskCleanupPolicy parse_task_cleanup_policy(const nlohmann::json& value) {
     reject_unknown_fields(value, {"guest_work", "shared_run"}, "cleanup");
     if (!value.contains("guest_work") || !value.contains("shared_run")) {

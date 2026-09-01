@@ -15,6 +15,7 @@
 
 #include "controller.hpp"
 #include "diagnostics.hpp"
+#include "gateway.hpp"
 #include "identity.hpp"
 #include "lab_lease.hpp"
 #include "orchestrator.hpp"
@@ -79,7 +80,8 @@ void validate_options(
 [[nodiscard]] bool is_supported_command(
     const std::wstring_view command,
     const std::wstring_view subcommand) {
-    if (command == L"check" || command == L"discover" || command == L"run" ||
+    if (command == L"check" || command == L"discover" || command == L"gateway" ||
+        command == L"run" ||
         command == L"orchestrate" || command == L"report") {
         return subcommand.empty();
     }
@@ -108,7 +110,9 @@ void validate_command_options(
     const std::wstring_view command,
     const std::wstring_view subcommand,
     const std::map<std::wstring, std::wstring>& options) {
-    if (command == L"check") {
+    if (command == L"gateway") {
+        validate_options(options, {L"config"});
+    } else if (command == L"check") {
         validate_options(options, {L"config", L"vm", L"timeout-seconds"});
     } else if (command == L"discover") {
         validate_options(options, {L"config"});
@@ -203,7 +207,7 @@ void validate_command_options(
     return std::chrono::seconds(seconds);
 }
 
-// 解析 VM 启动后等待 Agent 文件通道就绪的秒数。
+// 解析 VM 启动后等待 Agent VMCI 通道就绪的秒数。
 [[nodiscard]] std::chrono::seconds parse_boot_wait(
     const std::map<std::wstring, std::wstring>& options) {
     const auto match = options.find(L"boot-wait-seconds");
@@ -298,6 +302,7 @@ void print_usage() {
         << "Usage:\n"
         << "  SatsumaHost --help\n"
         << "  SatsumaHost --version\n"
+        << "  SatsumaHost gateway --config lab.local.json\n"
         << "  SatsumaHost check --config lab.local.json [--vm <vm-id>] [--timeout-seconds <1-300>]\n"
         << "  SatsumaHost discover --config lab.local.json\n"
         << "  SatsumaHost vm start --config lab.local.json --id <vm-id>\n"
@@ -380,6 +385,20 @@ int wmain(const int argc, wchar_t* argv[]) {
         validate_command_options(command, subcommand, options);
         const std::filesystem::path config_path = require_option(options, L"config");
         satsuma::LabConfig config = satsuma::load_lab_config(config_path);
+
+        if (command == L"gateway") {
+            const satsuma::transport::VmciInfo info = satsuma::transport::query_vmci_info();
+            std::cout << nlohmann::json({
+                {"status", "listening"},
+                {"transport", "vmci"},
+                {"local_cid", info.local_cid},
+                {"port", config.transport.vmci_port},
+                {"state_root", satsuma::path_to_utf8(config.transport.state_root)},
+            }).dump(2) << '\n' << std::flush;
+            satsuma::host::Gateway gateway(std::move(config));
+            gateway.run();
+            return 0;
+        }
 
         if (command == L"lab" && subcommand == L"status") {
             std::cout << satsuma::host::LabLease::status(config).dump(2) << '\n';

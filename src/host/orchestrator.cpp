@@ -46,8 +46,8 @@ struct OrchestrationArchive {
     bool resumed{false}; // 是否从已有归档恢复
 };
 
-constexpr std::chrono::seconds kSharedRunDeleteTimeout{5}; // 等待 Agent 释放共享目录句柄的上限
-constexpr std::chrono::milliseconds kSharedRunDeleteDelay{100}; // 共享目录删除重试间隔
+constexpr std::chrono::seconds kSharedRunDeleteTimeout{5}; // 等待本机状态句柄释放的上限
+constexpr std::chrono::milliseconds kSharedRunDeleteDelay{100}; // 状态目录删除重试间隔
 constexpr std::chrono::seconds kEvidenceArchiveStabilityTimeout{5}; // 等待运行证据停止变化的上限
 constexpr std::chrono::milliseconds kEvidenceArchiveStabilityDelay{100}; // 证据稳定性重试间隔
 
@@ -374,14 +374,14 @@ void validate_archived_evidence(const std::filesystem::path& destination) {
     }
 }
 
-// 将共享目录运行证据一次性发布到 Guest 不可见的归档目录。
+// 将 Host 状态根中的运行证据一次性发布到独立归档目录。
 void archive_run_evidence(
     const LabConfig& config,
     const std::string& lifecycle_run_id,
     const std::string& execution_run_id,
     const std::string& label) {
     const std::filesystem::path source = resolve_under_root(
-        config.shared_folder.host_root,
+        config.transport.state_root,
         std::filesystem::path(L"runs") / path_from_utf8(execution_run_id));
     const std::filesystem::path archive_root = resolve_under_root(
         config.host.archive_root,
@@ -448,7 +448,7 @@ void archive_run_evidence(
     const std::string& vm_id,
     const std::chrono::seconds timeout) {
     const std::filesystem::path run_directory = resolve_under_root(
-        config.shared_folder.host_root,
+        config.transport.state_root,
         std::filesystem::path(L"runs") / path_from_utf8(run_id));
     const std::filesystem::path state_directory = run_directory / L"state";
     const std::filesystem::path request_path =
@@ -511,10 +511,10 @@ void archive_run_evidence(
     }
 }
 
-// 删除已经归档并完成 Guest 清理的 Shared Folder 运行目录。
+// 删除已经归档并完成 Guest 清理的 Host 状态运行目录。
 void delete_shared_run(const LabConfig& config, const std::string& run_id) {
     const std::filesystem::path run_directory = resolve_under_root(
-        config.shared_folder.host_root,
+        config.transport.state_root,
         std::filesystem::path(L"runs") / path_from_utf8(run_id));
     const DWORD attributes = GetFileAttributesW(run_directory.c_str());
     if (attributes == INVALID_FILE_ATTRIBUTES ||

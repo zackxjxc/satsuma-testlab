@@ -3,6 +3,8 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <functional>
+#include <memory>
 #include <stop_token>
 #include <string>
 
@@ -15,14 +17,35 @@
 namespace satsuma::vm {
 
 class InteractiveUserSession;
+class VmciChannel;
+
+using ClaimAcquireOperation = std::function<StepClaimAcquireResult(
+    const std::filesystem::path&,
+    const std::filesystem::path&,
+    const StepClaimLease&,
+    const std::string&)>;
+
+using ResultPublishOperation = std::function<StepResultPublishStatus(
+    const std::filesystem::path&,
+    const StepClaimLease&,
+    const std::filesystem::path&,
+    const nlohmann::json&,
+    const std::vector<StepResultEvidenceFile>&)>;
+
+using CancellationCheck = std::function<bool(
+    const std::filesystem::path&,
+    const std::string&)>;
 
 // Agent 进程内可注入的运行策略，不改变 agent.json 协议。
 struct AgentRuntimeOptions {
     ClaimLeasePolicy claim_lease_policy; // 固定租约、续租和安全截止参数
     ClaimRenewOperation claim_renew_operation; // 测试可注入的续租事务
+    ClaimAcquireOperation claim_acquire_operation; // 生产由 Host VMCI 网关执行
+    ResultPublishOperation result_publish_operation; // 生产由 Host VMCI 网关 fencing
+    CancellationCheck cancellation_check; // 执行中远程取消探测
 };
 
-// 轮询共享目录并执行分配给当前 VM 的任务。
+// 同步 VMCI 本地镜像并执行分配给当前 VM 的任务。
 class Agent {
 public:
     // 使用已验证的 VM 配置创建本次 Agent 会话。
@@ -30,15 +53,16 @@ public:
         AgentConfig config,
         std::filesystem::path helper_executable = {},
         AgentRuntimeOptions runtime_options = {});
+    ~Agent();
 
-    // 扫描一次共享目录并返回新执行的步骤数。
+    // 同步并扫描一次本地镜像，返回新执行的步骤数。
     [[nodiscard]] int run_once(std::stop_token stop_token = {});
 
-    // 按配置的间隔持续扫描共享目录，直到收到停止请求。
+    // 按配置的间隔持续同步和扫描，直到收到停止请求。
     void run_watch(std::stop_token stop_token = {});
 
 private:
-    // 扫描并执行当前文件通道中等待当前 VM 的任务。
+    // 扫描并执行当前传输镜像中等待当前 VM 的任务。
     [[nodiscard]] int execute_pending_runs(std::stop_token stop_token);
 
     // 执行已领取步骤，仅在仍持有有效 claim 时发布规范 execution.json。
@@ -76,11 +100,12 @@ private:
     AgentRuntimeOptions runtime_options_; // 当前进程使用的可注入运行策略
     InventoryPublisher inventory_; // 当前会话的 Guest 环境快照
     ProcessRunner runner_;     // Windows Job Object 执行器
-    std::uint64_t file_channel_failure_count_{0}; // 共享目录累计失败次数
+    std::unique_ptr<VmciChannel> vmci_channel_; // 生产 VMCI 通道；测试可为空
+    std::uint64_t file_channel_failure_count_{0}; // 传输通道累计失败次数
     std::uint64_t consecutive_file_channel_failures_{0}; // 当前连续失败次数
-    std::string last_file_channel_error_; // 最近一次共享目录失败
-    std::string last_file_channel_error_at_; // 最近一次共享目录失败时间
-    std::string last_file_channel_recovered_at_; // 最近一次共享目录恢复时间
+    std::string last_file_channel_error_; // 最近一次传输失败
+    std::string last_file_channel_error_at_; // 最近一次传输失败时间
+    std::string last_file_channel_recovered_at_; // 最近一次传输恢复时间
 };
 
 }  // namespace satsuma::vm

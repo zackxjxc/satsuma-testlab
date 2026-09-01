@@ -4,8 +4,13 @@
   "protocol_version": 3,
   "lab_id": "replace_with_lab_id",
   "agent_version": "0.2.1",
-  "shared_root": "\\\\vmware-host\\Shared Folders\\REQUIRED_SHARE_NAME",
+  "transport": {
+    "host_cid": 2,
+    "vmci_port": 42510,
+    "request_timeout_ms": 10000
+  },
   "storage_root": "D:\\SatsumaTestLab",
+  "channel_root": "D:\\SatsumaTestLab\\channel",
   "local_work_root": "D:\\SatsumaTestLab\\work",
   "poll_interval_ms": 1000,
   "reconnect_interval_ms": 1000

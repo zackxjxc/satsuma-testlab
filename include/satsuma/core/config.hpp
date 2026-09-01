@@ -2,6 +2,7 @@
 #pragma once
 
 #include <filesystem>
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <vector>
@@ -21,9 +22,17 @@ struct HostConfig {
     std::filesystem::path archive_root; // Guest 不可见的归档根目录
 };
 
-// Host 和 Guest 的共享目录映射。
-struct SharedFolderConfig {
-    std::filesystem::path host_root; // Host 共享根目录
+// Host 常驻网关的 VMCI 监听与本地持久状态。
+struct HostTransportConfig {
+    std::filesystem::path state_root; // 仅 Host 可见的协议事实源
+    std::uint32_t vmci_port{0};       // VMCI REP 监听端口
+};
+
+// Guest 连接 Host 网关使用的 VMCI 地址。
+struct AgentTransportConfig {
+    std::uint32_t host_cid{2};        // VMware Host 的 VMCI CID
+    std::uint32_t vmci_port{0};       // 与 Host 网关一致的端口
+    int request_timeout_ms{10'000};   // 单次 RPC 有限等待
 };
 
 // 单台 VM 的快照所有权和配额策略。
@@ -48,7 +57,7 @@ struct LabConfig {
     std::string lab_id;                 // 实验室稳定 ID
     ProviderConfig provider;            // VMware Provider 配置
     HostConfig host;                    // Host 配置
-    SharedFolderConfig shared_folder;   // 共享目录映射
+    HostTransportConfig transport;      // Host VMCI 网关配置
     std::vector<VmConfig> vms;          // 允许的虚拟机列表
 };
 
@@ -65,12 +74,13 @@ struct AgentConfig {
     bool identity_unbound{false};            // 当前硬件尚未绑定 VM 标识
     std::string agent_version;              // 当前 Agent 语义版本
     std::string last_update_id;              // 最近成功应用的更新 ID
-    std::filesystem::path shared_root;      // Guest 共享根目录
     std::filesystem::path storage_root;     // 安装器选定的统一本地存储根
+    std::filesystem::path channel_root;     // Guest 本地 VMCI 持久化镜像
     std::filesystem::path local_work_root;  // Guest 本地执行根目录
+    AgentTransportConfig transport;         // Host VMCI endpoint
     bool legacy_storage_layout{false};       // 旧配置尚未声明 storage_root
     int poll_interval_ms{1000};             // 无任务时的轮询间隔
-    int reconnect_interval_ms{1000};        // Shared Folder 异常后的重试间隔
+    int reconnect_interval_ms{1000};        // VMCI 网关异常后的重试间隔
 };
 
 // 读取并验证 Host 实验室配置。

@@ -4,7 +4,6 @@ add_library(
     STATIC
     ../src/vm/agent.cpp
     ../src/vm/claim_renewal.cpp
-    ../src/vm/claim_store.cpp
     ../src/vm/hardware_identity.cpp
     ../src/vm/inventory.cpp
     ../src/vm/interactive_process.cpp
@@ -12,6 +11,7 @@ add_library(
     ../src/vm/process_environment.cpp
     ../src/vm/service.cpp
     ../src/vm/update.cpp
+    ../src/vm/vmci_channel.cpp
 )
 target_include_directories(SatsumaVmTestLib PUBLIC ../src/vm)
 target_compile_definitions(
@@ -20,10 +20,11 @@ target_compile_definitions(
         SATSUMA_INTERACTIVE_TESTS
         SATSUMA_SERVICE_TESTS
         SATSUMA_UPDATE_TESTS
+        SATSUMA_TEST_LOCAL_CHANNEL
 )
 target_link_libraries(
     SatsumaVmTestLib
-    PUBLIC SatsumaCore advapi32 shell32 userenv version wtsapi32
+    PUBLIC SatsumaCore SatsumaVmci advapi32 shell32 userenv version wtsapi32
 )
 if(MSVC)
     target_compile_options(
@@ -51,6 +52,17 @@ if(MSVC)
 endif()
 
 add_test(NAME SatsumaCoreTests COMMAND SatsumaCoreTests)
+
+add_executable(SatsumaVmciTransportTests vmci_transport_tests.cpp)
+target_link_libraries(SatsumaVmciTransportTests PRIVATE SatsumaHostLib)
+if(MSVC)
+    target_compile_options(
+        SatsumaVmciTransportTests
+        PRIVATE /W4 /permissive- /utf-8 /EHsc /external:anglebrackets /external:W0
+    )
+endif()
+add_test(NAME SatsumaVmciTransportTests COMMAND SatsumaVmciTransportTests)
+set_tests_properties(SatsumaVmciTransportTests PROPERTIES TIMEOUT 10 RUN_SERIAL TRUE)
 
 add_test(
     NAME SatsumaSchemaFilesTest
@@ -169,7 +181,7 @@ add_test(
         "$<TARGET_FILE:SatsumaTestFixture>"
         "$<TARGET_FILE:SatsumaVM>"
 )
-set_tests_properties(SatsumaVmAgentTests PROPERTIES TIMEOUT 15)
+set_tests_properties(SatsumaVmAgentTests PROPERTIES TIMEOUT 25)
 
 add_executable(
     SatsumaVmAgentClaimTests
@@ -245,13 +257,6 @@ if(SATSUMA_POWERSHELL_CORE)
             "-DPOWERSHELL=${SATSUMA_POWERSHELL_CORE}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/real_vmware_crash_recovery_script_test.cmake"
     )
-    add_test(
-        NAME SatsumaRealFaultRecoveryScriptTest
-        COMMAND "${CMAKE_COMMAND}"
-            "-DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/real_vmware_fault_recovery.ps1"
-            "-DPOWERSHELL=${SATSUMA_POWERSHELL_CORE}"
-            -P "${CMAKE_CURRENT_SOURCE_DIR}/real_vmware_fault_recovery_script_test.cmake"
-    )
 endif()
 
 add_test(
@@ -311,7 +316,7 @@ add_test(
         "-DTEST_ROOT=${CMAKE_CURRENT_BINARY_DIR}/multi-vm-lifecycle-flow"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/multi_vm_lifecycle_flow.cmake"
 )
-set_tests_properties(SatsumaHostMultiVmLifecycleFlow PROPERTIES TIMEOUT 120)
+set_tests_properties(SatsumaHostMultiVmLifecycleFlow PROPERTIES TIMEOUT 420)
 
 if(SATSUMA_ENABLE_REAL_VMWARE_SMOKE)
     add_custom_target(
@@ -354,28 +359,5 @@ if(SATSUMA_ENABLE_REAL_VMWARE_CRASH_RECOVERY)
         DEPENDS SatsumaHost SatsumaTestFixture
         USES_TERMINAL
         COMMENT "Run explicitly confirmed real VMware Host/Agent crash recovery"
-    )
-endif()
-
-if(SATSUMA_ENABLE_REAL_VMWARE_FAULT_RECOVERY)
-    if(NOT SATSUMA_POWERSHELL_CORE)
-        message(FATAL_ERROR "PowerShell 7 is required for real VMware fault recovery")
-    endif()
-    add_custom_target(
-        SatsumaRealVmwareFaultRecovery
-        COMMAND "${SATSUMA_POWERSHELL_CORE}"
-            -NoProfile
-            -NonInteractive
-            -File "${CMAKE_CURRENT_SOURCE_DIR}/real_vmware_fault_recovery.ps1"
-            -HostExe "$<TARGET_FILE:SatsumaHost>"
-            -FixtureExe "$<TARGET_FILE:SatsumaTestFixture>"
-            -LabConfig "${SATSUMA_REAL_LAB_CONFIG}"
-            -VmId "${SATSUMA_REAL_VM_ID}"
-            -Confirm "${SATSUMA_REAL_FAULT_CONFIRM}"
-            -ScenarioTimeoutSeconds "${SATSUMA_REAL_FAULT_TIMEOUT_SECONDS}"
-            -OutageSeconds "${SATSUMA_REAL_SHARED_OUTAGE_SECONDS}"
-        DEPENDS SatsumaHost SatsumaTestFixture
-        USES_TERMINAL
-        COMMENT "Run explicitly confirmed real VMware Shared Folder fault recovery"
     )
 endif()

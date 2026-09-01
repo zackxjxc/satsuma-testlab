@@ -4,7 +4,7 @@
   "title": "Satsuma laboratory configuration",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "lab_id", "provider", "host", "shared_folder", "vms"],
+  "required": ["schema_version", "lab_id", "provider", "host", "transport", "vms"],
   "properties": {
     "$schema": {"type": "string"},
     "schema_version": {"const": 1},
@@ -26,12 +26,13 @@
         "archive_root": {"type": "string", "minLength": 1}
       }
     },
-    "shared_folder": {
+    "transport": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["host_root"],
+      "required": ["state_root", "vmci_port"],
       "properties": {
-        "host_root": {"type": "string", "minLength": 1}
+        "state_root": {"type": "string", "minLength": 1},
+        "vmci_port": {"type": "integer", "minimum": 1, "maximum": 4294967294}
       }
     },
     "vms": {

@@ -1,6 +1,6 @@
 ﻿# Satsuma VM Agent 安装与启动脚本
 param(
-    [string]$SharedRoot = '\\vmware-host\Shared Folders\vm-share',
+    [string]$BootstrapRoot = $PSScriptRoot,
     [string]$InstallRoot = '',
     [string]$AgentFileName = 'SatsumaVM.exe',
     [string]$ConfigFileName = 'agent.json'
@@ -194,7 +194,7 @@ if (-not (Test-Administrator)) {
         '-NoProfile',
         '-ExecutionPolicy', 'Bypass',
         '-File', $PSCommandPath,
-        '-SharedRoot', $SharedRoot,
+        '-BootstrapRoot', $BootstrapRoot,
         '-InstallRoot', $InstallRoot,
         '-AgentFileName', $AgentFileName,
         '-ConfigFileName', $ConfigFileName
@@ -213,8 +213,7 @@ if (-not (Test-Administrator)) {
     exit $process.ExitCode
 }
 
-# 固定共享目录输入
-$bootstrapRoot = Join-Path $SharedRoot 'satsuma-bootstrap'
+# 安装介质可来自本机目录、只读 ISO 或用户手工复制的临时目录。
 $sourceAgent = Join-Path $bootstrapRoot $AgentFileName
 $sourceConfig = Join-Path $bootstrapRoot $ConfigFileName
 foreach ($sourceFile in @($sourceAgent, $sourceConfig)) {
@@ -266,6 +265,12 @@ try {
         $candidateConfig.storage_root = $InstallRoot
     } else {
         $candidateConfig | Add-Member -NotePropertyName storage_root -NotePropertyValue $InstallRoot
+    }
+    $channelRoot = Join-Path $InstallRoot 'channel'
+    if ($candidateConfig.PSObject.Properties.Name -contains 'channel_root') {
+        $candidateConfig.channel_root = $channelRoot
+    } else {
+        $candidateConfig | Add-Member -NotePropertyName channel_root -NotePropertyValue $channelRoot
     }
     $candidateConfig.local_work_root = $workRoot
     $configText = $candidateConfig | ConvertTo-Json -Depth 20

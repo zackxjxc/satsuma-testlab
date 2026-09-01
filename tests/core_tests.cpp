@@ -173,7 +173,7 @@ void test_snapshot_configuration(const std::filesystem::path& root) {
         {"lab_id", "snapshot_test"},
         {"provider", {{"type", "vmware_workstation"}, {"vmrun", "C:/vmrun.exe"}}},
         {"host", {{"archive_root", "C:/archive"}}},
-        {"shared_folder", {{"host_root", "C:/share"}}},
+        {"transport", {{"state_root", "C:/state"}, {"vmci_port", 42510}}},
         {"vms", {{{
             "id", "vm_01"},
             {"vmx", "C:/VM-01.vmx"},
@@ -204,7 +204,7 @@ void test_absolute_configuration_paths(const std::filesystem::path& root) {
         {"lab_id", "absolute_path_test"},
         {"provider", {{"type", "vmware_workstation"}, {"vmrun", "C:/vmrun.exe"}}},
         {"host", {{"archive_root", "C:/archive"}}},
-        {"shared_folder", {{"host_root", "C:/share"}}},
+        {"transport", {{"state_root", "C:/state"}, {"vmci_port", 42510}}},
         {"vms", {{
             {"id", "vm_01"},
             {"vmx", "C:/VM-01.vmx"},
@@ -234,8 +234,8 @@ void test_absolute_configuration_paths(const std::filesystem::path& root) {
     invalid_lab["host"]["archive_root"] = "archive";
     expect_lab_rejected(invalid_lab, "relative archive root was accepted");
     invalid_lab = lab;
-    invalid_lab["shared_folder"]["host_root"] = "share";
-    expect_lab_rejected(invalid_lab, "relative shared folder root was accepted");
+    invalid_lab["transport"]["state_root"] = "state";
+    expect_lab_rejected(invalid_lab, "relative transport state root was accepted");
     invalid_lab = lab;
     invalid_lab["vms"][0]["vmx"] = "VM-01.vmx";
     expect_lab_rejected(invalid_lab, "relative VMX path was accepted");
@@ -249,8 +249,8 @@ void test_absolute_configuration_paths(const std::filesystem::path& root) {
         {"lab_id", "absolute_path_test"},
         {"vm_id", "vm_01"},
         {"agent_version", "0.1.0"},
-        {"shared_root", "C:/share"},
-        {"local_work_root", "C:/work"},
+        {"transport", {{"host_cid", 2}, {"vmci_port", 42510}}},
+        {"local_work_root", satsuma::path_to_utf8(root / L"work")},
     };
     const std::filesystem::path agent_path = root / L"absolute-agent.json";
     const auto expect_agent_rejected = [&agent_path](
@@ -263,8 +263,8 @@ void test_absolute_configuration_paths(const std::filesystem::path& root) {
     };
 
     nlohmann::json invalid_agent = agent;
-    invalid_agent["shared_root"] = "share";
-    expect_agent_rejected(invalid_agent, "relative Agent shared root was accepted");
+    invalid_agent["transport"]["host_cid"] = 4'294'967'295ULL;
+    expect_agent_rejected(invalid_agent, "reserved VMCI CID was accepted");
     invalid_agent = agent;
     invalid_agent["local_work_root"] = "work";
     expect_agent_rejected(invalid_agent, "relative Agent work root was accepted");
@@ -307,7 +307,7 @@ void test_hardware_identity_configuration(const std::filesystem::path& root) {
         {"protocol_version", 2},
         {"lab_id", "hardware_test"},
         {"agent_version", "0.1.0"},
-        {"shared_root", satsuma::path_to_utf8(root / L"share")},
+        {"transport", {{"host_cid", 2}, {"vmci_port", 42510}}},
         {"local_work_root", satsuma::path_to_utf8(root / L"work")},
     };
     satsuma::write_json_atomic(agent_path, agent);

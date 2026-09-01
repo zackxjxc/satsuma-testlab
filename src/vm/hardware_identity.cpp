@@ -30,7 +30,7 @@ namespace {
 
 // Host 以硬件 UUID 为键发布 VM 标识绑定。
 [[nodiscard]] std::filesystem::path binding_path(const AgentConfig& config) {
-    return config.shared_root / L"agents" /
+    return config.channel_root / L"agents" /
         path_from_utf8(config.hardware_id + ".binding.json");
 }
 
@@ -131,9 +131,9 @@ bool refresh_agent_binding(AgentConfig& config) {
 
 std::filesystem::path hardware_presence_path(const AgentConfig& config) {
     if (config.hardware_id.empty()) {
-        return config.shared_root / L"agents" / path_from_utf8(config.vm_id + ".json");
+        return config.channel_root / L"agents" / path_from_utf8(config.vm_id + ".json");
     }
-    return config.shared_root / L"agents" /
+    return config.channel_root / L"agents" /
         path_from_utf8(config.hardware_id + ".json");
 }
 
@@ -153,7 +153,7 @@ void write_hardware_migration_marker(const AgentConfig& config) {
         marker["old_vm_id"] = config.previous_vm_id;
     }
     write_json_atomic(
-        config.shared_root / L"agents" /
+        config.channel_root / L"agents" /
             path_from_utf8(config.previous_hardware_id + ".migrated.json"),
         marker);
 }

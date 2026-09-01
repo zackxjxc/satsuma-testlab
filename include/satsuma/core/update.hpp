@@ -26,7 +26,7 @@ struct AgentUpdateManifest {
     std::string created_at;           // Host 创建时间
 };
 
-// Agent 更新助手写回共享目录的终态结果。
+// Agent 更新助手经传输镜像写回的终态结果。
 struct AgentUpdateResult {
     int schema_version{1};       // JSON 结构版本
     std::string update_id;       // 对应更新 ID

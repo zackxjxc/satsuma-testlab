@@ -330,7 +330,7 @@ void test_file_watch_and_agent_stop(
     config.lab_id = "vm_agent_test";
     config.vm_id = "vm_01";
     config.agent_version = "0.1.0";
-    config.shared_root = shared_root;
+    config.channel_root = shared_root;
     config.local_work_root = root / L"work";
     config.poll_interval_ms = 30'000;
     config.reconnect_interval_ms = 30'000;
@@ -413,7 +413,7 @@ void test_file_channel_runtime_recovery(const std::filesystem::path& root) {
     config.lab_id = "vm_agent_test";
     config.vm_id = "vm_01";
     config.agent_version = "0.1.0";
-    config.shared_root = shared_root;
+    config.channel_root = shared_root;
     config.local_work_root = root / L"work";
     config.poll_interval_ms = 20;
     config.reconnect_interval_ms = 20;
@@ -476,12 +476,12 @@ void test_inventory_cache_and_refresh(const std::filesystem::path& root) {
     satsuma::AgentConfig config;
     config.lab_id = "vm_agent_test";
     config.vm_id = "vm_01";
-    config.shared_root = root / L"inventory-share";
+    config.channel_root = root / L"inventory-channel";
     satsuma::vm::InventoryPublisher publisher(config, "boot_inventory_test");
     publisher.synchronize();
 
     const std::filesystem::path inventory_path =
-        config.shared_root / L"agents" / L"vm_01.inventory.json";
+        config.channel_root / L"agents" / L"vm_01.inventory.json";
     const nlohmann::json original = satsuma::load_json(inventory_path);
     const std::string original_digest = publisher.digest();
     satsuma::vm::InventoryPublisher restarted(config, "boot_inventory_restart");
@@ -498,7 +498,7 @@ void test_inventory_cache_and_refresh(const std::filesystem::path& root) {
         "Agent inventory cache did not restore the original snapshot");
 
     satsuma::write_json_atomic(
-        config.shared_root / L"agents" / L"vm_01.inventory-refresh.json",
+        config.channel_root / L"agents" / L"vm_01.inventory-refresh.json",
         {
             {"schema_version", 1},
             {"lab_id", config.lab_id},
@@ -520,11 +520,11 @@ void test_inventory_rebind_without_restart(const std::filesystem::path& root) {
     config.vm_id = "564d1234-abcd-4321-9876-001122334455";
     config.hardware_id = config.vm_id;
     config.identity_unbound = true;
-    config.shared_root = root / L"share";
+    config.channel_root = root / L"channel";
     config.local_work_root = root / L"work";
-    std::filesystem::create_directories(config.shared_root / L"agents");
+    std::filesystem::create_directories(config.channel_root / L"agents");
     satsuma::write_json_atomic(
-        config.shared_root / L"agents" /
+        config.channel_root / L"agents" /
             L"564d1234-abcd-4321-9876-001122334455.binding.json",
         {
             {"schema_version", 1},
@@ -537,10 +537,10 @@ void test_inventory_rebind_without_restart(const std::filesystem::path& root) {
     static_cast<void>(agent.run_once());
 
     const nlohmann::json inventory = satsuma::load_json(
-        root / L"share" / L"agents" /
+        root / L"channel" / L"agents" /
             L"564d1234-abcd-4321-9876-001122334455.inventory.json");
     const nlohmann::json presence = satsuma::load_json(
-        root / L"share" / L"agents" /
+        root / L"channel" / L"agents" /
             L"564d1234-abcd-4321-9876-001122334455.json");
     expect(
         inventory.value("vm_id", std::string{}) == "vm_01" &&
@@ -557,7 +557,7 @@ void test_powershell_script_execution(const std::filesystem::path& root) {
     satsuma::AgentConfig config;
     config.lab_id = "vm_agent_test";
     config.vm_id = "vm_01";
-    config.shared_root = shared_root;
+    config.channel_root = shared_root;
     config.local_work_root = root / L"work";
     satsuma::vm::Agent agent(std::move(config));
     expect(agent.run_once() == 1, "Agent did not execute the PowerShell script step");
@@ -606,7 +606,7 @@ void test_cmd_script_execution(const std::filesystem::path& root) {
     satsuma::AgentConfig config;
     config.lab_id = "vm_agent_test";
     config.vm_id = "vm_01";
-    config.shared_root = shared_root;
+    config.channel_root = shared_root;
     config.local_work_root = root / L"work";
     satsuma::vm::Agent agent(std::move(config));
     expect(agent.run_once() == 1, "Agent did not execute the CMD script step");
@@ -637,7 +637,7 @@ void test_file_cancellation(
     config.lab_id = "vm_agent_test";
     config.vm_id = "vm_01";
     config.agent_version = "0.1.0";
-    config.shared_root = shared_root;
+    config.channel_root = shared_root;
     config.local_work_root = root / L"work";
     config.poll_interval_ms = 30'000;
     config.reconnect_interval_ms = 30'000;
@@ -682,7 +682,7 @@ void test_agent_interactive_execution(
     config.lab_id = "vm_agent_test";
     config.vm_id = "vm_01";
     config.agent_version = "0.1.0";
-    config.shared_root = shared_root;
+    config.channel_root = shared_root;
     config.local_work_root = root / L"system-work";
     satsuma::vm::Agent agent(config, helper);
     expect(agent.run_once() == 1, "Agent did not claim the interactive step");
@@ -741,7 +741,7 @@ void test_agent_no_interactive_session(
     config.lab_id = "vm_agent_test";
     config.vm_id = "vm_01";
     config.agent_version = "0.1.0";
-    config.shared_root = shared_root;
+    config.channel_root = shared_root;
     config.local_work_root = root / L"system-work";
     satsuma::vm::Agent agent(std::move(config), helper);
 
@@ -793,7 +793,7 @@ void test_invalid_run_is_isolated(const std::filesystem::path& root) {
     config.lab_id = "vm_agent_test";
     config.vm_id = "vm_01";
     config.agent_version = "0.1.0";
-    config.shared_root = shared_root;
+    config.channel_root = shared_root;
     config.local_work_root = root / L"work";
     satsuma::vm::Agent agent(std::move(config));
 
@@ -816,7 +816,7 @@ void test_agent_rejects_legacy_file_protocol(const std::filesystem::path& root) 
     config.lab_id = "vm_agent_test";
     config.vm_id = "vm_01";
     config.agent_version = "0.1.0";
-    config.shared_root = root / L"share";
+    config.channel_root = root / L"channel";
     config.local_work_root = root / L"work";
     bool rejected = false;
     try {
@@ -835,7 +835,7 @@ void test_agent_hardware_identity(const std::filesystem::path& root) {
     satsuma::AgentConfig config;
     config.lab_id = "vm_agent_test";
     config.agent_version = "0.1.0";
-    config.shared_root = root / L"share";
+    config.channel_root = root / L"channel";
     config.local_work_root = root / L"work";
     satsuma::vm::prepare_agent_hardware_identity(config, first_hardware);
     expect(
@@ -844,7 +844,7 @@ void test_agent_hardware_identity(const std::filesystem::path& root) {
         "new hardware did not enter unbound discovery mode");
 
     satsuma::write_json_atomic(
-        config.shared_root / L"agents" / L"564d1234-abcd-4321-9876-001122334455.binding.json",
+        config.channel_root / L"agents" / L"564d1234-abcd-4321-9876-001122334455.binding.json",
         {
             {"schema_version", 1},
             {"lab_id", config.lab_id},
@@ -857,13 +857,13 @@ void test_agent_hardware_identity(const std::filesystem::path& root) {
         "Host hardware binding was not applied without rewriting agent.json");
 
     const std::filesystem::path binding_path =
-        config.shared_root / L"agents" /
+        config.channel_root / L"agents" /
         L"564d1234-abcd-4321-9876-001122334455.binding.json";
     std::filesystem::remove(binding_path);
     satsuma::AgentConfig restarted;
     restarted.lab_id = config.lab_id;
     restarted.agent_version = config.agent_version;
-    restarted.shared_root = config.shared_root;
+    restarted.channel_root = config.channel_root;
     restarted.local_work_root = config.local_work_root;
     satsuma::vm::prepare_agent_hardware_identity(restarted, first_hardware);
     expect(
@@ -884,7 +884,7 @@ void test_agent_hardware_identity(const std::filesystem::path& root) {
     satsuma::AgentConfig migrated;
     migrated.lab_id = config.lab_id;
     migrated.agent_version = config.agent_version;
-    migrated.shared_root = config.shared_root;
+    migrated.channel_root = config.channel_root;
     migrated.local_work_root = config.local_work_root;
     satsuma::vm::prepare_agent_hardware_identity(migrated, second_hardware);
     expect(
@@ -894,7 +894,7 @@ void test_agent_hardware_identity(const std::filesystem::path& root) {
     satsuma::vm::write_hardware_migration_marker(migrated);
     expect(
         std::filesystem::is_regular_file(
-            migrated.shared_root / L"agents" /
+            migrated.channel_root / L"agents" /
                 L"564d1234-abcd-4321-9876-001122334455.migrated.json"),
         "hardware change did not publish its migration marker");
 

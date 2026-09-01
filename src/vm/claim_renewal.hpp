@@ -25,7 +25,7 @@ struct ClaimLeasePolicy {
     std::chrono::milliseconds safety_margin{std::chrono::seconds(10)}; // 到期前取消余量
 };
 
-// 可注入的续租事务，测试可用它稳定模拟共享目录故障。
+// 可注入的续租事务，测试可用它稳定模拟传输故障。
 using ClaimRenewOperation = std::function<StepClaimRenewResult(
     const std::filesystem::path&,
     const StepClaimLease&,

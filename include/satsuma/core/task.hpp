@@ -92,7 +92,7 @@ enum class GuestWorkCleanupAction {
     Retain,
 };
 
-// Shared Folder 运行目录的清理动作。
+// Host 传输状态中运行目录的清理动作。
 enum class SharedRunCleanupAction {
     Retain,
     ArchiveThenDelete,

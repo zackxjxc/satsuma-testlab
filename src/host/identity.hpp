@@ -11,7 +11,7 @@
 
 namespace satsuma::host {
 
-// 枚举共享目录中按硬件 UUID 发布的 Agent presence。
+// 枚举 Host 状态根中按硬件 UUID 发布的 Agent presence。
 [[nodiscard]] nlohmann::json discover_agents(const LabConfig& config);
 
 // 将在线硬件身份绑定到实验室中的稳定 VM 标识，并发布 Agent 绑定记录。

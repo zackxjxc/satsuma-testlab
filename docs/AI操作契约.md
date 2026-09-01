@@ -8,18 +8,18 @@ Schema 以当前发布包为准。
 仅在以下条件全部满足时使用 Satsuma：
 
 - 用户明确授权控制 `config/lab.local.json` 中列出的实验 VM。
-- Artifact 与任务来自可信来源，Shared Folder 不跨租户共享。
+- Artifact 与任务来自可信来源，VMCI 网关不跨租户共享。
 - 涉及快照恢复、强制停止或真实故障注入时，用户已理解会丢失 Guest 未保存状态。
 - Host、Guest 和任务处于同一可信管理边界；不把 Satsuma 当成恶意代码沙箱。
 
-自动化助手不得扩大 VM 范围，不得猜测 VMX、快照、共享目录或 Agent 身份，也不得绕过 Host CLI 直接伪造
+自动化助手不得扩大 VM 范围，不得猜测 VMX、快照、VMCI endpoint 或 Agent 身份，也不得绕过 Host CLI 直接伪造
 claim、结果或生命周期状态。
 
 ## 未配置环境
 
 `config/lab.local.json` 不存在时，先完整读取 [首次配置](首次配置.md)、`config/lab.template.json`、
 `config/agent.template.json` 和对应 Schema。项目发行物定义所需字段和目录结构；自动化助手只负责读取本机
-可确认信息、列出缺失项并生成配置，用户负责选择和确认 VM、基础快照、Shared Folder 以及管理员操作。
+可确认信息、列出缺失项并生成配置，用户负责选择和确认 VM、基础快照、Host 状态根以及管理员操作。
 
 自动化助手必须先做只读发现，不得猜测 VMX、快照名、Guest 共享路径或 VM 身份。确认后生成：
 
@@ -98,7 +98,7 @@ Agent Windows Service 以 `LocalSystem` 运行，它可以启动两种进程：
 | GUI 自动化、截图、桌面交互 | `interactive_user` | 需要用户 Session 和桌面 |
 | 服务启停、驱动加载、系统配置修改 | `system` | 需要管理员权限 |
 | 编译、单元测试、命令行工具 | `interactive_user` | 通常不需要 admin，且更接近真实使用场景 |
-| 读写 `%ProgramData%` 或共享目录 | `interactive_user` | Agent 已为运行目录设置用户 ACL |
+| 读写 `%ProgramData%` 或 Guest 工作目录 | `interactive_user` | Agent 已为运行目录设置用户 ACL |
 | 注册表 `HKLM` 写入 | `system` | 普通用户无权限 |
 | 注册表 `HKCU` 读写 | `interactive_user` | SYSTEM 的 HKCU 不是目标用户的 |
 
@@ -124,8 +124,8 @@ Agent 可以在同一次轮询中顺序执行两种身份，你不必为了统�
 - 同时启用 console sink 和 file sink，关键错误及时 flush；stdout/stderr 是文件日志的补充。
 - 停止被测程序时先请求其正常退出并等待 flush；超过有限宽限时间后才能强制终止。进程被强杀后再等待不能
   补写尚未刷新的用户态日志。
-- 不硬编码 Shared Folder。Agent 不扫描目录、不支持 glob，也不自动采集 OutputDebugString、ETW 或 Event Log。
-- 被测 EXE 崩溃但 Agent 存活时可收集已刷新日志；Agent、VM 或文件通道失效时不得声称 Guest 文件已归档。
+- 不硬编码 VMCI endpoint。Agent 不扫描任意目录、不支持 glob，也不自动采集 OutputDebugString、ETW 或 Event Log。
+- 被测 EXE 崩溃但 Agent 存活时可收集已刷新日志；Agent、VM 或传输通道失效时不得声称 Guest 文件已归档。
 
 ## 生命周期规则
 
@@ -165,8 +165,8 @@ Agent 可以在同一次轮询中顺序执行两种身份，你不必为了统�
 bin\SatsumaHost.exe runs cancel --config config\lab.local.json --run <run-id> --reason "user requested stop"
 ```
 
-取消后继续读取报告，直到收齐失败结果或出现人工门禁。不要同时删除运行目录。若 Shared Folder 暂时不可用，
-Agent 会按 `reconnect_interval_ms` 重试；Host 侧应先恢复文件通道，再决定是否恢复快照。
+取消后继续读取报告，直到收齐失败结果或出现人工门禁。不要同时删除运行目录。若 VMCI 网关暂时不可用，
+Agent 会按 `reconnect_interval_ms` 重试；Host 侧应先恢复网关，再决定是否恢复快照。
 
 发生未知 VMware/Guest 状态时，自动化最多执行一次用户已授权的明确恢复动作。相同故障再次出现时停止，
 输出 Host 检查、运行报告和生命周期状态，不进行循环重启或连续快照恢复。
@@ -175,7 +175,7 @@ Host 崩溃后先读取 `lab status`。仅当持久状态明确允许同一 `run
 进程退出视为实验室空闲。`lab unlock --force true` 只能在人已确认原 Host 进程死亡、Guest/外部系统状态和
 证据保留情况后执行。
 
-恢复快照前必须把 Guest、Shared Folder 和 Host 归档视为三个独立恢复域，并遵守以下门禁：
+恢复快照前必须把 Guest 本地存储、Host 状态根和 Host 归档视为三个独立恢复域，并遵守以下门禁：
 
 1. 先保存报告、生命周期、租约和错误证据，确认原 Host 进程已退出或完成同一 `run_id` 的恢复。
 2. 在整理共享状态前硬停止目标 VM，避免旧 Agent 与 Host 继续写协议文件。
@@ -199,4 +199,4 @@ Host 不需要随 VM 重启宿主操作系统。需要的是确认旧 Host PID �
 ## 交付摘要
 
 自动化任务结束时至少说明：使用的配置与任务文件、`run_id`、顶层状态、失败/成功步骤数、Host 归档位置、
-Guest/共享目录清理动作、VM 最终状态、租约是否释放以及是否仍需人工介入。不得只用命令退出码替代业务结果。
+Guest/Host 状态清理动作、VM 最终状态、租约是否释放以及是否仍需人工介入。不得只用命令退出码替代业务结果。

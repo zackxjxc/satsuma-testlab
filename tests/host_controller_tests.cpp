@@ -39,7 +39,7 @@ void expect_error(Operation operation, const std::string& message) {
 [[nodiscard]] satsuma::LabConfig make_config(const std::filesystem::path& root) {
     satsuma::LabConfig config;
     config.lab_id = "host_controller_test";
-    config.shared_folder.host_root = root / L"share";
+    config.transport.state_root = root / L"state";
     satsuma::VmConfig vm;
     vm.id = "vm_01";
     config.vms.push_back(std::move(vm));
@@ -88,7 +88,7 @@ void expect_error(Operation operation, const std::string& message) {
     const satsuma::LabConfig& config,
     const std::string& run_id,
     const satsuma::TaskStep& step) {
-    return config.shared_folder.host_root / L"runs" /
+    return config.transport.state_root / L"runs" /
         satsuma::path_from_utf8(run_id) / L"results" /
         satsuma::path_from_utf8(step.vm) /
         satsuma::path_from_utf8(step.id) / L"execution.json";
@@ -100,7 +100,7 @@ void test_report_uses_canonical_result_paths(const std::filesystem::path& root) 
     const satsuma::host::Controller controller(config);
     const satsuma::RunManifest manifest = controller.create_run(make_plan("report_paths"));
     const std::filesystem::path run_root =
-        config.shared_folder.host_root / L"runs" / L"report_paths";
+        config.transport.state_root / L"runs" / L"report_paths";
     const std::filesystem::path collected =
         run_root / L"results" / L"vm_01" / L"first" /
         L"files" / L"nested" / L"execution.json";
@@ -165,7 +165,7 @@ void test_report_exposes_manual_intervention(const std::filesystem::path& root) 
     const satsuma::RunManifest manifest = controller.create_run(plan);
     const satsuma::TaskStep& step = manifest.steps.front();
     const std::filesystem::path recovery_path =
-        config.shared_folder.host_root / L"runs" /
+        config.transport.state_root / L"runs" /
         satsuma::path_from_utf8(manifest.run_id) / L"state" /
         satsuma::path_from_utf8(step.vm) /
         satsuma::path_from_utf8(step.id + ".claim-recovery.json");
@@ -227,16 +227,16 @@ void test_run_management(const std::filesystem::path& root) {
     expect(
         cancelled.at("status") == "cancellation_requested" &&
             std::filesystem::is_regular_file(
-                config.shared_folder.host_root / L"runs" / L"pending_for_cancel" / L"cancel.json"),
+                config.transport.state_root / L"runs" / L"pending_for_cancel" / L"cancel.json"),
         "run cancellation was not published atomically");
 
     const nlohmann::json pruned = controller.prune_runs(0);
     expect(pruned.at("removed").size() == 1, "run pruning did not remove one completed run");
     expect(
         !std::filesystem::exists(
-            config.shared_folder.host_root / L"runs" / L"completed_for_prune") &&
+            config.transport.state_root / L"runs" / L"completed_for_prune") &&
             std::filesystem::is_directory(
-                config.shared_folder.host_root / L"runs" / L"pending_for_cancel"),
+                config.transport.state_root / L"runs" / L"pending_for_cancel"),
         "run pruning removed a pending run or retained a completed run");
 }
 
@@ -253,7 +253,10 @@ void test_agent_hardware_discovery_and_binding(const std::filesystem::path& root
             {"vmrun", satsuma::path_to_utf8(root / L"vmrun.exe")},
         }},
         {"host", {{"archive_root", satsuma::path_to_utf8(root / L"archive")}}},
-        {"shared_folder", {{"host_root", satsuma::path_to_utf8(shared_root)}}},
+        {"transport", {
+            {"state_root", satsuma::path_to_utf8(shared_root)},
+            {"vmci_port", 42510},
+        }},
         {"vms", nlohmann::json::array({{
             {"id", "vm_01"},
             {"vmx", satsuma::path_to_utf8(root / L"vm_01.vmx")},

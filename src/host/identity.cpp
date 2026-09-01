@@ -62,7 +62,7 @@ void validate_presence_common(
 [[nodiscard]] std::map<std::string, std::set<std::string>> collect_presence_identities(
     const LabConfig& config) {
     std::map<std::string, std::set<std::string>> identities;
-    const std::filesystem::path agents_root = config.shared_folder.host_root / L"agents";
+    const std::filesystem::path agents_root = config.transport.state_root / L"agents";
     if (!std::filesystem::is_directory(agents_root)) {
         return identities;
     }
@@ -101,7 +101,7 @@ void validate_presence_common(
     };
     std::map<std::string, std::vector<SessionWindow>> windows;
     const std::filesystem::path sessions_root =
-        config.shared_folder.host_root / L"agents" / L"sessions";
+        config.transport.state_root / L"agents" / L"sessions";
     if (!std::filesystem::is_directory(sessions_root)) {
         return {};
     }
@@ -192,7 +192,7 @@ void reject_hardware_identity_conflict(
 std::filesystem::path vm_presence_path(const LabConfig& config, const VmConfig& vm) {
     const std::string key = vm.hardware_id.empty() ? vm.id : vm.hardware_id;
     return resolve_under_root(
-        config.shared_folder.host_root,
+        config.transport.state_root,
         std::filesystem::path(L"agents") / path_from_utf8(key + ".json"));
 }
 
@@ -205,7 +205,7 @@ std::filesystem::path vm_presence_path(const LabConfig& config, const VmConfig& 
         throw Error("Agent presence omitted hardware_id");
     }
     return resolve_under_root(
-        config.shared_folder.host_root,
+        config.transport.state_root,
         std::filesystem::path(L"agents") / path_from_utf8(hardware_id + ".inventory.json"));
 }
 
@@ -275,7 +275,7 @@ nlohmann::json refresh_vm_inventory(
     const std::string hardware_id = presence.value("hardware_id", std::string{});
     const std::string request_id = make_id("inventory");
     const std::filesystem::path request_path = resolve_under_root(
-        config.shared_folder.host_root,
+        config.transport.state_root,
         std::filesystem::path(L"agents") /
             path_from_utf8(hardware_id + ".inventory-refresh.json"));
     write_json_atomic(request_path, {
@@ -310,7 +310,7 @@ nlohmann::json refresh_vm_inventory(
 nlohmann::json discover_agents(const LabConfig& config) {
     nlohmann::json agents = nlohmann::json::array();
     const std::filesystem::path agents_root =
-        config.shared_folder.host_root / L"agents";
+        config.transport.state_root / L"agents";
     if (!std::filesystem::is_directory(agents_root)) {
         return {
             {"status", "discovered"},
@@ -417,7 +417,7 @@ nlohmann::json bind_agent_hardware(
     }
 
     const std::filesystem::path presence_path = resolve_under_root(
-        config.shared_folder.host_root,
+        config.transport.state_root,
         std::filesystem::path(L"agents") / path_from_utf8(normalized + ".json"));
     if (!std::filesystem::is_regular_file(presence_path)) {
         throw Error("No online Agent presence for hardware_id " + normalized);
@@ -446,7 +446,7 @@ nlohmann::json bind_agent_hardware(
         {"bound_at", utc_timestamp()},
     };
     const std::filesystem::path binding_path = resolve_under_root(
-        config.shared_folder.host_root,
+        config.transport.state_root,
         std::filesystem::path(L"agents") /
             path_from_utf8(normalized + ".binding.json"));
 

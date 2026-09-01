@@ -191,10 +191,10 @@ RunManifest Controller::create_run(const TaskPlan& plan) const {
     manifest.steps = plan.steps;
     validate_identifier(manifest.run_id, "run_id");
 
-    const std::filesystem::path runs_root = config_.shared_folder.host_root / L"runs";
+    const std::filesystem::path runs_root = config_.transport.state_root / L"runs";
     std::filesystem::create_directories(runs_root);
     const std::filesystem::path final_directory = resolve_under_root(
-        config_.shared_folder.host_root,
+        config_.transport.state_root,
         std::filesystem::path(L"runs") / path_from_utf8(manifest.run_id));
     if (std::filesystem::exists(final_directory)) {
         throw Error("Run directory already exists: " + path_to_utf8(final_directory));
@@ -203,7 +203,7 @@ RunManifest Controller::create_run(const TaskPlan& plan) const {
     // 点号前缀目录不会被 Agent 扫描，完成后再整体原子改名。
     const std::string staging_name = ".preparing-" + manifest.run_id + "-" + make_id("stage");
     const std::filesystem::path staging_directory = resolve_under_root(
-        config_.shared_folder.host_root,
+        config_.transport.state_root,
         std::filesystem::path(L"runs") / path_from_utf8(staging_name));
     try {
         std::filesystem::create_directories(staging_directory / L"state");
@@ -259,7 +259,7 @@ AgentUpdateManifest Controller::publish_agent_update(
             throw Error("Agent rebind references an unknown target VM: " + *next_vm_id);
         }
         const std::filesystem::path target_presence = resolve_under_root(
-            config_.shared_folder.host_root,
+            config_.transport.state_root,
             std::filesystem::path(L"agents") /
                 path_from_utf8(*next_vm_id + ".json"));
         if (std::filesystem::exists(target_presence)) {
@@ -280,7 +280,7 @@ AgentUpdateManifest Controller::publish_agent_update(
     manifest.created_at = utc_timestamp();
 
     const std::filesystem::path updates_root = resolve_under_root(
-        config_.shared_folder.host_root,
+        config_.transport.state_root,
         std::filesystem::path(L"updates") / path_from_utf8(vm_id));
     std::filesystem::create_directories(updates_root);
     prepare_agent_update_queue(updates_root, config_.lab_id, vm_id);
@@ -329,7 +329,7 @@ AgentUpdateResult Controller::wait_agent_update(
         throw Error("Agent update timeout must be between 1 and 3600 seconds");
     }
     const std::filesystem::path update_directory = resolve_under_root(
-        config_.shared_folder.host_root,
+        config_.transport.state_root,
         std::filesystem::path(L"updates") /
             path_from_utf8(vm_id) /
             path_from_utf8(update_id));
@@ -382,7 +382,7 @@ AgentUpdateResult Controller::wait_agent_update(
 nlohmann::json Controller::build_report(const std::string& run_id) const {
     validate_identifier(run_id, "run_id");
     const std::filesystem::path run_directory = resolve_under_root(
-        config_.shared_folder.host_root,
+        config_.transport.state_root,
         std::filesystem::path(L"runs") / path_from_utf8(run_id));
     if (!std::filesystem::is_regular_file(run_directory / L"task.json")) {
         throw Error("Unknown run_id: " + run_id);
@@ -467,7 +467,7 @@ nlohmann::json Controller::build_report(const std::string& run_id) const {
 }
 
 nlohmann::json Controller::list_runs() const {
-    const std::filesystem::path runs_root = config_.shared_folder.host_root / L"runs";
+    const std::filesystem::path runs_root = config_.transport.state_root / L"runs";
     nlohmann::json runs = nlohmann::json::array();
     if (!std::filesystem::is_directory(runs_root)) {
         return {{"schema_version", 1}, {"runs", std::move(runs)}};
@@ -510,7 +510,7 @@ nlohmann::json Controller::cancel_run(
         throw Error("Cancellation reason must contain between 1 and 512 non-NUL characters");
     }
     const std::filesystem::path run_directory = resolve_under_root(
-        config_.shared_folder.host_root,
+        config_.transport.state_root,
         std::filesystem::path(L"runs") / path_from_utf8(run_id));
     if (!std::filesystem::is_regular_file(run_directory / L"task.json")) {
         throw Error("Unknown run_id: " + run_id);
@@ -540,7 +540,7 @@ nlohmann::json Controller::prune_runs(const std::size_t keep) const {
     if (keep > 10'000) {
         throw Error("Run retention must be between 0 and 10000");
     }
-    const std::filesystem::path runs_root = config_.shared_folder.host_root / L"runs";
+    const std::filesystem::path runs_root = config_.transport.state_root / L"runs";
     std::vector<std::filesystem::directory_entry> entries;
     if (std::filesystem::is_directory(runs_root)) {
         for (const auto& entry : std::filesystem::directory_iterator(runs_root)) {

@@ -21,7 +21,7 @@ struct AgentServiceSpec {
     std::wstring binary_path;                // SCM 原生命令行
     std::array<std::uint32_t, 3> restart_delays_ms{5'000, 15'000, 60'000};
     std::uint32_t failure_reset_seconds{86'400}; // 失败动作序列重置周期
-    bool delayed_auto_start{false};              // 普通自动启动，Agent 自身负责共享目录重连
+    bool delayed_auto_start{false};              // 普通自动启动，Agent 自身负责 VMCI 重连
     bool restart_on_non_crash{true};             // 非崩溃失败也执行恢复动作
 };
 

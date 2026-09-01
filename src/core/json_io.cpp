@@ -24,7 +24,7 @@ namespace {
 constexpr std::chrono::seconds kAtomicReplaceTimeout{2}; // 短于 claim 安全余量和锁等待上限
 constexpr std::chrono::milliseconds kAtomicReplaceRetryDelay{10}; // 替换重试间隔
 
-// VMware Shared Folder 等 UNC 通道不提供可预测的写穿时延。
+// 某些文件系统不提供可预测的写穿时延；原子替换仍要限制等待时间。
 [[nodiscard]] bool is_remote_json_path(const std::filesystem::path& path) {
     const std::wstring& native = path.native();
     if (native.starts_with(L"\\\\?\\UNC\\")) {

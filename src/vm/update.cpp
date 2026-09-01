@@ -174,7 +174,7 @@ void write_update_result(
     write_json_atomic_existing_parent(path, result);
 }
 
-// 返回 helper 在共享目录中预写但尚未发布的成功结果路径。
+// 返回 helper 在本地镜像中预写但尚未上传的成功结果路径。
 [[nodiscard]] std::filesystem::path pending_success_result_path(
     const UpdatePaths& paths) {
     return paths.update_directory / L".result.pending.json";
@@ -217,7 +217,7 @@ void remove_service_presence(const AgentConfig& config) {
     const std::filesystem::path canonical = hardware_presence_path(config);
     remove_update_file(canonical);
     const std::filesystem::path legacy =
-        config.shared_root / L"agents" / path_from_utf8(config.vm_id + ".json");
+        config.channel_root / L"agents" / path_from_utf8(config.vm_id + ".json");
     if (legacy != canonical) {
         remove_update_file(legacy);
     }
@@ -282,7 +282,7 @@ void wait_for_presence(
     }
     if (manifest.next_vm_id.has_value()) {
         const std::filesystem::path target_presence =
-            config.shared_root / L"agents" /
+            config.channel_root / L"agents" /
             path_from_utf8(*manifest.next_vm_id + ".json");
         if (std::filesystem::exists(target_presence)) {
             throw Error(
@@ -337,7 +337,7 @@ void remove_rebind_presence_best_effort(
             remove_update_file_best_effort(presence_path);
         }
         const std::filesystem::path legacy_presence_path =
-            config.shared_root / L"agents" / path_from_utf8(config.vm_id + ".json");
+            config.channel_root / L"agents" / path_from_utf8(config.vm_id + ".json");
         AgentConfig legacy_config = config;
         legacy_config.hardware_id.clear();
         if (legacy_presence_path != presence_path && presence_matches(
@@ -450,7 +450,7 @@ void cleanup_committed_update(const UpdatePaths& paths) {
     if (config.last_update_id.empty()) {
         return false;
     }
-    const std::filesystem::path updates_root = config.shared_root / L"updates";
+    const std::filesystem::path updates_root = config.channel_root / L"updates";
     if (!std::filesystem::exists(updates_root)) {
         return false;
     }
@@ -764,7 +764,7 @@ bool process_pending_agent_update(
         return false;
     }
     const std::filesystem::path updates_root =
-        config.shared_root / L"updates" / path_from_utf8(config.vm_id);
+        config.channel_root / L"updates" / path_from_utf8(config.vm_id);
     if (!std::filesystem::exists(updates_root)) {
         return false;
     }
@@ -883,7 +883,7 @@ int apply_agent_update_helper(
             throw Error("Agent update helper manifest does not target this Agent");
         }
         const std::filesystem::path update_directory =
-            config.shared_root / L"updates" /
+            config.channel_root / L"updates" /
                 path_from_utf8(config.vm_id) /
                 path_from_utf8(manifest.update_id);
         UpdatePaths paths = make_update_paths(config, update_directory);
@@ -942,7 +942,7 @@ int apply_agent_update_helper(
                 throw Error("Agent update helper cannot resolve its source update directory");
             }
             const std::filesystem::path update_directory =
-                config.shared_root / L"updates" /
+                config.channel_root / L"updates" /
                     path_from_utf8(manifest.vm_id) /
                     path_from_utf8(manifest.update_id);
             write_update_result(
