@@ -722,6 +722,371 @@ void apply_terminal_state_output(
     return states;
 }
 
+// 一次编排在各阶段间共享的显式运行上下文。
+struct OrchestrationContext {
+    const LabConfig& config;
+    const TaskPlan& plan;
+    const std::vector<VmLifecyclePolicy>& policies;
+    const std::string& run_id;
+    const std::vector<const VmConfig*>& vms;
+    OrchestrationArchive& archive;
+    vmware::VmrunProvider& provider;
+    Controller& controller;
+    std::chrono::seconds timeout;
+    std::chrono::seconds boot_wait;
+    std::vector<bool> assumed_running;
+    nlohmann::json output;
+    bool agent_ready{false};
+    bool main_published{false};
+    bool finally_published{false};
+    bool business_success{false};
+    bool manual_gate{false};
+    std::string business_error;
+
+    [[nodiscard]] RunLifecycleState& state() const noexcept {
+        return archive.state;
+    }
+};
+
+// 恢复已有主任务，或从快照和 Agent 诊断开始发布新主任务。
+void execute_main_phase(OrchestrationContext& context) {
+    RunLifecycleState& state = context.state();
+    if (context.archive.resumed) {
+        context.agent_ready = true;
+        context.main_published = true;
+        context.output["execution_run_id"] = context.archive.identity.main_run_id;
+        try {
+            context.output["report"] = state.phase == RunPhase::Executing
+                ? wait_for_report(
+                    context.controller,
+                    context.archive.identity.main_run_id,
+                    context.timeout)
+                : context.controller.build_report(context.archive.identity.main_run_id);
+            if (!context.output["report"].at("complete").get<bool>() &&
+                !context.output["report"].value("manual_intervention_required", false)) {
+                throw Error("Persisted evidence collection phase has an incomplete main report");
+            }
+            apply_main_report(
+                context.output["report"],
+                context.business_success,
+                context.manual_gate,
+                context.business_error);
+        } catch (const std::exception& error) {
+            append_error(context.business_error, error.what());
+        }
+        return;
+    }
+
+    try {
+        const bool requires_restore = std::any_of(
+            context.policies.begin(),
+            context.policies.end(),
+            [](const VmLifecyclePolicy& policy) {
+                return policy.restore_before.has_value();
+            });
+        if (requires_restore) {
+            persist_run_transition(
+                context.archive.state_path,
+                state,
+                RunPhase::RestoringBefore,
+                utc_timestamp(),
+                "restore target VMs before execution");
+            for (std::size_t index = 0; index < context.vms.size(); ++index) {
+                const VmLifecyclePolicy& policy = context.policies[index];
+                if (!policy.restore_before.has_value()) {
+                    continue;
+                }
+                const VmConfig& vm = *context.vms[index];
+                if (context.assumed_running[index]) {
+                    context.provider.stop(vm.vmx, vmware::VmStopMode::Hard);
+                    context.assumed_running[index] = false;
+                }
+                context.provider.revert_to_snapshot(vm.vmx, *policy.restore_before);
+            }
+        }
+
+        persist_run_transition(
+            context.archive.state_path,
+            state,
+            RunPhase::StartingVm,
+            utc_timestamp(),
+            "start target VMs in lifecycle order");
+        for (std::size_t index = 0; index < context.vms.size(); ++index) {
+            if (!context.assumed_running[index]) {
+                context.provider.start(context.vms[index]->vmx);
+                context.assumed_running[index] = true;
+            }
+        }
+        persist_run_transition(
+            context.archive.state_path,
+            state,
+            RunPhase::WaitingAgent,
+            utc_timestamp(),
+            "wait for Agents in lifecycle order");
+        Diagnostics diagnostics(context.config);
+        const std::chrono::seconds diagnostic_timeout = std::min(
+            context.timeout,
+            context.boot_wait);
+        if (context.vms.size() > 1) {
+            context.output["diagnostics"] = nlohmann::json::array();
+        }
+        for (const VmConfig* vm : context.vms) {
+            nlohmann::json diagnostic = diagnostics.run_probe(vm->id, diagnostic_timeout);
+            if (context.vms.size() == 1) {
+                context.output["diagnostic"] = diagnostic;
+            } else {
+                context.output["diagnostics"].push_back({
+                    {"vm_id", vm->id},
+                    {"result", diagnostic},
+                });
+            }
+            if (diagnostic.at("status") != "ready") {
+                throw Error("Agent diagnostic did not return ready for VM: " + vm->id);
+            }
+        }
+        context.agent_ready = true;
+
+        persist_run_transition(
+            context.archive.state_path,
+            state,
+            RunPhase::Deploying,
+            utc_timestamp(),
+            "publish main task");
+        const RunManifest manifest = context.controller.create_run(
+            make_main_plan(context.plan, context.archive.identity.main_run_id));
+        context.main_published = true;
+        context.output["execution_run_id"] = manifest.run_id;
+        persist_run_transition(
+            context.archive.state_path,
+            state,
+            RunPhase::Executing,
+            utc_timestamp(),
+            "wait for main task results");
+        context.output["report"] = wait_for_report(
+            context.controller,
+            manifest.run_id,
+            context.timeout);
+        apply_main_report(
+            context.output["report"],
+            context.business_success,
+            context.manual_gate,
+            context.business_error);
+    } catch (const std::exception& error) {
+        append_error(context.business_error, error.what());
+    }
+}
+
+// 归档主任务的不可变证据。
+void archive_main_evidence_phase(OrchestrationContext& context) {
+    if (!context.main_published) {
+        return;
+    }
+    RunLifecycleState& state = context.state();
+    if (state.phase == RunPhase::Executing) {
+        persist_run_transition(
+            context.archive.state_path,
+            state,
+            RunPhase::CollectingEvidence,
+            utc_timestamp(),
+            "archive main task evidence");
+    }
+    try {
+        if (!context.output.contains("report")) {
+            context.output["report"] = context.controller.build_report(
+                context.archive.identity.main_run_id);
+        }
+        archive_run_evidence(
+            context.config,
+            context.run_id,
+            context.archive.identity.main_run_id,
+            "main");
+    } catch (const std::exception& error) {
+        context.business_success = false;
+        append_error(context.business_error, error.what());
+    }
+}
+
+// 在主任务之后发布并归档 finally 步骤。
+void execute_finally_phase(OrchestrationContext& context) {
+    RunLifecycleState& state = context.state();
+    if (!context.agent_ready ||
+        (state.phase != RunPhase::CollectingEvidence && state.phase != RunPhase::Deploying)) {
+        return;
+    }
+    persist_run_transition(
+        context.archive.state_path,
+        state,
+        RunPhase::RunningFinally,
+        utc_timestamp(),
+        "execute finally steps");
+    if (context.plan.lifecycle->finally_steps.empty()) {
+        return;
+    }
+    try {
+        const TaskPlan finally_plan = make_finally_plan(
+            context.plan,
+            context.archive.identity.finally_run_id);
+        const RunManifest manifest = context.controller.create_run(finally_plan);
+        context.finally_published = true;
+        context.output["finally_run_id"] = manifest.run_id;
+        context.output["finally_report"] = wait_for_report(
+            context.controller,
+            manifest.run_id,
+            context.timeout);
+        archive_run_evidence(context.config, context.run_id, manifest.run_id, "finally");
+        if (context.output["finally_report"].at("failed_steps") != 0) {
+            context.business_success = false;
+            append_error(context.business_error, "Finally steps failed");
+        }
+    } catch (const std::exception& error) {
+        context.business_success = false;
+        append_error(context.business_error, error.what());
+    }
+}
+
+// 执行 Guest、Host 和 VM 的逆序清理并写入最终生命周期状态。
+[[nodiscard]] nlohmann::json execute_recovery_phase(OrchestrationContext& context) {
+    RunLifecycleState& state = context.state();
+    if (state.phase != RunPhase::RunningFinally &&
+        state.phase != RunPhase::StartingVm &&
+        state.phase != RunPhase::WaitingAgent &&
+        state.phase != RunPhase::Deploying &&
+        state.phase != RunPhase::CollectingEvidence) {
+        throw Error("Orchestration reached an unsupported recovery phase");
+    }
+    persist_run_transition(
+        context.archive.state_path,
+        state,
+        RunPhase::Recovering,
+        utc_timestamp(),
+        context.business_success
+            ? "apply success cleanup policy"
+            : "apply failure cleanup policy");
+
+    const GuestWorkCleanupAction guest_cleanup = context.business_success
+        ? context.plan.cleanup.guest_work_on_success
+        : context.plan.cleanup.guest_work_on_failure;
+    const HostRunCleanupAction host_cleanup = context.business_success
+        ? context.plan.cleanup.host_run_on_success
+        : context.plan.cleanup.host_run_on_failure;
+    context.output["guest_work_cleanup"] = guest_work_cleanup_action_name(guest_cleanup);
+    context.output["host_run_cleanup"] = host_run_cleanup_action_name(host_cleanup);
+
+    std::vector<std::string> execution_run_ids;
+    if (context.main_published) {
+        execution_run_ids.push_back(context.archive.identity.main_run_id);
+    }
+    if (context.finally_published) {
+        execution_run_ids.push_back(context.archive.identity.finally_run_id);
+    }
+
+    bool cleanup_failed = false;
+    if (guest_cleanup == GuestWorkCleanupAction::Delete) {
+        context.output["guest_cleanup_results"] = nlohmann::json::array();
+        for (std::size_t reverse_index = context.policies.size(); reverse_index > 0;
+             --reverse_index) {
+            const std::size_t index = reverse_index - 1;
+            const VmLifecyclePolicy& policy = context.policies[index];
+            const VmCleanupPolicy& vm_cleanup = context.business_success
+                ? policy.on_success
+                : policy.on_failure;
+            if (vm_cleanup.action == VmCleanupAction::Restore) {
+                continue;
+            }
+            for (const std::string& execution_run_id : execution_run_ids) {
+                try {
+                    context.output["guest_cleanup_results"].push_back(
+                        request_guest_work_cleanup(
+                            context.config,
+                            execution_run_id,
+                            policy.vm,
+                            context.timeout));
+                } catch (const std::exception& error) {
+                    cleanup_failed = true;
+                    append_error(context.business_error, error.what());
+                }
+            }
+        }
+    }
+
+    if (!cleanup_failed && host_cleanup == HostRunCleanupAction::ArchiveThenDelete) {
+        try {
+            for (const std::string& execution_run_id : execution_run_ids) {
+                delete_host_run(context.config, execution_run_id);
+            }
+        } catch (const std::exception& error) {
+            cleanup_failed = true;
+            append_error(context.business_error, error.what());
+        }
+    }
+
+    for (std::size_t reverse_index = context.policies.size(); reverse_index > 0;
+         --reverse_index) {
+        const std::size_t index = reverse_index - 1;
+        const VmLifecyclePolicy& policy = context.policies[index];
+        const VmCleanupPolicy& cleanup = context.business_success
+            ? policy.on_success
+            : policy.on_failure;
+        try {
+            context.assumed_running[index] = apply_cleanup_policy(
+                context.provider,
+                *context.vms[index],
+                cleanup,
+                context.assumed_running[index]);
+        } catch (const std::exception& error) {
+            cleanup_failed = true;
+            append_error(
+                context.business_error,
+                "VM lifecycle cleanup failed for " + policy.vm + ": " + error.what());
+        }
+    }
+    context.output["final_power_states"] = collect_final_power_states(
+        context.provider,
+        context.vms);
+
+    if (cleanup_failed) {
+        persist_run_transition(
+            context.archive.state_path,
+            state,
+            RunPhase::RecoveryFailed,
+            utc_timestamp(),
+            context.business_error);
+        context.output["status"] = "RECOVERY_FAILED";
+        context.output["error"] = context.business_error;
+        return context.output;
+    }
+
+    if (context.policies.size() == 1) {
+        const VmCleanupPolicy& cleanup = context.business_success
+            ? context.policies.front().on_success
+            : context.policies.front().on_failure;
+        context.output["cleanup_action"] = vm_cleanup_action_name(cleanup.action);
+    } else {
+        context.output["cleanup_actions"] = nlohmann::json::array();
+        for (const VmLifecyclePolicy& policy : context.policies) {
+            const VmCleanupPolicy& cleanup = context.business_success
+                ? policy.on_success
+                : policy.on_failure;
+            context.output["cleanup_actions"].push_back({
+                {"vm_id", policy.vm},
+                {"action", vm_cleanup_action_name(cleanup.action)},
+            });
+        }
+    }
+
+    persist_run_transition(
+        context.archive.state_path,
+        state,
+        context.business_success ? RunPhase::Completed : RunPhase::Failed,
+        utc_timestamp(),
+        context.business_success ? "orchestration completed" : context.business_error);
+    context.output["status"] = context.business_success ? "COMPLETED" : "FAILED";
+    if (!context.business_error.empty()) {
+        context.output["error"] = context.business_error;
+    }
+    return context.output;
+}
+
 }  // namespace
 
 Orchestrator::Orchestrator(LabConfig config) : config_(std::move(config)) {}
@@ -802,7 +1167,6 @@ nlohmann::json Orchestrator::execute(
     }
     OrchestrationArchive& active_archive = *archive;
     RunLifecycleState& state = active_archive.state;
-    const std::filesystem::path& state_path = active_archive.state_path;
     nlohmann::json output = make_orchestration_output(active_archive);
     if (active_archive.resumed && state.phase != RunPhase::Executing &&
         state.phase != RunPhase::CollectingEvidence) {
@@ -810,7 +1174,7 @@ nlohmann::json Orchestrator::execute(
             "Host restart cannot safely resume orchestration phase: " +
             std::string(run_phase_name(state.phase));
         persist_run_transition(
-            state_path,
+            active_archive.state_path,
             state,
             RunPhase::ManualInterventionRequired,
             utc_timestamp(),
@@ -822,338 +1186,51 @@ nlohmann::json Orchestrator::execute(
     }
 
     Controller controller(config_);
-    std::vector<bool> assumed_running = initially_running; // 编排期间逐台维护的预期状态
-    bool agent_ready = active_archive.resumed;
-    bool main_published = active_archive.resumed;
-    bool finally_published = false;
-    bool business_success = false;
-    bool manual_gate = false;
-    std::string business_error;
-
-    if (active_archive.resumed) {
-        output["execution_run_id"] = active_archive.identity.main_run_id;
-        try {
-            output["report"] = state.phase == RunPhase::Executing
-                ? wait_for_report(controller, active_archive.identity.main_run_id, timeout)
-                : controller.build_report(active_archive.identity.main_run_id);
-            if (!output["report"].at("complete").get<bool>() &&
-                !output["report"].value("manual_intervention_required", false)) {
-                throw Error("Persisted evidence collection phase has an incomplete main report");
-            }
-            apply_main_report(
-                output["report"],
-                business_success,
-                manual_gate,
-                business_error);
-        } catch (const std::exception& error) {
-            append_error(business_error, error.what());
-        }
-    } else {
-        try {
-            const bool requires_restore = std::any_of( // 是否需要进入统一恢复阶段
-                policies.begin(),
-                policies.end(),
-                [](const VmLifecyclePolicy& policy) {
-                    return policy.restore_before.has_value();
-                });
-            if (requires_restore) {
-                persist_run_transition(
-                    state_path,
-                    state,
-                    RunPhase::RestoringBefore,
-                    utc_timestamp(),
-                    "restore target VMs before execution");
-                for (std::size_t index = 0; index < vms.size(); ++index) {
-                    const VmLifecyclePolicy& policy = policies[index];
-                    if (!policy.restore_before.has_value()) {
-                        continue;
-                    }
-                    const VmConfig& vm = *vms[index];
-                    if (assumed_running[index]) {
-                        provider.stop(vm.vmx, vmware::VmStopMode::Hard);
-                        assumed_running[index] = false;
-                    }
-                    provider.revert_to_snapshot(vm.vmx, *policy.restore_before);
-                }
-            }
-
-            persist_run_transition(
-                state_path,
-                state,
-                RunPhase::StartingVm,
-                utc_timestamp(),
-                "start target VMs in lifecycle order");
-            for (std::size_t index = 0; index < vms.size(); ++index) {
-                if (!assumed_running[index]) {
-                    provider.start(vms[index]->vmx);
-                    assumed_running[index] = true;
-                }
-            }
-            persist_run_transition(
-                state_path,
-                state,
-                RunPhase::WaitingAgent,
-                utc_timestamp(),
-                "wait for Agents in lifecycle order");
-            Diagnostics diagnostics(config_);
-            const std::chrono::seconds diagnostic_timeout = std::min(
-                timeout,
-                boot_wait);
-            if (vms.size() > 1) {
-                output["diagnostics"] = nlohmann::json::array();
-            }
-            for (std::size_t index = 0; index < vms.size(); ++index) {
-                const VmConfig* vm = vms[index];
-                nlohmann::json diagnostic = diagnostics.run_probe(vm->id, diagnostic_timeout);
-                if (vms.size() == 1) {
-                    output["diagnostic"] = diagnostic;
-                } else {
-                    output["diagnostics"].push_back({
-                        {"vm_id", vm->id},
-                        {"result", diagnostic},
-                    });
-                }
-                if (diagnostic.at("status") != "ready") {
-                    throw Error("Agent diagnostic did not return ready for VM: " + vm->id);
-                }
-            }
-            agent_ready = true;
-
-            persist_run_transition(
-                state_path,
-                state,
-                RunPhase::Deploying,
-                utc_timestamp(),
-                "publish main task");
-            const RunManifest manifest = controller.create_run(
-                make_main_plan(plan, active_archive.identity.main_run_id));
-            main_published = true;
-            output["execution_run_id"] = manifest.run_id;
-            persist_run_transition(
-                state_path,
-                state,
-                RunPhase::Executing,
-                utc_timestamp(),
-                "wait for main task results");
-            output["report"] = wait_for_report(controller, manifest.run_id, timeout);
-            apply_main_report(
-                output["report"],
-                business_success,
-                manual_gate,
-                business_error);
-        } catch (const std::exception& error) {
-            append_error(business_error, error.what());
-        }
-    }
+    OrchestrationContext context{
+        config_,
+        plan,
+        policies,
+        run_id,
+        vms,
+        active_archive,
+        provider,
+        controller,
+        timeout,
+        boot_wait,
+        std::move(initially_running),
+        std::move(output),
+    };
+    execute_main_phase(context);
 
     if (state.phase == RunPhase::RestoringBefore) {
         persist_run_transition(
-            state_path,
+            active_archive.state_path,
             state,
             RunPhase::RecoveryFailed,
             utc_timestamp(),
-            business_error);
-        output["status"] = "RECOVERY_FAILED";
-        output["error"] = business_error;
-        output["power_off_results"] = power_off_targets_best_effort(provider, vms);
-        return output;
+            context.business_error);
+        context.output["status"] = "RECOVERY_FAILED";
+        context.output["error"] = context.business_error;
+        context.output["power_off_results"] = power_off_targets_best_effort(provider, vms);
+        return context.output;
     }
 
-    if (main_published) {
-        if (state.phase == RunPhase::Executing) {
-            persist_run_transition(
-                state_path,
-                state,
-                RunPhase::CollectingEvidence,
-                utc_timestamp(),
-                "archive main task evidence");
-        }
-        try {
-            if (!output.contains("report")) {
-                output["report"] = controller.build_report(
-                    active_archive.identity.main_run_id);
-            }
-            archive_run_evidence(
-                config_,
-                run_id,
-                active_archive.identity.main_run_id,
-                "main");
-        } catch (const std::exception& error) {
-            business_success = false;
-            append_error(business_error, error.what());
-        }
-    }
-
-    if (manual_gate) {
+    archive_main_evidence_phase(context);
+    if (context.manual_gate) {
         persist_run_transition(
-            state_path,
+            active_archive.state_path,
             state,
             RunPhase::ManualInterventionRequired,
             utc_timestamp(),
-            business_error);
-        output["status"] = "MANUAL_INTERVENTION_REQUIRED";
-        output["error"] = business_error;
-        output["power_off_results"] = power_off_targets_best_effort(provider, vms);
-        return output;
+            context.business_error);
+        context.output["status"] = "MANUAL_INTERVENTION_REQUIRED";
+        context.output["error"] = context.business_error;
+        context.output["power_off_results"] = power_off_targets_best_effort(provider, vms);
+        return context.output;
     }
 
-    if (agent_ready &&
-        (state.phase == RunPhase::CollectingEvidence || state.phase == RunPhase::Deploying)) {
-        persist_run_transition(
-            state_path,
-            state,
-            RunPhase::RunningFinally,
-            utc_timestamp(),
-            "execute finally steps");
-        if (!plan.lifecycle->finally_steps.empty()) {
-            try {
-                const TaskPlan finally_plan = make_finally_plan(
-                    plan,
-                    active_archive.identity.finally_run_id);
-                const RunManifest finally_manifest = controller.create_run(finally_plan);
-                finally_published = true;
-                output["finally_run_id"] = finally_manifest.run_id;
-                output["finally_report"] = wait_for_report(controller, finally_manifest.run_id, timeout);
-                archive_run_evidence(config_, run_id, finally_manifest.run_id, "finally");
-                if (output["finally_report"].at("failed_steps") != 0) {
-                    business_success = false;
-                    append_error(business_error, "Finally steps failed");
-                }
-            } catch (const std::exception& error) {
-                business_success = false;
-                append_error(business_error, error.what());
-            }
-        }
-    }
-
-    if (state.phase != RunPhase::RunningFinally &&
-        state.phase != RunPhase::StartingVm &&
-        state.phase != RunPhase::WaitingAgent &&
-        state.phase != RunPhase::Deploying &&
-        state.phase != RunPhase::CollectingEvidence) {
-        throw Error("Orchestration reached an unsupported recovery phase");
-    }
-    persist_run_transition(
-        state_path,
-        state,
-        RunPhase::Recovering,
-        utc_timestamp(),
-        business_success ? "apply success cleanup policy" : "apply failure cleanup policy");
-
-    const GuestWorkCleanupAction guest_cleanup = business_success
-        ? plan.cleanup.guest_work_on_success
-        : plan.cleanup.guest_work_on_failure;
-    const HostRunCleanupAction host_cleanup = business_success
-        ? plan.cleanup.host_run_on_success
-        : plan.cleanup.host_run_on_failure;
-    output["guest_work_cleanup"] = guest_work_cleanup_action_name(guest_cleanup);
-    output["host_run_cleanup"] = host_run_cleanup_action_name(host_cleanup);
-
-    std::vector<std::string> execution_run_ids;
-    if (main_published) {
-        execution_run_ids.push_back(active_archive.identity.main_run_id);
-    }
-    if (finally_published) {
-        execution_run_ids.push_back(active_archive.identity.finally_run_id);
-    }
-
-    bool cleanup_failed = false; // 任一目录或 VM 清理失败后仍继续处理其余目标
-    if (guest_cleanup == GuestWorkCleanupAction::Delete) {
-        output["guest_cleanup_results"] = nlohmann::json::array();
-        for (std::size_t reverse_index = policies.size(); reverse_index > 0; --reverse_index) {
-            const std::size_t index = reverse_index - 1;
-            const VmLifecyclePolicy& policy = policies[index];
-            const VmCleanupPolicy& vm_cleanup = business_success
-                ? policy.on_success
-                : policy.on_failure;
-            if (vm_cleanup.action == VmCleanupAction::Restore) {
-                continue;
-            }
-            for (const std::string& execution_run_id : execution_run_ids) {
-                try {
-                    output["guest_cleanup_results"].push_back(request_guest_work_cleanup(
-                        config_, execution_run_id, policy.vm, timeout));
-                } catch (const std::exception& error) {
-                    cleanup_failed = true;
-                    append_error(business_error, error.what());
-                }
-            }
-        }
-    }
-
-    if (!cleanup_failed && host_cleanup == HostRunCleanupAction::ArchiveThenDelete) {
-        try {
-            for (const std::string& execution_run_id : execution_run_ids) {
-                delete_host_run(config_, execution_run_id);
-            }
-        } catch (const std::exception& error) {
-            cleanup_failed = true;
-            append_error(business_error, error.what());
-        }
-    }
-
-    for (std::size_t reverse_index = policies.size(); reverse_index > 0; --reverse_index) {
-        const std::size_t index = reverse_index - 1;
-        const VmLifecyclePolicy& policy = policies[index];
-        const VmCleanupPolicy& cleanup = business_success
-            ? policy.on_success
-            : policy.on_failure;
-        try {
-            assumed_running[index] = apply_cleanup_policy(
-                provider,
-                *vms[index],
-                cleanup,
-                assumed_running[index]);
-        } catch (const std::exception& error) {
-            cleanup_failed = true;
-            append_error(
-                business_error,
-                "VM lifecycle cleanup failed for " + policy.vm + ": " + error.what());
-        }
-    }
-    output["final_power_states"] = collect_final_power_states(provider, vms);
-
-    if (cleanup_failed) {
-        persist_run_transition(
-            state_path,
-            state,
-            RunPhase::RecoveryFailed,
-            utc_timestamp(),
-            business_error);
-        output["status"] = "RECOVERY_FAILED";
-        output["error"] = business_error;
-        return output;
-    }
-
-    if (policies.size() == 1) {
-        const VmCleanupPolicy& cleanup = business_success
-            ? policies.front().on_success
-            : policies.front().on_failure;
-        output["cleanup_action"] = vm_cleanup_action_name(cleanup.action);
-    } else {
-        output["cleanup_actions"] = nlohmann::json::array();
-        for (const VmLifecyclePolicy& policy : policies) {
-            const VmCleanupPolicy& cleanup = business_success
-                ? policy.on_success
-                : policy.on_failure;
-            output["cleanup_actions"].push_back({
-                {"vm_id", policy.vm},
-                {"action", vm_cleanup_action_name(cleanup.action)},
-            });
-        }
-    }
-
-    persist_run_transition(
-        state_path,
-        state,
-        business_success ? RunPhase::Completed : RunPhase::Failed,
-        utc_timestamp(),
-        business_success ? "orchestration completed" : business_error);
-    output["status"] = business_success ? "COMPLETED" : "FAILED";
-    if (!business_error.empty()) {
-        output["error"] = business_error;
-    }
-    return output;
+    execute_finally_phase(context);
+    return execute_recovery_phase(context);
 }
 
 }  // namespace satsuma::host
