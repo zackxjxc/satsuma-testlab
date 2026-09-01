@@ -281,7 +281,7 @@ void test_rebind_presence_failure_rollback(const std::filesystem::path& root) {
                 satsuma::write_json_atomic(
                     config.mirror_root / L"agents" / L"vm_02.json",
                     {
-                        {"schema_version", 1},
+                        {"schema_version", 2},
                         {"protocol_version", config.protocol_version},
                         {"lab_id", config.lab_id},
                         {"vm_id", config.vm_id},
@@ -793,7 +793,7 @@ void test_presence_identity(const std::filesystem::path& root) {
     satsuma::AgentConfig config = satsuma::load_agent_config(fixture.paths.config);
     const std::filesystem::path presence = fixture.root / L"presence.json";
     satsuma::write_json_atomic(presence, {
-        {"schema_version", 1},
+        {"schema_version", 2},
         {"protocol_version", satsuma::kRunManifestProtocolVersion},
         {"lab_id", "test_lab"},
         {"vm_id", "vm_01"},

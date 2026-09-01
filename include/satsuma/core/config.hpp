@@ -53,7 +53,6 @@ struct VmConfig {
 
 // Host 使用的实验室配置。
 struct LabConfig {
-    int schema_version{1};              // 配置 schema 版本
     std::string lab_id;                 // 实验室稳定 ID
     ProviderConfig provider;            // VMware Provider 配置
     HostConfig host;                    // Host 配置
@@ -63,7 +62,6 @@ struct LabConfig {
 
 // VM Agent 的本机配置。
 struct AgentConfig {
-    int schema_version{1};                  // 配置 schema 版本
     int protocol_version{kRunManifestProtocolVersion}; // VMCI 任务协议版本
     std::string lab_id;                     // 实验室稳定 ID
     std::string vm_id;                      // 当前虚拟机的稳定标识，未绑定时暂用硬件 ID

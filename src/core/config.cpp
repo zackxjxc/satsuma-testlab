@@ -95,7 +95,6 @@ LabConfig load_lab_config(const std::filesystem::path& path) {
     validate_schema_version(value, "lab.json");
 
     LabConfig config;
-    config.schema_version = 1;
     config.lab_id = required_string(value, "lab_id");
     validate_identifier(config.lab_id, "lab_id");
 
@@ -184,7 +183,6 @@ AgentConfig load_agent_config(const std::filesystem::path& path) {
     validate_schema_version(value, "agent.json");
 
     AgentConfig config;
-    config.schema_version = 1;
     config.protocol_version = value.value("protocol_version", 0);
     config.lab_id = required_string(value, "lab_id");
     config.vm_id_configured = value.contains("vm_id");
@@ -234,7 +232,7 @@ AgentConfig load_agent_config(const std::filesystem::path& path) {
     config.reconnect_interval_ms = value.value("reconnect_interval_ms", 1000);
 
     if (config.protocol_version != kRunManifestProtocolVersion) {
-        throw Error("agent.json requires protocol_version 3");
+        throw Error("agent.json requires protocol_version 4");
     }
     if (config.poll_interval_ms < 100 || config.poll_interval_ms > 60'000) {
         throw Error("poll_interval_ms must be between 100 and 60000");

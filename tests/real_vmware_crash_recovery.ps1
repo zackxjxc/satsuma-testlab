@@ -435,7 +435,7 @@ function New-CrashPlan {
         @('--message', "$Name completed", '--sleep-ms', [string]$HostTaskSleepMs)
     }
     $plan = [ordered]@{
-        schema_version = 1
+        schema_version = 3
         name = "real VMware $Name"
         run_id = $runId
         artifacts = @(

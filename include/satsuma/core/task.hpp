@@ -98,7 +98,7 @@ enum class HostRunCleanupAction {
     ArchiveThenDelete,
 };
 
-// 任务结束后对本地工作目录和共享证据执行的策略。
+// 任务结束后对 Guest 工作目录和 Host 运行状态执行的策略。
 struct TaskCleanupPolicy {
     GuestWorkCleanupAction guest_work_on_success{GuestWorkCleanupAction::Delete};
     GuestWorkCleanupAction guest_work_on_failure{GuestWorkCleanupAction::Retain};
@@ -108,7 +108,6 @@ struct TaskCleanupPolicy {
 
 // AI 或用户提供的任务计划。
 struct TaskPlan {
-    int schema_version{1};                 // 输入 schema 版本
     std::string name;                      // 任务显示名称
     std::optional<std::string> run_id;     // 普通任务可选，生命周期编排必须显式提供
     std::vector<ArtifactInput> artifacts;  // 待部署文件
@@ -119,11 +118,10 @@ struct TaskPlan {
 
 // Host 物化后供 VM 领取的不可变任务清单。
 struct RunManifest {
-    int schema_version{1};                    // 清单 schema 版本
+    int schema_version{2};                    // 清单 schema 版本
     int protocol_version{kRunManifestProtocolVersion}; // Host/VM VMCI 协议版本
     std::string lab_id;                       // 实验室稳定 ID
     std::string run_id;                       // 本次运行唯一 ID
-    std::string request_id;                   // Host 请求唯一 ID
     std::string name;                         // 任务显示名称
     std::string created_at;                   // UTC 创建时间
     std::vector<ArtifactManifest> artifacts;  // 已登记 Artifact
@@ -138,7 +136,7 @@ struct CollectedFile {
 
 // VM 为每个步骤生成的执行结果。
 struct ExecutionResult {
-    int schema_version{1};          // 结果 schema 版本
+    int schema_version{2};          // 结果 schema 版本
     std::string run_id;             // 本次运行唯一 ID
     std::string vm_id;              // 执行 VM ID
     std::string job_id;             // 本次领取生成的 Job ID
@@ -147,7 +145,6 @@ struct ExecutionResult {
     TaskRunAs run_as{TaskRunAs::System}; // 本步骤实际请求的运行身份
     std::optional<std::uint32_t> interactive_session_id; // 交互用户 Session ID
     std::optional<std::uint32_t> exit_code; // 进程退出码
-    bool timed_out{false};           // 是否由超时终止
     std::int64_t duration_ms{0};     // 执行耗时
     std::string stdout_path;         // 结果目录内 stdout 相对路径
     std::string stderr_path;         // 结果目录内 stderr 相对路径

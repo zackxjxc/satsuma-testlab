@@ -113,7 +113,7 @@ function(run_multi_vm_scenario name expected_exit expected_status vm_01_step vm_
     set(agent_json [=[
 {
   "schema_version": 1,
-  "protocol_version": 3,
+  "protocol_version": 4,
   "lab_id": "multi_vm_lab",
   "vm_id": "@VM_ID@",
   "agent_version": "0.1.0",
@@ -137,7 +137,7 @@ function(run_multi_vm_scenario name expected_exit expected_status vm_01_step vm_
     set(run_id "multi_vm_${name}")
     set(plan_json [=[
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "name": "multi VM lifecycle @NAME@",
   "run_id": "@RUN_ID@",
   "artifacts": [

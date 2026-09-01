@@ -271,7 +271,7 @@ void test_agent_hardware_discovery_and_binding(const std::filesystem::path& root
     satsuma::write_json_atomic(
         mirror_root / L"agents" / L"564d1234-abcd-4321-9876-001122334455.json",
         {
-            {"schema_version", 1},
+            {"schema_version", 2},
             {"protocol_version", satsuma::kRunManifestProtocolVersion},
             {"lab_id", "host_identity_test"},
             {"vm_id", hardware_id},
@@ -292,7 +292,7 @@ void test_agent_hardware_discovery_and_binding(const std::filesystem::path& root
     satsuma::write_json_atomic(
         mirror_root / L"agents" / L"vm_02.json",
         {
-            {"schema_version", 1},
+            {"schema_version", 2},
             {"protocol_version", satsuma::kRunManifestProtocolVersion},
             {"lab_id", "host_identity_test"},
             {"vm_id", "vm_02"},
@@ -323,7 +323,7 @@ void test_agent_hardware_discovery_and_binding(const std::filesystem::path& root
     satsuma::write_json_atomic(
         sessions / L"session-before-restart.json",
         {
-            {"schema_version", 1},
+            {"schema_version", 2},
             {"protocol_version", satsuma::kRunManifestProtocolVersion},
             {"lab_id", "host_identity_test"},
             {"vm_id", hardware_id},
@@ -336,7 +336,7 @@ void test_agent_hardware_discovery_and_binding(const std::filesystem::path& root
     satsuma::write_json_atomic(
         sessions / L"session-after-restart.json",
         {
-            {"schema_version", 1},
+            {"schema_version", 2},
             {"protocol_version", satsuma::kRunManifestProtocolVersion},
             {"lab_id", "host_identity_test"},
             {"vm_id", hardware_id},
@@ -356,7 +356,7 @@ void test_agent_hardware_discovery_and_binding(const std::filesystem::path& root
         satsuma::write_json_atomic(
             sessions / satsuma::path_from_utf8(session_id + ".json"),
             {
-                {"schema_version", 1},
+                {"schema_version", 2},
                 {"protocol_version", satsuma::kRunManifestProtocolVersion},
                 {"lab_id", "host_identity_test"},
                 {"vm_id", hardware_id},

@@ -5,15 +5,14 @@
   "type": "object",
   "additionalProperties": false,
   "required": [
-    "schema_version", "protocol_version", "lab_id", "run_id", "request_id",
+    "schema_version", "protocol_version", "lab_id", "run_id",
     "name", "created_at", "artifacts", "steps"
   ],
   "properties": {
-    "schema_version": {"const": 1},
-    "protocol_version": {"const": 3},
+    "schema_version": {"const": 2},
+    "protocol_version": {"const": 4},
     "lab_id": {"$ref": "#/$defs/identifier"},
     "run_id": {"$ref": "#/$defs/identifier"},
-    "request_id": {"$ref": "#/$defs/identifier"},
     "name": {"type": "string", "minLength": 1},
     "created_at": {"type": "string", "format": "date-time"},
     "artifacts": {
@@ -56,12 +55,11 @@
     "echo_step": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "vm", "type", "timeout_seconds", "retry_safe", "message"],
+      "required": ["id", "vm", "type", "retry_safe", "message"],
       "properties": {
         "id": {"$ref": "#/$defs/identifier"},
         "vm": {"$ref": "#/$defs/identifier"},
         "type": {"const": "echo"},
-        "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 86400},
         "retry_safe": {"type": "boolean"},
         "message": {"type": "string", "minLength": 1}
       }

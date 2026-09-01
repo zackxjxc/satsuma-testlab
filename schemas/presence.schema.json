@@ -9,27 +9,23 @@
     "update_id", "session_id", "boot_id", "process_id", "status", "inventory", "updated_at"
   ],
   "properties": {
-    "schema_version": {"const": 1},
-    "protocol_version": {"const": 3},
+    "schema_version": {"const": 2},
+    "protocol_version": {"const": 4},
     "lab_id": {"type": "string", "pattern": "^[A-Za-z0-9_-]{1,128}$"},
     "vm_id": {"type": "string", "pattern": "^[A-Za-z0-9_-]{1,128}$"},
     "hardware_id": {"$ref": "#/$defs/hardware_id"},
-    "identity_source": {"const": "smbios_system_uuid"},
-    "previous_hardware_id": {"$ref": "#/$defs/hardware_id"},
-    "previous_vm_id": {"type": "string", "pattern": "^[A-Za-z0-9_-]{1,128}$"},
     "agent_version": {"type": "string", "minLength": 1, "maxLength": 64},
     "binary_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "update_id": {"type": "string", "maxLength": 128},
     "session_id": {"type": "string", "minLength": 1},
     "boot_id": {"type": "string", "minLength": 1},
     "process_id": {"type": "integer", "minimum": 0},
-    "status": {"enum": ["idle", "running", "unbound"]},
+    "status": {"enum": ["idle", "unbound"]},
     "inventory": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["schema_version", "observed_at", "sha256"],
+      "required": ["observed_at", "sha256"],
       "properties": {
-        "schema_version": {"const": 1},
         "observed_at": {"type": "string", "format": "date-time"},
         "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
       }
@@ -38,9 +34,8 @@
     "runtime": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["schema_version", "started_at", "vmci_channel_failure_count", "consecutive_vmci_channel_failures"],
+      "required": ["started_at", "vmci_channel_failure_count", "consecutive_vmci_channel_failures"],
       "properties": {
-        "schema_version": {"const": 1},
         "started_at": {"type": "string", "format": "date-time"},
         "vmci_channel_failure_count": {"type": "integer", "minimum": 0},
         "consecutive_vmci_channel_failures": {"type": "integer", "minimum": 0},

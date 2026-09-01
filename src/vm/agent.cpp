@@ -303,7 +303,7 @@ Agent::Agent(
           ? current_executable_path()
           : std::filesystem::absolute(std::move(helper_executable))),
       runtime_options_(std::move(runtime_options)),
-      inventory_(config_, boot_id_) {
+      inventory_(config_) {
     if (config_.protocol_version != kRunManifestProtocolVersion) {
         throw Error("Agent execution requires the current VMCI protocol version");
     }
@@ -582,7 +582,6 @@ void Agent::run_watch(const std::stop_token stop_token) {
 
 void Agent::write_presence() const {
     nlohmann::json runtime = {
-        {"schema_version", 1},
         {"started_at", session_started_at_},
         {"vmci_channel_failure_count", vmci_channel_failure_count_},
         {"consecutive_vmci_channel_failures", consecutive_vmci_channel_failures_},
@@ -597,12 +596,11 @@ void Agent::write_presence() const {
         runtime["last_vmci_channel_recovered_at"] = last_vmci_channel_recovered_at_;
     }
     const nlohmann::json presence = {
-        {"schema_version", 1},
+        {"schema_version", 2},
         {"protocol_version", config_.protocol_version},
         {"lab_id", config_.lab_id},
         {"vm_id", config_.vm_id},
         {"hardware_id", config_.hardware_id},
-        {"identity_source", "smbios_system_uuid"},
         {"agent_version", config_.agent_version},
         {"update_id", config_.last_update_id},
         {"session_id", session_id_},
@@ -611,32 +609,24 @@ void Agent::write_presence() const {
         {"binary_sha256", binary_sha256_},
         {"status", config_.identity_unbound ? "unbound" : "idle"},
         {"inventory", {
-            {"schema_version", 1},
             {"observed_at", inventory_.observed_at()},
             {"sha256", inventory_.digest()},
         }},
         {"updated_at", utc_timestamp()},
         {"runtime", std::move(runtime)},
     };
-    nlohmann::json published = presence;
-    if (!config_.previous_hardware_id.empty()) {
-        published["previous_hardware_id"] = config_.previous_hardware_id;
-    }
-    if (!config_.previous_vm_id.empty()) {
-        published["previous_vm_id"] = config_.previous_vm_id;
-    }
-    write_json_atomic(hardware_presence_path(config_), published);
+    write_json_atomic(hardware_presence_path(config_), presence);
     if (!config_.hardware_id.empty()) {
         write_json_atomic(
             config_.mirror_root / L"agents" / L"sessions" /
                 path_from_utf8(config_.hardware_id) /
                 path_from_utf8(session_id_ + ".json"),
-            published);
+            presence);
     }
     if (config_.vm_id_configured && config_.vm_id != config_.hardware_id) {
         write_json_atomic(
             config_.mirror_root / L"agents" / path_from_utf8(config_.vm_id + ".json"),
-            published);
+            presence);
     }
     write_hardware_migration_marker(config_);
 }
@@ -755,6 +745,7 @@ void Agent::execute_step(
     result.started_at = utc_timestamp();
     result.stdout_path = path_to_utf8(std::filesystem::relative(stdout_final, run_directory));
     result.stderr_path = path_to_utf8(std::filesystem::relative(stderr_final, run_directory));
+    bool process_timed_out = false;
     write_state(run_directory, "running", claim.job_id);
 
     try {
@@ -849,7 +840,7 @@ void Agent::execute_step(
                 : runner_.run(request);
             throw_if_stop_requested(execution_stop_token);
             result.exit_code = process_result.exit_code;
-            result.timed_out = process_result.timed_out;
+            process_timed_out = process_result.timed_out;
             result.duration_ms = process_result.duration_ms;
             if (process_result.output_limit_exceeded) {
                 throw Error("Process output exceeded the 64 MiB limit");
@@ -888,7 +879,7 @@ void Agent::execute_step(
             }
         }
 
-        result.status = result.timed_out ? "timed_out" : "exited";
+        result.status = process_timed_out ? "timed_out" : "exited";
     } catch (const std::exception& error) {
         result.status = "failed";
         result.error = std::filesystem::is_regular_file(cancellation_path)

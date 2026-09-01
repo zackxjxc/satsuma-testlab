@@ -18,10 +18,9 @@
 namespace satsuma {
 namespace {
 
-// 区分两个用户任务 schema 与当前 Agent 可见清单。
+// 区分用户任务与 Agent 可见的物化清单。
 enum class StepParseMode {
-    TaskPlanV1,
-    TaskPlanV2,
+    TaskPlan,
     RunManifest,
 };
 
@@ -105,25 +104,23 @@ void validate_sha256(const std::string& hash) {
 // 按任务计划或 VMCI 运行清单解析并验证一个步骤。
 [[nodiscard]] TaskStep parse_step(const nlohmann::json& value, const StepParseMode mode) {
     const std::string type = required_string(value, "type");
-    if (mode == StepParseMode::TaskPlanV1 || mode == StepParseMode::TaskPlanV2) {
-        if (type == "execute") {
-            reject_unknown_fields(
-                value,
-                {"id", "vm", "type", "program", "arguments", "run_as", "timeout_seconds",
-                 "retry_safe", "collect_files"},
-                "execute step");
-        } else if (type == "script") {
-            reject_unknown_fields(
-                value,
-                {"id", "vm", "type", "engine", "script", "arguments", "run_as",
-                 "timeout_seconds", "retry_safe", "collect_files"},
-                "script step");
-        } else if (type == "echo") {
-            reject_unknown_fields(
-                value,
-                {"id", "vm", "type", "message", "timeout_seconds", "retry_safe"},
-                "echo step");
-        }
+    if (type == "execute") {
+        reject_unknown_fields(
+            value,
+            {"id", "vm", "type", "program", "arguments", "run_as", "timeout_seconds",
+             "retry_safe", "collect_files"},
+            "execute step");
+    } else if (type == "script") {
+        reject_unknown_fields(
+            value,
+            {"id", "vm", "type", "engine", "script", "arguments", "run_as",
+             "timeout_seconds", "retry_safe", "collect_files"},
+            "script step");
+    } else if (type == "echo") {
+        reject_unknown_fields(
+            value,
+            {"id", "vm", "type", "message", "retry_safe"},
+            "echo step");
     }
 
     TaskStep step;
@@ -132,10 +129,6 @@ void validate_sha256(const std::string& hash) {
     validate_identifier(step.id, "step id");
     validate_identifier(step.vm, "step VM id");
     step.type = type;
-    step.timeout_seconds = value.value("timeout_seconds", 120);
-    if (step.timeout_seconds < 1 || step.timeout_seconds > 86'400) {
-        throw Error("timeout_seconds must be between 1 and 86400 for step " + step.id);
-    }
     step.retry_safe = value.value("retry_safe", step.type == "echo");
 
     if (value.contains("arguments")) {
@@ -160,6 +153,10 @@ void validate_sha256(const std::string& hash) {
     }
 
     if (step.type == "execute" || step.type == "script") {
+        step.timeout_seconds = value.value("timeout_seconds", 120);
+        if (step.timeout_seconds < 1 || step.timeout_seconds > 86'400) {
+            throw Error("timeout_seconds must be between 1 and 86400 for step " + step.id);
+        }
         const bool has_run_as = value.contains("run_as");
         if (mode == StepParseMode::RunManifest && !has_run_as) {
             throw Error("Run manifest requires run_as for executable step " + step.id);
@@ -169,9 +166,6 @@ void validate_sha256(const std::string& hash) {
             step.program = path_from_utf8(required_string(value, "program"));
             validate_relative_path(step.program);
         } else {
-            if (mode == StepParseMode::TaskPlanV1) {
-                throw Error("script steps require task schema 2 and run manifest protocol 3");
-            }
             step.engine = parse_script_engine(value);
             step.script = path_from_utf8(required_string(value, "script"));
             validate_relative_path(step.script);
@@ -336,10 +330,10 @@ void validate_snapshot_name(const std::string& snapshot, const std::string_view 
         {"id", step.id},
         {"vm", step.vm},
         {"type", step.type},
-        {"timeout_seconds", step.timeout_seconds},
         {"retry_safe", step.retry_safe},
     };
     if (step.type == "execute" || step.type == "script") {
+        value["timeout_seconds"] = step.timeout_seconds;
         value["run_as"] = std::string(task_run_as_name(step.run_as));
         if (step.type == "execute") {
             value["program"] = path_to_utf8(step.program);
@@ -412,12 +406,11 @@ TaskPlan load_task_plan(const std::filesystem::path& path) {
         {"$schema", "schema_version", "name", "run_id", "artifacts", "steps", "lifecycle", "cleanup"},
         "task plan");
     const int schema_version = value.value("schema_version", 0);
-    if (schema_version != 1 && schema_version != 2) {
-        throw Error("Task plan requires schema_version 1 or 2");
+    if (schema_version != 3) {
+        throw Error("Task plan requires schema_version 3");
     }
 
     TaskPlan plan;
-    plan.schema_version = schema_version;
     plan.name = required_string(value, "name");
     if (value.contains("run_id")) {
         plan.run_id = required_string(value, "run_id");
@@ -459,19 +452,12 @@ TaskPlan load_task_plan(const std::filesystem::path& path) {
         throw Error("Task plan exceeds the step count limit");
     }
     for (const auto& step_value : value.at("steps")) {
-        plan.steps.push_back(parse_step(
-            step_value,
-            schema_version == 1 ? StepParseMode::TaskPlanV1 : StepParseMode::TaskPlanV2));
+        plan.steps.push_back(parse_step(step_value, StepParseMode::TaskPlan));
     }
     if (value.contains("lifecycle")) {
-        plan.lifecycle = parse_lifecycle_policy(
-            value.at("lifecycle"),
-            schema_version == 1 ? StepParseMode::TaskPlanV1 : StepParseMode::TaskPlanV2);
+        plan.lifecycle = parse_lifecycle_policy(value.at("lifecycle"), StepParseMode::TaskPlan);
     }
     if (value.contains("cleanup")) {
-        if (schema_version != 2) {
-            throw Error("cleanup policies require task schema_version 2");
-        }
         plan.cleanup = parse_task_cleanup_policy(value.at("cleanup"));
     }
 
@@ -531,7 +517,7 @@ RunManifest load_run_manifest(const std::filesystem::path& path) {
 }
 
 void to_json(nlohmann::json& value, const RunManifest& manifest) {
-    if (manifest.schema_version != 1 ||
+    if (manifest.schema_version != 2 ||
         manifest.protocol_version != kRunManifestProtocolVersion) {
         throw Error("Unsupported run manifest schema or protocol version");
     }
@@ -540,7 +526,6 @@ void to_json(nlohmann::json& value, const RunManifest& manifest) {
         {"protocol_version", manifest.protocol_version},
         {"lab_id", manifest.lab_id},
         {"run_id", manifest.run_id},
-        {"request_id", manifest.request_id},
         {"name", manifest.name},
         {"created_at", manifest.created_at},
         {"artifacts", nlohmann::json::array()},
@@ -559,20 +544,28 @@ void to_json(nlohmann::json& value, const RunManifest& manifest) {
 }
 
 void from_json(const nlohmann::json& value, RunManifest& manifest) {
+    reject_unknown_fields(
+        value,
+        {"schema_version", "protocol_version", "lab_id", "run_id", "name", "created_at",
+         "artifacts", "steps"},
+        "run manifest");
     manifest.schema_version = value.value("schema_version", 0);
     manifest.protocol_version = value.value("protocol_version", 0);
     manifest.lab_id = required_string(value, "lab_id");
     manifest.run_id = required_string(value, "run_id");
-    manifest.request_id = required_string(value, "request_id");
     manifest.name = required_string(value, "name");
     manifest.created_at = required_string(value, "created_at");
-    if (manifest.schema_version != 1 ||
+    if (manifest.schema_version != 2 ||
         manifest.protocol_version != kRunManifestProtocolVersion) {
         throw Error("Unsupported run manifest schema or protocol version");
     }
 
     manifest.artifacts.clear();
     for (const auto& artifact_value : value.at("artifacts")) {
+        reject_unknown_fields(
+            artifact_value,
+            {"vm", "path", "sha256"},
+            "run manifest artifact");
         ArtifactManifest artifact;
         artifact.vm = required_string(artifact_value, "vm");
         validate_identifier(artifact.vm, "Artifact VM id");
@@ -599,7 +592,6 @@ void to_json(nlohmann::json& value, const ExecutionResult& result) {
         {"step_id", result.step_id},
         {"status", result.status},
         {"run_as", std::string(task_run_as_name(result.run_as))},
-        {"timed_out", result.timed_out},
         {"duration_ms", result.duration_ms},
         {"stdout", result.stdout_path},
         {"stderr", result.stderr_path},
@@ -620,6 +612,12 @@ void to_json(nlohmann::json& value, const ExecutionResult& result) {
 }
 
 void from_json(const nlohmann::json& value, ExecutionResult& result) {
+    reject_unknown_fields(
+        value,
+        {"schema_version", "run_id", "vm_id", "job_id", "step_id", "status", "run_as",
+         "interactive_session_id", "exit_code", "duration_ms", "stdout", "stderr", "files",
+         "error", "started_at", "finished_at"},
+        "execution result");
     result.schema_version = value.value("schema_version", 0);
     result.run_id = required_string(value, "run_id");
     result.vm_id = required_string(value, "vm_id");
@@ -638,12 +636,12 @@ void from_json(const nlohmann::json& value, ExecutionResult& result) {
     } else {
         result.exit_code.reset();
     }
-    result.timed_out = value.value("timed_out", false);
     result.duration_ms = value.value("duration_ms", 0LL);
     result.stdout_path = value.value("stdout", "");
     result.stderr_path = value.value("stderr", "");
     result.files.clear();
     for (const auto& file_value : value.value("files", nlohmann::json::array())) {
+        reject_unknown_fields(file_value, {"path", "sha256"}, "collected result file");
         CollectedFile file;
         file.path = required_string(file_value, "path");
         file.sha256 = required_string(file_value, "sha256");
@@ -653,7 +651,7 @@ void from_json(const nlohmann::json& value, ExecutionResult& result) {
     result.error = value.value("error", "");
     result.started_at = required_string(value, "started_at");
     result.finished_at = required_string(value, "finished_at");
-    if (result.schema_version != 1) {
+    if (result.schema_version != 2) {
         throw Error("Unsupported execution result schema version");
     }
     validate_execution_identity(result);

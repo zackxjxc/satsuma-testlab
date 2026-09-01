@@ -1,7 +1,7 @@
 {
   "$schema": "../schemas/agent.schema.json",
   "schema_version": 1,
-  "protocol_version": 3,
+  "protocol_version": 4,
   "lab_id": "local_windows_lab",
   "agent_version": "0.2.1",
   "transport": {

@@ -224,7 +224,7 @@ set_target_properties(SatsumaDemoApp PROPERTIES
 set(SATSUMA_DEMO_INPUT "${CMAKE_CURRENT_SOURCE_DIR}/examples/demo-input.txt")
 set(SATSUMA_DEMO_TASK [=[
 {
-  "schema_version": 1,
+  "schema_version": 3,
   "name": "demo-app-real-vm",
   "artifacts": [
     {

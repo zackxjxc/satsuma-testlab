@@ -80,7 +80,7 @@ file(WRITE "${TEST_ROOT}/lab.json" "${lab_json}")
 set(agent_json [=[
 {
   "schema_version": 1,
-  "protocol_version": 3,
+  "protocol_version": 4,
   "lab_id": "integration_lab",
   "vm_id": "vm_01",
   "agent_version": "0.1.0",
@@ -113,7 +113,7 @@ endfunction()
 
 set(task_json [=[
 {
-  "schema_version": 1,
+  "schema_version": 3,
   "name": "host-vm-integration",
   "run_id": "integration_run",
   "artifacts": [
@@ -271,7 +271,7 @@ endif()
 
 set(lifecycle_task_json [=[
 {
-  "schema_version": 1,
+  "schema_version": 3,
   "name": "lifecycle-requires-orchestrator",
   "steps": [
     {
@@ -336,7 +336,7 @@ endif()
 
 set(orchestration_task_json [=[
 {
-  "schema_version": 1,
+  "schema_version": 3,
   "name": "host-lifecycle-integration",
   "run_id": "orchestration_run",
   "steps": [
@@ -500,7 +500,7 @@ endif()
 # 构造 Host 在 executing 阶段退出后的持久化归档和已经发布的主任务。
 set(executing_resume_plan [=[
 {
-  "schema_version": 1,
+  "schema_version": 3,
   "name": "host-executing-resume",
   "run_id": "orchestration_executing_resume",
   "steps": [
@@ -524,7 +524,7 @@ set(executing_resume_plan [=[
 ]=])
 set(executing_main_plan [=[
 {
-  "schema_version": 1,
+  "schema_version": 3,
   "name": "host-executing-resume",
   "run_id": "orchestration_executing_resume",
   "steps": [
@@ -544,11 +544,10 @@ file(WRITE "${executing_main_path}" "${executing_main_plan}")
 file(MAKE_DIRECTORY "${state_path}/runs/orchestration_executing_resume")
 file(WRITE "${state_path}/runs/orchestration_executing_resume/task.json" [=[
 {
-  "schema_version": 1,
-  "protocol_version": 3,
+  "schema_version": 2,
+  "protocol_version": 4,
   "lab_id": "integration_lab",
   "run_id": "orchestration_executing_resume",
-  "request_id": "request_executing_resume",
   "name": "host-executing-resume",
   "created_at": "2026-07-29T00:00:00.000Z",
   "artifacts": [],
@@ -558,7 +557,6 @@ file(WRITE "${state_path}/runs/orchestration_executing_resume/task.json" [=[
       "vm": "vm_01",
       "type": "echo",
       "message": "resume persisted execution",
-      "timeout_seconds": 120,
       "retry_safe": true
     }
   ]
@@ -688,11 +686,10 @@ file(WRITE "${collecting_plan_path}" "${collecting_resume_plan}")
 file(WRITE "${collecting_main_path}" "${collecting_main_plan}")
 set(collecting_manifest [=[
 {
-  "schema_version": 1,
-  "protocol_version": 3,
+  "schema_version": 2,
+  "protocol_version": 4,
   "lab_id": "integration_lab",
   "run_id": "orchestration_collecting_resume",
-  "request_id": "request_collecting_resume",
   "name": "host-collecting-resume",
   "created_at": "2026-07-29T00:00:00.000Z",
   "artifacts": [],
@@ -702,7 +699,6 @@ set(collecting_manifest [=[
       "vm": "vm_01",
       "type": "echo",
       "message": "resume persisted execution",
-      "timeout_seconds": 120,
       "retry_safe": true
     }
   ]
@@ -852,7 +848,7 @@ force_unlock_lab("Unsafe persisted phase")
 
 set(orchestration_failure_json [=[
 {
-  "schema_version": 1,
+  "schema_version": 3,
   "name": "host-lifecycle-business-failure",
   "run_id": "orchestration_failure",
   "artifacts": [
@@ -965,7 +961,7 @@ force_unlock_lab("Recovery failure")
 
 set(manual_gate_task [=[
 {
-  "schema_version": 1,
+  "schema_version": 3,
   "name": "host-lifecycle-manual-gate",
   "run_id": "orchestration_manual_gate",
   "steps": [
@@ -1041,11 +1037,10 @@ force_unlock_lab("Manual intervention")
 
 set(claim_task_template [=[
 {
-  "schema_version": 1,
-  "protocol_version": 3,
+  "schema_version": 2,
+  "protocol_version": 4,
   "lab_id": "integration_lab",
   "run_id": "@RUN_ID@",
-  "request_id": "request_claim_recovery",
   "name": "claim recovery",
   "created_at": "2026-07-26T00:00:00.000Z",
   "artifacts": [],
@@ -1055,7 +1050,6 @@ set(claim_task_template [=[
       "vm": "vm_01",
       "type": "echo",
       "message": "claim recovery",
-      "timeout_seconds": 1,
       "retry_safe": @RETRY_SAFE@
     }
   ]
@@ -1618,7 +1612,7 @@ if(NOT EXISTS "${timeout_result}")
     message(FATAL_ERROR "Timed-out execution evidence was not created")
 endif()
 file(READ "${timeout_result}" timeout_json)
-string(FIND "${timeout_json}" "\"timed_out\": true" timed_out_position)
+string(FIND "${timeout_json}" "\"status\": \"timed_out\"" timed_out_position)
 if(timed_out_position EQUAL -1)
     message(FATAL_ERROR "Process timeout was not recorded: ${timeout_json}")
 endif()

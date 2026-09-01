@@ -843,7 +843,6 @@ int wmain(const int argc, wchar_t* argv[]) {
             nlohmann::json output = {
                 {"status", "prepared"},
                 {"run_id", manifest.run_id},
-                {"request_id", manifest.request_id},
             };
             std::cout << output.dump(2) << '\n';
             return 0;

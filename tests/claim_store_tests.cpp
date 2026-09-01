@@ -73,7 +73,7 @@ struct StepPaths {
 
 [[nodiscard]] nlohmann::json make_result(const satsuma::StepClaimLease& owner) {
     return {
-        {"schema_version", 1},
+        {"schema_version", 2},
         {"run_id", owner.run_id},
         {"vm_id", owner.vm_id},
         {"step_id", owner.step_id},

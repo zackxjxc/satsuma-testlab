@@ -182,12 +182,12 @@ namespace {
 
 }  // namespace
 
-InventoryPublisher::InventoryPublisher(const AgentConfig& config, std::string boot_id)
-    : config_(config), boot_id_(std::move(boot_id)) {
+InventoryPublisher::InventoryPublisher(const AgentConfig& config)
+    : config_(config) {
     try {
         const std::filesystem::path path = inventory_path(config_);
         const nlohmann::json existing = load_json(path);
-        if (existing.value("schema_version", 0) != 1 ||
+        if (existing.value("schema_version", 0) != 2 ||
             existing.value("lab_id", std::string{}) != config_.lab_id ||
             existing.value("vm_id", std::string{}) != config_.vm_id ||
             existing.value("hardware_id", std::string{}) != inventory_key(config_) ||
@@ -305,11 +305,10 @@ nlohmann::json InventoryPublisher::collect(const std::string& request_id) const 
     const std::filesystem::path pwsh = std::filesystem::path(L"C:\\Program Files\\PowerShell\\7\\pwsh.exe");
     const std::string observed = utc_timestamp();
     nlohmann::json inventory = {
-        {"schema_version", 1},
+        {"schema_version", 2},
         {"lab_id", config_.lab_id},
         {"vm_id", config_.vm_id},
         {"hardware_id", inventory_key(config_)},
-        {"boot_id", boot_id_},
         {"observed_at", observed},
         {"os", {
             {"product_name", windows_product_name()},

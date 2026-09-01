@@ -49,7 +49,7 @@ void validate_presence_common(
     const LabConfig& config,
     const std::string& hardware_id) {
     const int protocol_version = presence.value("protocol_version", 0);
-    if (presence.value("schema_version", 0) != 1 ||
+    if (presence.value("schema_version", 0) != 2 ||
         protocol_version != kRunManifestProtocolVersion ||
         presence.value("lab_id", std::string{}) != config.lab_id ||
         normalize_hardware_id(presence.value("hardware_id", std::string{})) != hardware_id) {
@@ -73,7 +73,7 @@ void validate_presence_common(
         try {
             const nlohmann::json presence = load_json(entry.path());
             const int protocol_version = presence.value("protocol_version", 0);
-            if (presence.value("schema_version", 0) != 1 ||
+            if (presence.value("schema_version", 0) != 2 ||
                 protocol_version != kRunManifestProtocolVersion ||
                 presence.value("lab_id", std::string{}) != config.lab_id) {
                 continue;
@@ -236,8 +236,7 @@ nlohmann::json load_vm_inventory(const LabConfig& config, const VmConfig& vm) {
         throw Error("Agent presence omitted inventory reference for VM " + vm.id);
     }
     const nlohmann::json& reference = presence.at("inventory");
-    if (reference.value("schema_version", 0) != 1 ||
-        reference.value("observed_at", std::string{}).empty()) {
+    if (reference.value("observed_at", std::string{}).empty()) {
         throw Error("Agent inventory reference is invalid for VM " + vm.id);
     }
     const std::string expected_digest = reference.value("sha256", std::string{});
@@ -246,7 +245,7 @@ nlohmann::json load_vm_inventory(const LabConfig& config, const VmConfig& vm) {
         throw Error("Agent inventory digest mismatch for VM " + vm.id);
     }
     const nlohmann::json inventory = load_json(path);
-    if (inventory.value("schema_version", 0) != 1 ||
+    if (inventory.value("schema_version", 0) != 2 ||
         inventory.value("lab_id", std::string{}) != config.lab_id ||
         inventory.value("vm_id", std::string{}) != vm.id ||
         inventory.value("hardware_id", std::string{}) !=

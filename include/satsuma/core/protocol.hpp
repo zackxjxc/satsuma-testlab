@@ -6,7 +6,7 @@
 
 namespace satsuma {
 
-inline constexpr int kRunManifestProtocolVersion = 3;        // 当前 VMCI 任务协议
+inline constexpr int kRunManifestProtocolVersion = 4;        // 当前 VMCI 任务协议
 inline constexpr std::size_t kMaxArtifactsPerRun = 256;      // 单次运行 Artifact 数量上限
 inline constexpr std::size_t kMaxStepsPerRun = 256;          // 主步骤或 finally 步骤数量上限
 inline constexpr std::size_t kMaxArgumentsPerStep = 256;     // 单步骤参数数量上限

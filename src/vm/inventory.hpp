@@ -16,7 +16,7 @@ namespace satsuma::vm {
 class InventoryPublisher {
 public:
     // 保存当前 Agent 身份以及本次启动标识。
-    InventoryPublisher(const AgentConfig& config, std::string boot_id);
+    explicit InventoryPublisher(const AgentConfig& config);
 
     // 身份绑定变化后更新发布配置并失效当前会话缓存。
     void update_config(const AgentConfig& config);
@@ -41,7 +41,6 @@ private:
     void publish(const nlohmann::json& inventory);
 
     AgentConfig config_;                    // 当前 Agent 配置快照
-    std::string boot_id_;                   // 本次 Agent 启动 ID
     std::optional<nlohmann::json> cache_;   // 当前会话内的有效快照
     std::string digest_;                    // 已发布文件 SHA-256
     std::string observed_at_;               // 当前快照采集时间

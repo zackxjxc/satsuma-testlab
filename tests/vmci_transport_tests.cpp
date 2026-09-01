@@ -178,7 +178,6 @@ int main() {
     satsuma::RunManifest manifest;
     manifest.lab_id = config.lab_id;
     manifest.run_id = "run_stale_cache";
-    manifest.request_id = "request_stale_cache";
     manifest.name = "stale cache boundary";
     manifest.created_at = satsuma::utc_timestamp();
     satsuma::TaskStep step;

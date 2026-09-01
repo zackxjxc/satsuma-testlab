@@ -565,7 +565,6 @@ nlohmann::json Diagnostics::run_probe(
                 const bool passed =
                     result.status == "exited" &&
                     result.exit_code == std::optional<std::uint32_t>(0) &&
-                    !result.timed_out &&
                     actual == expected;
                 agent["status"] = passed ? "passed" : "failed";
                 agent["execution_status"] = result.status;

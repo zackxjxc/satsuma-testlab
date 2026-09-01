@@ -3,8 +3,10 @@
 
 #include <algorithm>
 #include <cctype>
+#include <initializer_list>
 #include <limits>
 #include <string>
+#include <string_view>
 
 #include <nlohmann/json.hpp>
 
@@ -15,6 +17,22 @@
 
 namespace satsuma {
 namespace {
+
+// 拒绝拼写错误或无消费者的更新字段。
+void reject_unknown_fields(
+    const nlohmann::json& value,
+    const std::initializer_list<std::string_view> allowed_fields,
+    const std::string_view context) {
+    if (!value.is_object()) {
+        throw Error(std::string(context) + " must be an object");
+    }
+    for (auto field = value.cbegin(); field != value.cend(); ++field) {
+        if (std::find(allowed_fields.begin(), allowed_fields.end(), field.key()) ==
+            allowed_fields.end()) {
+            throw Error("Unknown field in " + std::string(context) + ": " + field.key());
+        }
+    }
+}
 
 // 读取非空必需字符串字段。
 [[nodiscard]] std::string required_string(
@@ -170,6 +188,11 @@ void to_json(nlohmann::json& value, const AgentUpdateManifest& manifest) {
 }
 
 void from_json(const nlohmann::json& value, AgentUpdateManifest& manifest) {
+    reject_unknown_fields(
+        value,
+        {"schema_version", "protocol_version", "type", "lab_id", "vm_id", "next_vm_id",
+         "update_id", "version", "binary", "size", "sha256", "created_at"},
+        "agent update manifest");
     manifest.schema_version = value.value("schema_version", 0);
     manifest.protocol_version = value.value("protocol_version", 0);
     manifest.type = required_string(value, "type");
@@ -204,6 +227,11 @@ void to_json(nlohmann::json& value, const AgentUpdateResult& result) {
 }
 
 void from_json(const nlohmann::json& value, AgentUpdateResult& result) {
+    reject_unknown_fields(
+        value,
+        {"schema_version", "update_id", "vm_id", "version", "status", "rollback_status",
+         "process_id", "error", "completed_at"},
+        "agent update result");
     result.schema_version = value.value("schema_version", 0);
     result.update_id = required_string(value, "update_id");
     result.vm_id = required_string(value, "vm_id");

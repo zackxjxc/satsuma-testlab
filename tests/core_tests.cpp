@@ -388,7 +388,6 @@ void test_protocol_round_trip() {
     satsuma::RunManifest manifest;
     manifest.lab_id = "test_lab";
     manifest.run_id = "run_1";
-    manifest.request_id = "request_1";
     manifest.name = "round-trip";
     manifest.created_at = "2026-07-23T00:00:00.000Z";
     manifest.artifacts.push_back({
@@ -411,6 +410,9 @@ void test_protocol_round_trip() {
         encoded.at("protocol_version") == satsuma::kRunManifestProtocolVersion,
         "run manifest did not use the current VMCI protocol");
     expect(
+        !encoded.contains("request_id"),
+        "run manifest retained the unused request_id field");
+    expect(
         encoded.at("steps").at(0).at("run_as") == "interactive_user",
         "run manifest did not serialize the execute identity");
     const satsuma::RunManifest decoded = encoded.get<satsuma::RunManifest>();
@@ -420,6 +422,13 @@ void test_protocol_round_trip() {
         decoded.steps.at(0).run_as == satsuma::TaskRunAs::InteractiveUser,
         "task run identity changed during JSON round trip");
     expect(decoded.steps.at(0).retry_safe, "task retry safety changed during JSON round trip");
+    nlohmann::json unknown_manifest_field = encoded;
+    unknown_manifest_field["unused"] = true;
+    expect_error(
+        [&unknown_manifest_field] {
+            static_cast<void>(unknown_manifest_field.get<satsuma::RunManifest>());
+        },
+        "run manifest silently ignored an unknown field");
 
     satsuma::ExecutionResult result;
     result.run_id = "run_1";
@@ -435,6 +444,9 @@ void test_protocol_round_trip() {
     result.started_at = "2026-07-23T00:00:00.000Z";
     result.finished_at = "2026-07-23T00:00:01.000Z";
     const nlohmann::json encoded_result = result;
+    expect(
+        !encoded_result.contains("timed_out"),
+        "execution result duplicated timeout status as a boolean");
     const satsuma::ExecutionResult decoded_result =
         encoded_result.get<satsuma::ExecutionResult>();
     expect(
@@ -468,9 +480,16 @@ void test_protocol_round_trip() {
             static_cast<void>(invalid_result.get<satsuma::ExecutionResult>());
         },
         "successful interactive result accepted a missing Session ID");
+    invalid_result = encoded_result;
+    invalid_result["unused"] = true;
+    expect_error(
+        [&invalid_result] {
+            static_cast<void>(invalid_result.get<satsuma::ExecutionResult>());
+        },
+        "execution result silently ignored an unknown field");
 }
 
-// 验证两种任务 Schema 的默认身份和运行清单门禁。
+// 验证当前任务 Schema 的默认身份和运行清单门禁。
 void test_task_run_as_protocol(const std::filesystem::path& root) {
     nlohmann::json execute_step = {
         {"id", "execute"},
@@ -479,7 +498,7 @@ void test_task_run_as_protocol(const std::filesystem::path& root) {
         {"program", "artifacts/vm_01/test.exe"},
     };
     nlohmann::json plan_value = {
-        {"schema_version", 1},
+        {"schema_version", 3},
         {"name", "run-as-policy"},
         {"steps", nlohmann::json::array({execute_step})},
     };
@@ -517,7 +536,6 @@ void test_task_run_as_protocol(const std::filesystem::path& root) {
     satsuma::RunManifest manifest;
     manifest.lab_id = "test_lab";
     manifest.run_id = "run_identity";
-    manifest.request_id = "request_identity";
     manifest.name = "identity-protocol";
     manifest.created_at = "2026-07-27T00:00:00.000Z";
     satsuma::TaskStep step;
@@ -559,13 +577,16 @@ void test_task_run_as_protocol(const std::filesystem::path& root) {
     expect(
         !encoded_echo.at("steps").at(0).contains("run_as"),
         "run manifest serialized run_as for an echo step");
+    expect(
+        !encoded_echo.at("steps").at(0).contains("timeout_seconds"),
+        "run manifest serialized an unused echo timeout");
     static_cast<void>(encoded_echo.get<satsuma::RunManifest>());
 }
 
-// 验证任务 schema 2 和运行清单 v3 的受控脚本协议。
+// 验证任务 schema 3 和运行清单 v4 的受控脚本协议。
 void test_script_step_protocol(const std::filesystem::path& root) {
     nlohmann::json plan_value = {
-        {"schema_version", 2},
+        {"schema_version", 3},
         {"name", "script-protocol"},
         {"artifacts", {{
             {"source", "C:/scripts/configure.ps1"},
@@ -587,34 +608,32 @@ void test_script_step_protocol(const std::filesystem::path& root) {
     satsuma::write_json_atomic(plan_path, plan_value);
     const satsuma::TaskPlan plan = satsuma::load_task_plan(plan_path);
     expect(
-        plan.schema_version == 2 &&
-            plan.steps.at(0).engine == satsuma::ScriptEngine::WindowsPowerShell &&
+        plan.steps.at(0).engine == satsuma::ScriptEngine::WindowsPowerShell &&
             plan.steps.at(0).script == L"artifacts/vm_01/configure.ps1" &&
             !plan.steps.at(0).retry_safe,
-        "task schema 2 script step changed during parsing");
+        "task schema 3 script step changed during parsing");
 
     satsuma::RunManifest manifest;
     manifest.lab_id = "test_lab";
     manifest.run_id = "run_script";
-    manifest.request_id = "request_script";
     manifest.name = "script-protocol";
     manifest.created_at = "2026-07-29T00:00:00.000Z";
     manifest.steps = plan.steps;
     const nlohmann::json encoded = manifest;
     expect(
-        encoded.at("protocol_version") == 3 &&
+        encoded.at("protocol_version") == satsuma::kRunManifestProtocolVersion &&
             encoded.at("steps").at(0).at("engine") == "windows_powershell",
-        "run manifest v3 did not serialize the script engine");
+        "current run manifest did not serialize the script engine");
     const satsuma::RunManifest decoded = encoded.get<satsuma::RunManifest>();
     expect(
         decoded.steps.at(0).arguments == plan.steps.at(0).arguments,
-        "run manifest v3 changed script arguments");
+        "current run manifest changed script arguments");
 
     plan_value["schema_version"] = 1;
     satsuma::write_json_atomic(plan_path, plan_value);
     expect_error(
         [&plan_path] { static_cast<void>(satsuma::load_task_plan(plan_path)); },
-        "task schema 1 accepted a script step");
+        "obsolete task schema was accepted");
 
     nlohmann::json obsolete_protocol = encoded;
     obsolete_protocol["protocol_version"] = 2;
@@ -626,7 +645,7 @@ void test_script_step_protocol(const std::filesystem::path& root) {
 // 验证任务生命周期策略解析和普通 run 的安全边界所需模型。
 void test_task_lifecycle_policy(const std::filesystem::path& root) {
     nlohmann::json value = {
-        {"schema_version", 1},
+        {"schema_version", 3},
         {"name", "lifecycle-policy"},
         {"steps", {{{"id", "execute"}, {"vm", "vm_01"}, {"type", "echo"}, {"message", "run"}}}},
         {"lifecycle", {
@@ -667,10 +686,10 @@ void test_task_lifecycle_policy(const std::filesystem::path& root) {
         "restore cleanup action accepted a missing snapshot");
 }
 
-// 验证任务 schema 2 的 Guest 与共享运行目录清理策略。
+// 验证当前任务 schema 的 Guest 与 Host 运行状态清理策略。
 void test_task_cleanup_policy(const std::filesystem::path& root) {
     nlohmann::json value = {
-        {"schema_version", 2},
+        {"schema_version", 3},
         {"name", "task-cleanup-policy"},
         {"steps", {{{"id", "echo"}, {"vm", "vm_01"}, {"type", "echo"}, {"message", "run"}}}},
         {"cleanup", {
@@ -693,13 +712,13 @@ void test_task_cleanup_policy(const std::filesystem::path& root) {
                 "archive_then_delete",
         "task cleanup policy names changed");
 
-    value["schema_version"] = 1;
+    value["schema_version"] = 2;
     satsuma::write_json_atomic(plan_path, value);
     expect_error(
         [&plan_path] { static_cast<void>(satsuma::load_task_plan(plan_path)); },
-        "task schema 1 accepted cleanup policies");
+        "obsolete task schema accepted cleanup policies");
 
-    value["schema_version"] = 2;
+    value["schema_version"] = 3;
     value["cleanup"]["guest_work"]["on_failure"] = "archive_then_delete";
     satsuma::write_json_atomic(plan_path, value);
     expect_error(
@@ -710,7 +729,7 @@ void test_task_cleanup_policy(const std::filesystem::path& root) {
 // 验证用户任务会尽早拒绝未知字段和 Windows 等价的重复收集路径。
 void test_task_input_validation(const std::filesystem::path& root) {
     const nlohmann::json plan = {
-        {"schema_version", 1},
+        {"schema_version", 3},
         {"name", "strict-task-input"},
         {"artifacts", {{
             {"source", "C:/fixture.exe"},
@@ -744,6 +763,15 @@ void test_task_input_validation(const std::filesystem::path& root) {
     invalid = plan;
     invalid["steps"][0]["run_ass"] = "interactive_user";
     expect_plan_rejected(invalid, "execute step accepted a misspelled run_as field");
+    invalid = plan;
+    invalid["steps"][0] = {
+        {"id", "echo"},
+        {"vm", "vm_01"},
+        {"type", "echo"},
+        {"message", "probe"},
+        {"timeout_seconds", 1},
+    };
+    expect_plan_rejected(invalid, "echo step accepted an unused timeout field");
     invalid = plan;
     invalid["steps"][0]["collect_files"] = {
         "output/result.json",
@@ -784,6 +812,13 @@ void test_run_lifecycle(const std::filesystem::path& root) {
     const satsuma::RunLifecycleState loaded = satsuma::load_run_lifecycle_state(state_path);
     expect(loaded.phase == satsuma::RunPhase::StartingVm, "persisted lifecycle phase changed");
     expect(loaded.sequence == 2 && loaded.transitions.size() == 2, "lifecycle history was not preserved");
+    nlohmann::json unknown_lifecycle_field = loaded;
+    unknown_lifecycle_field["unused"] = true;
+    expect_error(
+        [&unknown_lifecycle_field] {
+            static_cast<void>(unknown_lifecycle_field.get<satsuma::RunLifecycleState>());
+        },
+        "run lifecycle state silently ignored an unknown field");
     expect_error(
         [&state] {
             satsuma::apply_run_transition(
@@ -891,6 +926,13 @@ void test_claim_recovery_decision(const std::filesystem::path& root) {
             static_cast<void>(obsolete.get<satsuma::StepClaimLease>());
         },
         "obsolete claim schema was accepted");
+    nlohmann::json unknown_claim_field = safe;
+    unknown_claim_field["unused"] = true;
+    expect_error(
+        [&unknown_claim_field] {
+            static_cast<void>(unknown_claim_field.get<satsuma::StepClaimLease>());
+        },
+        "step claim silently ignored an unknown field");
 }
 
 // 验证独立更新清单和终态结果的严格协议。
@@ -933,6 +975,11 @@ void test_agent_update_protocol(const std::filesystem::path& root) {
     expect_error(
         [&invalid] { static_cast<void>(invalid.get<satsuma::AgentUpdateManifest>()); },
         "invalid update hash was accepted");
+    invalid = encoded;
+    invalid["unused"] = true;
+    expect_error(
+        [&invalid] { static_cast<void>(invalid.get<satsuma::AgentUpdateManifest>()); },
+        "update manifest silently ignored an unknown field");
     invalid = encoded;
     invalid["binary"] = "nested/SatsumaVM.exe";
     expect_error(
@@ -978,6 +1025,13 @@ void test_agent_update_protocol(const std::filesystem::path& root) {
             static_cast<void>(invalid_result.get<satsuma::AgentUpdateResult>());
         },
         "successful update without a PID was accepted");
+    invalid_result = result;
+    invalid_result["unused"] = true;
+    expect_error(
+        [&invalid_result] {
+            static_cast<void>(invalid_result.get<satsuma::AgentUpdateResult>());
+        },
+        "update result silently ignored an unknown field");
 }
 
 // 验证 CreateProcessW 参数引用和结尾反斜杠处理。

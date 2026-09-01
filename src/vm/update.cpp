@@ -230,7 +230,7 @@ void remove_service_presence(const AgentConfig& config) {
     const std::string& update_id) {
     try {
         const nlohmann::json presence = load_json(presence_path);
-        return presence.value("schema_version", 0) == 1 &&
+        return presence.value("schema_version", 0) == 2 &&
                presence.value("protocol_version", 0) == config.protocol_version &&
                presence.value("lab_id", std::string{}) == config.lab_id &&
                presence.value("vm_id", std::string{}) == config.vm_id &&

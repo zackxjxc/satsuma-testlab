@@ -1,6 +1,6 @@
 {
   "$schema": "../schemas/task.schema.json",
-  "schema_version": 1,
+  "schema_version": 3,
   "name": "hello-vm",
   "artifacts": [],
   "steps": [
@@ -8,8 +8,7 @@
       "id": "hello_vm_01",
       "vm": "vm_01",
       "type": "echo",
-      "message": "hello from Satsuma",
-      "timeout_seconds": 10
+      "message": "hello from Satsuma"
     }
   ]
 }

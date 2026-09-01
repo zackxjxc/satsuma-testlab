@@ -1,6 +1,6 @@
 {
   "$schema": "../schemas/task.schema.json",
-  "schema_version": 2,
+  "schema_version": 3,
   "name": "two VM lifecycle smoke",
   "run_id": "replace_with_unique_run_id",
   "artifacts": [],
@@ -34,8 +34,7 @@
         "id": "final_probe",
         "vm": "vm_02",
         "type": "echo",
-        "message": "lifecycle cleanup probe",
-        "timeout_seconds": 10
+        "message": "lifecycle cleanup probe"
       }
     ]
   },
@@ -44,15 +43,13 @@
       "id": "vm_02_ready",
       "vm": "vm_02",
       "type": "echo",
-      "message": "vm_02 ready",
-      "timeout_seconds": 10
+      "message": "vm_02 ready"
     },
     {
       "id": "vm_01_ready",
       "vm": "vm_01",
       "type": "echo",
-      "message": "vm_01 ready",
-      "timeout_seconds": 10
+      "message": "vm_01 ready"
     }
   ]
 }

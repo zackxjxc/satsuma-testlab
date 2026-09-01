@@ -7,7 +7,7 @@
   "required": ["schema_version", "name", "steps"],
   "properties": {
     "$schema": {"type": "string"},
-    "schema_version": {"enum": [1, 2]},
+    "schema_version": {"const": 3},
     "name": {"type": "string", "minLength": 1},
     "run_id": {"$ref": "#/$defs/identifier"},
     "artifacts": {
@@ -70,10 +70,6 @@
     {
       "if": {"required": ["lifecycle"]},
       "then": {"required": ["run_id"]}
-    },
-    {
-      "if": {"required": ["cleanup"]},
-      "then": {"properties": {"schema_version": {"const": 2}}}
     }
   ],
   "$defs": {
@@ -163,8 +159,7 @@
             "vm": {"$ref": "#/$defs/identifier"},
             "type": {"const": "echo"},
             "message": {"type": "string", "minLength": 1},
-            "retry_safe": {"type": "boolean"},
-            "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 86400}
+            "retry_safe": {"type": "boolean"}
           }
         }
       ]

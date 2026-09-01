@@ -5,15 +5,14 @@
   "type": "object",
   "additionalProperties": false,
   "required": [
-    "schema_version", "lab_id", "vm_id", "hardware_id", "boot_id", "observed_at",
+    "schema_version", "lab_id", "vm_id", "hardware_id", "observed_at",
     "os", "script_engines", "drives", "memory"
   ],
   "properties": {
-    "schema_version": {"const": 1},
+    "schema_version": {"const": 2},
     "lab_id": {"$ref": "#/$defs/identifier"},
     "vm_id": {"$ref": "#/$defs/identifier"},
     "hardware_id": {"type": "string", "minLength": 1},
-    "boot_id": {"$ref": "#/$defs/identifier"},
     "observed_at": {"type": "string", "format": "date-time"},
     "refresh_request_id": {"$ref": "#/$defs/identifier"},
     "os": {

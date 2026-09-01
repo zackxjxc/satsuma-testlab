@@ -1,7 +1,10 @@
 // Satsuma Host 运行生命周期状态和原子持久化实现。
 #include "satsuma/core/lifecycle.hpp"
 
+#include <algorithm>
 #include <array>
+#include <initializer_list>
+#include <string_view>
 #include <utility>
 
 #include <nlohmann/json.hpp>
@@ -12,6 +15,22 @@
 
 namespace satsuma {
 namespace {
+
+// 持久化状态与公开 Schema 一样拒绝未知字段。
+void reject_unknown_fields(
+    const nlohmann::json& value,
+    const std::initializer_list<std::string_view> allowed_fields,
+    const std::string_view context) {
+    if (!value.is_object()) {
+        throw Error(std::string(context) + " must be an object");
+    }
+    for (auto field = value.cbegin(); field != value.cend(); ++field) {
+        if (std::find(allowed_fields.begin(), allowed_fields.end(), field.key()) ==
+            allowed_fields.end()) {
+            throw Error("Unknown field in " + std::string(context) + ": " + field.key());
+        }
+    }
+}
 
 // 判断指定状态迁移是否属于已定义的生命周期图。
 [[nodiscard]] bool is_allowed_transition(const RunPhase from, const RunPhase to) noexcept {
@@ -208,6 +227,10 @@ void to_json(nlohmann::json& value, const RunLifecycleState& state) {
 }
 
 void from_json(const nlohmann::json& value, RunLifecycleState& state) {
+    reject_unknown_fields(
+        value,
+        {"schema_version", "run_id", "phase", "sequence", "updated_at", "transitions"},
+        "run lifecycle state");
     state.schema_version = value.value("schema_version", 0);
     state.run_id = value.at("run_id").get<std::string>();
     state.phase = parse_run_phase(value.at("phase").get<std::string>());
@@ -215,12 +238,16 @@ void from_json(const nlohmann::json& value, RunLifecycleState& state) {
     state.updated_at = value.at("updated_at").get<std::string>();
     state.transitions.clear();
     for (const auto& transition_value : value.at("transitions")) {
+        reject_unknown_fields(
+            transition_value,
+            {"sequence", "from", "to", "occurred_at", "message"},
+            "run lifecycle transition");
         state.transitions.push_back({
             transition_value.at("sequence").get<std::uint64_t>(),
             parse_run_phase(transition_value.at("from").get<std::string>()),
             parse_run_phase(transition_value.at("to").get<std::string>()),
             transition_value.at("occurred_at").get<std::string>(),
-            transition_value.value("message", ""),
+            transition_value.at("message").get<std::string>(),
         });
     }
     validate_lifecycle_state(state);

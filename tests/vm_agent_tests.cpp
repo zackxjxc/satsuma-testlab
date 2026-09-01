@@ -63,7 +63,6 @@ void write_echo_run(const std::filesystem::path& mirror_root) {
     satsuma::RunManifest manifest;
     manifest.lab_id = "vm_agent_test";
     manifest.run_id = "run_file_success";
-    manifest.request_id = "request_file_success";
     manifest.name = "local-mirror-success";
     manifest.created_at = satsuma::utc_timestamp();
     satsuma::TaskStep step;
@@ -90,7 +89,6 @@ void write_cancellable_run(
     satsuma::RunManifest manifest;
     manifest.lab_id = "vm_agent_test";
     manifest.run_id = "run_stop_execution";
-    manifest.request_id = "request_stop_execution";
     manifest.name = "agent-stop-execution";
     manifest.created_at = satsuma::utc_timestamp();
     manifest.artifacts.push_back({
@@ -132,7 +130,6 @@ void write_interactive_run(
     satsuma::RunManifest manifest;
     manifest.lab_id = "vm_agent_test";
     manifest.run_id = run_id;
-    manifest.request_id = satsuma::make_id("request");
     manifest.name = "interactive-user-execution";
     manifest.created_at = satsuma::utc_timestamp();
     manifest.artifacts.push_back({
@@ -193,7 +190,6 @@ void write_powershell_run(const std::filesystem::path& mirror_root) {
     satsuma::RunManifest manifest;
     manifest.lab_id = "vm_agent_test";
     manifest.run_id = "run_powershell_script";
-    manifest.request_id = "request_powershell_script";
     manifest.name = "powershell-script";
     manifest.created_at = satsuma::utc_timestamp();
     manifest.artifacts.push_back({
@@ -231,7 +227,6 @@ void write_cmd_run(const std::filesystem::path& mirror_root) {
     satsuma::RunManifest manifest;
     manifest.lab_id = "vm_agent_test";
     manifest.run_id = "run_cmd_script";
-    manifest.request_id = "request_cmd_script";
     manifest.name = "cmd-script";
     manifest.created_at = satsuma::utc_timestamp();
     manifest.artifacts.push_back({
@@ -397,7 +392,7 @@ void test_file_watch_and_agent_stop(
     expect(stopped.status == "failed", "Agent stop did not mark the step as failed");
     expect(stopped.run_as == satsuma::TaskRunAs::System,
         "default execute step did not retain the SYSTEM identity");
-    expect(!stopped.timed_out, "Agent stop was incorrectly recorded as a timeout");
+    expect(stopped.status != "timed_out", "Agent stop was incorrectly recorded as a timeout");
     expect(stopped.error == "Agent stop requested", "Agent stop did not preserve the stable error text");
 }
 
@@ -477,14 +472,14 @@ void test_inventory_cache_and_refresh(const std::filesystem::path& root) {
     config.lab_id = "vm_agent_test";
     config.vm_id = "vm_01";
     config.mirror_root = root / L"inventory-mirror";
-    satsuma::vm::InventoryPublisher publisher(config, "boot_inventory_test");
+    satsuma::vm::InventoryPublisher publisher(config);
     publisher.synchronize();
 
     const std::filesystem::path inventory_path =
         config.mirror_root / L"agents" / L"vm_01.inventory.json";
     const nlohmann::json original = satsuma::load_json(inventory_path);
     const std::string original_digest = publisher.digest();
-    satsuma::vm::InventoryPublisher restarted(config, "boot_inventory_restart");
+    satsuma::vm::InventoryPublisher restarted(config);
     restarted.synchronize();
     expect(
         satsuma::load_json(inventory_path) == original &&

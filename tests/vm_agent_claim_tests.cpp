@@ -96,7 +96,6 @@ void write_execute_run(
     satsuma::RunManifest manifest;
     manifest.lab_id = "vm_agent_claim_test";
     manifest.run_id = run_id;
-    manifest.request_id = satsuma::make_id("request");
     manifest.name = "active-claim-renewal";
     manifest.created_at = satsuma::utc_timestamp();
     manifest.artifacts.push_back({
@@ -138,7 +137,6 @@ void write_echo_run(
     satsuma::RunManifest manifest;
     manifest.lab_id = "vm_agent_claim_test";
     manifest.run_id = run_id;
-    manifest.request_id = satsuma::make_id("request");
     manifest.name = "concurrent-claim";
     manifest.created_at = satsuma::utc_timestamp();
     satsuma::TaskStep step;

@@ -21,7 +21,7 @@ claim、结果或生命周期状态。
 `config/agent.template.json` 和对应 Schema。项目发行物定义所需字段和目录结构；自动化助手只负责读取本机
 可确认信息、列出缺失项并生成配置，用户负责选择和确认 VM、基础快照、Host 状态根以及管理员操作。
 
-自动化助手必须先做只读发现，不得猜测 VMX、快照名、Guest 共享路径或 VM 身份。确认后生成：
+自动化助手必须先做只读发现，不得猜测 VMX、快照名、Guest 存储路径或 VM 身份。确认后生成：
 
 - 一份 `config/lab.local.json`；
 - 一份可供所有 VM 使用的 `config/agent.json`；
@@ -55,7 +55,7 @@ bin\SatsumaHost.exe orchestrate --config config\lab.local.json --plan task.json 
 - 每个 `execute.program` 必须匹配同一 VM 的 Artifact `destination`。
 - 每个 `script.script` 必须匹配同一 VM 的脚本 Artifact；只允许 `cmd`、`windows_powershell` 和 `pwsh`。
 - Artifact `source` 使用 Host 绝对路径；目标只放在 `artifacts/` 下。
-- 所有步骤给出有限 `timeout_seconds`。不要用无限等待模拟服务常驻。
+- 所有 `execute`/`script` 步骤给出有限 `timeout_seconds`。不要用无限等待模拟服务常驻。
 - **`run_as` 必须逐步骤选择，不得不加判断地默认使用 `system`。** 你在代表用户执行任务，不是在
 |  安装驱动或管理系统服务——选择原则见下方的「运行身份选择」。
 - 默认 `retry_safe=false`。只有重复执行不会造成额外副作用时才设为 `true`。
