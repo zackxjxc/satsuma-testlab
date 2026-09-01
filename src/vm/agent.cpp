@@ -290,6 +290,22 @@ void process_guest_cleanup_request(
 
 }  // namespace
 
+// 单步骤从 Guest 本地执行到 Host 规范发布共享的显式工作区。
+struct Agent::ExecutionWorkspace {
+    std::filesystem::path result_directory;
+    std::filesystem::path job_directory;
+    std::filesystem::path stdout_staged;
+    std::filesystem::path stderr_staged;
+    std::filesystem::path stdout_final;
+    std::filesystem::path stderr_final;
+    std::filesystem::path local_run_directory;
+    std::filesystem::path local_job_directory;
+    std::filesystem::path stdout_local;
+    std::filesystem::path stderr_local;
+    std::vector<StepResultEvidenceFile> evidence_files;
+    ExecutionResult result;
+};
+
 Agent::Agent(
     AgentConfig config,
     std::filesystem::path helper_executable,
@@ -666,6 +682,215 @@ void Agent::deploy_artifacts(
     }
 }
 
+void Agent::execute_step_payload(
+    const std::filesystem::path& run_directory,
+    const RunManifest& manifest,
+    const TaskStep& step,
+    const StepClaimLease& claim,
+    const std::stop_token stop_token,
+    ExecutionWorkspace& workspace) {
+    throw_if_stop_requested(stop_token);
+    const auto start_time = std::chrono::steady_clock::now();
+    std::filesystem::create_directories(workspace.local_job_directory);
+    if (step.type == "echo") {
+        write_text(workspace.stdout_local, step.message + "\n");
+        write_text(workspace.stderr_local, "");
+        workspace.result.exit_code = 0;
+        workspace.result.duration_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - start_time).count();
+        workspace.result.status = "exited";
+        return;
+    }
+
+    const std::filesystem::path& executable_artifact = step.type == "script"
+        ? step.script
+        : step.program;
+    if (find_artifact(manifest, config_.vm_id, executable_artifact) == nullptr) {
+        throw Error(
+            "Executable file is not a registered Artifact: " +
+            path_to_utf8(executable_artifact));
+    }
+
+    std::optional<InteractiveUserSession> interactive_session;
+    if (step.run_as == TaskRunAs::InteractiveUser) {
+        interactive_session.emplace(InteractiveUserSession::acquire(
+            config_.lab_id,
+            manifest.run_id,
+            config_.local_work_root,
+            config_.vm_id));
+        workspace.local_run_directory = interactive_session->working_directory();
+        workspace.local_job_directory = resolve_under_root(
+            workspace.local_run_directory,
+            std::filesystem::path(L".satsuma") / L"jobs" / path_from_utf8(claim.job_id));
+        std::filesystem::create_directories(workspace.local_job_directory);
+        workspace.stdout_local = workspace.local_job_directory / L"stdout.log.partial";
+        workspace.stderr_local = workspace.local_job_directory / L"stderr.log.partial";
+        workspace.result.interactive_session_id = interactive_session->session_id();
+    } else {
+        std::filesystem::create_directories(workspace.local_run_directory);
+    }
+    deploy_artifacts(
+        run_directory,
+        workspace.local_run_directory,
+        manifest,
+        stop_token,
+        interactive_session ? &*interactive_session : nullptr);
+
+    ProcessRequest request;
+    if (step.type == "script") {
+        inventory_.synchronize();
+        request.program = inventory_.script_engine_path(script_engine_name(step.engine));
+        const std::string script_path = path_to_utf8(
+            resolve_under_root(workspace.local_run_directory, step.script));
+        if (step.engine == ScriptEngine::Cmd) {
+            std::string command = "\"" + escape_cmd_token(script_path);
+            for (const std::string& argument : step.arguments) {
+                command += " " + escape_cmd_token(argument);
+            }
+            command.push_back('"');
+            request.arguments = {"/D", "/Q", "/V:OFF", "/S", "/C", command};
+            request.verbatim_arguments = true;
+            request.environment_overrides["SATSUMA_CMD_PERCENT"] = "%";
+        } else if (step.engine == ScriptEngine::WindowsPowerShell) {
+            request.arguments = {
+                "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+                "-File", script_path,
+            };
+        } else {
+            request.arguments = {
+                "-NoLogo", "-NoProfile", "-NonInteractive", "-File", script_path,
+            };
+        }
+        if (step.engine != ScriptEngine::Cmd) {
+            request.arguments.insert(
+                request.arguments.end(),
+                step.arguments.begin(),
+                step.arguments.end());
+        }
+    } else {
+        request.program = resolve_under_root(workspace.local_run_directory, step.program);
+        request.arguments = step.arguments;
+    }
+    request.working_directory = workspace.local_run_directory;
+    request.stdout_path = workspace.stdout_local;
+    request.stderr_path = workspace.stderr_local;
+    request.timeout = std::chrono::seconds(step.timeout_seconds);
+    request.max_output_bytes = kDefaultMaxOutputBytes;
+    request.stop_token = stop_token;
+    const ProcessResult process_result = interactive_session
+        ? interactive_session->run(helper_executable_, request)
+        : runner_.run(request);
+    throw_if_stop_requested(stop_token);
+    workspace.result.exit_code = process_result.exit_code;
+    workspace.result.duration_ms = process_result.duration_ms;
+    if (process_result.output_limit_exceeded) {
+        throw Error("Process output exceeded the 64 MiB limit");
+    }
+
+    std::uintmax_t collected_total_bytes = 0;
+    for (const auto& collect_file : step.collect_files) {
+        throw_if_stop_requested(stop_token);
+        const std::filesystem::path source = resolve_under_root(
+            workspace.local_run_directory,
+            collect_file);
+        if (!std::filesystem::is_regular_file(source)) {
+            throw Error("Declared result file does not exist: " + path_to_utf8(collect_file));
+        }
+        const std::uintmax_t collected_size = std::filesystem::file_size(source);
+        if (collected_size > kMaxCollectedFileBytes ||
+            collected_total_bytes > kMaxCollectedTotalBytes - collected_size) {
+            throw Error("Declared result files exceed the collection size limit");
+        }
+        collected_total_bytes += collected_size;
+        const std::filesystem::path staged_destination = resolve_under_root(
+            workspace.job_directory,
+            std::filesystem::path(L"files") / collect_file);
+        const std::filesystem::path canonical_destination = resolve_under_root(
+            workspace.result_directory,
+            std::filesystem::path(L"files") / collect_file);
+        std::filesystem::create_directories(staged_destination.parent_path());
+        std::filesystem::create_directories(canonical_destination.parent_path());
+        std::filesystem::copy_file(
+            source,
+            staged_destination,
+            std::filesystem::copy_options::overwrite_existing);
+        workspace.result.files.push_back({
+            path_to_utf8(std::filesystem::relative(canonical_destination, run_directory)),
+            sha256_file(staged_destination),
+        });
+        workspace.evidence_files.push_back({staged_destination, canonical_destination});
+    }
+    workspace.result.status = process_result.timed_out ? "timed_out" : "exited";
+}
+
+void Agent::publish_step_execution(
+    const std::filesystem::path& run_directory,
+    const std::filesystem::path& claim_path,
+    const StepClaimLease& claim,
+    const std::stop_token lease_loss_token,
+    ClaimRenewalSession& renewal_session,
+    ExecutionWorkspace& workspace) {
+    stage_local_log(
+        workspace.stdout_local,
+        workspace.stdout_staged,
+        workspace.result);
+    stage_local_log(
+        workspace.stderr_local,
+        workspace.stderr_staged,
+        workspace.result);
+    workspace.evidence_files.insert(
+        workspace.evidence_files.begin(),
+        {
+            {workspace.stdout_staged, workspace.stdout_final},
+            {workspace.stderr_staged, workspace.stderr_final},
+        });
+    workspace.result.finished_at = utc_timestamp();
+
+    if (lease_loss_token.stop_requested()) {
+        renewal_session.finish();
+        write_stale_result_best_effort(
+            workspace.job_directory,
+            workspace.result,
+            "ownership_lost",
+            renewal_session.loss_reason());
+        return;
+    }
+
+    const StepResultPublishStatus publish_status = runtime_options_.result_publish_operation
+        ? runtime_options_.result_publish_operation(
+            claim_path,
+            claim,
+            workspace.result_directory / L"execution.json",
+            workspace.result,
+            workspace.evidence_files)
+        : publish_step_result_if_owned(
+            claim_path,
+            claim,
+            workspace.result_directory / L"execution.json",
+            workspace.result,
+            workspace.evidence_files);
+    renewal_session.finish();
+    if (publish_status != StepResultPublishStatus::Published) {
+        const std::string claim_status = publish_status == StepResultPublishStatus::LeaseExpired
+            ? "lease_expired"
+            : "ownership_lost";
+        write_stale_result_best_effort(
+            workspace.job_directory,
+            workspace.result,
+            claim_status,
+            renewal_session.loss_reason());
+        return;
+    }
+    if (vmci_channel_) {
+        write_text(workspace.result_directory / L".vmci-complete", "completed\n");
+    }
+
+    std::error_code cleanup_error;
+    std::filesystem::remove_all(workspace.job_directory, cleanup_error);
+    std::filesystem::remove_all(workspace.local_job_directory, cleanup_error);
+    write_state(run_directory, "idle", "");
+}
+
 void Agent::execute_step(
     const std::filesystem::path& run_directory,
     const RunManifest& manifest,
@@ -714,232 +939,62 @@ void Agent::execute_step(
             }
         });
 
-    const std::filesystem::path result_directory = resolve_under_root(
+    ExecutionWorkspace workspace;
+    workspace.result_directory = resolve_under_root(
         run_directory,
         std::filesystem::path(L"results") / path_from_utf8(config_.vm_id) / path_from_utf8(step.id));
-    std::filesystem::create_directories(result_directory);
+    std::filesystem::create_directories(workspace.result_directory);
 
-    const std::filesystem::path job_directory = resolve_under_root(
-        result_directory,
+    workspace.job_directory = resolve_under_root(
+        workspace.result_directory,
         std::filesystem::path(L".jobs") / path_from_utf8(claim.job_id));
-    std::filesystem::create_directories(job_directory);
+    std::filesystem::create_directories(workspace.job_directory);
 
-    const std::filesystem::path stdout_staged = job_directory / L"stdout.log";
-    const std::filesystem::path stderr_staged = job_directory / L"stderr.log";
-    const std::filesystem::path stdout_final = result_directory / L"stdout.log";
-    const std::filesystem::path stderr_final = result_directory / L"stderr.log";
-    std::filesystem::path local_run_directory = resolve_local_run_directory(config_, manifest.run_id);
-    std::filesystem::path local_job_directory = resolve_under_root(
-        local_run_directory,
+    workspace.stdout_staged = workspace.job_directory / L"stdout.log";
+    workspace.stderr_staged = workspace.job_directory / L"stderr.log";
+    workspace.stdout_final = workspace.result_directory / L"stdout.log";
+    workspace.stderr_final = workspace.result_directory / L"stderr.log";
+    workspace.local_run_directory = resolve_local_run_directory(config_, manifest.run_id);
+    workspace.local_job_directory = resolve_under_root(
+        workspace.local_run_directory,
         std::filesystem::path(L".satsuma") / L"jobs" / path_from_utf8(claim.job_id));
-    std::filesystem::path stdout_local = local_job_directory / L"stdout.log.partial";
-    std::filesystem::path stderr_local = local_job_directory / L"stderr.log.partial";
-    std::vector<StepResultEvidenceFile> evidence_files; // 锁内发布的暂存文件映射
+    workspace.stdout_local = workspace.local_job_directory / L"stdout.log.partial";
+    workspace.stderr_local = workspace.local_job_directory / L"stderr.log.partial";
 
-    ExecutionResult result;
-    result.run_id = manifest.run_id;
-    result.vm_id = config_.vm_id;
-    result.job_id = claim.job_id;
-    result.step_id = step.id;
-    result.run_as = step.run_as;
-    result.started_at = utc_timestamp();
-    result.stdout_path = path_to_utf8(std::filesystem::relative(stdout_final, run_directory));
-    result.stderr_path = path_to_utf8(std::filesystem::relative(stderr_final, run_directory));
-    bool process_timed_out = false;
+    workspace.result.run_id = manifest.run_id;
+    workspace.result.vm_id = config_.vm_id;
+    workspace.result.job_id = claim.job_id;
+    workspace.result.step_id = step.id;
+    workspace.result.run_as = step.run_as;
+    workspace.result.started_at = utc_timestamp();
+    workspace.result.stdout_path = path_to_utf8(
+        std::filesystem::relative(workspace.stdout_final, run_directory));
+    workspace.result.stderr_path = path_to_utf8(
+        std::filesystem::relative(workspace.stderr_final, run_directory));
     write_state(run_directory, "running", claim.job_id);
 
     try {
-        throw_if_stop_requested(execution_stop_token);
-        const auto start_time = std::chrono::steady_clock::now();
-        std::filesystem::create_directories(local_job_directory);
-        if (step.type == "echo") {
-            write_text(stdout_local, step.message + "\n");
-            write_text(stderr_local, "");
-            result.exit_code = 0;
-            result.duration_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                std::chrono::steady_clock::now() - start_time).count();
-        } else {
-            const std::filesystem::path& executable_artifact = step.type == "script"
-                ? step.script
-                : step.program;
-            if (find_artifact(manifest, config_.vm_id, executable_artifact) == nullptr) {
-                throw Error("Executable file is not a registered Artifact: " +
-                    path_to_utf8(executable_artifact));
-            }
-
-            std::optional<InteractiveUserSession> interactive_session;
-            if (step.run_as == TaskRunAs::InteractiveUser) {
-                interactive_session.emplace(
-                    InteractiveUserSession::acquire(
-                        config_.lab_id,
-                        manifest.run_id,
-                        config_.local_work_root,
-                        config_.vm_id));
-                local_run_directory = interactive_session->working_directory();
-                local_job_directory = resolve_under_root(
-                    local_run_directory,
-                    std::filesystem::path(L".satsuma") / L"jobs" /
-                        path_from_utf8(claim.job_id));
-                std::filesystem::create_directories(local_job_directory);
-                stdout_local = local_job_directory / L"stdout.log.partial";
-                stderr_local = local_job_directory / L"stderr.log.partial";
-                result.interactive_session_id = interactive_session->session_id();
-            } else {
-                std::filesystem::create_directories(local_run_directory);
-            }
-            deploy_artifacts(
-                run_directory,
-                local_run_directory,
-                manifest,
-                execution_stop_token,
-                interactive_session ? &*interactive_session : nullptr);
-
-            ProcessRequest request;
-            if (step.type == "script") {
-                inventory_.synchronize();
-                request.program = inventory_.script_engine_path(script_engine_name(step.engine));
-                const std::string script_path = path_to_utf8(
-                    resolve_under_root(local_run_directory, step.script));
-                if (step.engine == ScriptEngine::Cmd) {
-                    std::string command = "\"" + escape_cmd_token(script_path);
-                    for (const std::string& argument : step.arguments) {
-                        command += " " + escape_cmd_token(argument);
-                    }
-                    command.push_back('"');
-                    request.arguments = {"/D", "/Q", "/V:OFF", "/S", "/C", command};
-                    request.verbatim_arguments = true;
-                    request.environment_overrides["SATSUMA_CMD_PERCENT"] = "%";
-                } else if (step.engine == ScriptEngine::WindowsPowerShell) {
-                    request.arguments = {
-                        "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
-                        "-File", script_path,
-                    };
-                } else {
-                    request.arguments = {
-                        "-NoLogo", "-NoProfile", "-NonInteractive", "-File", script_path,
-                    };
-                }
-                if (step.engine == ScriptEngine::Cmd) {
-                    // CMD 参数已经作为一个带外层引号的 /S /C 命令构造完毕。
-                } else {
-                    request.arguments.insert(
-                        request.arguments.end(), step.arguments.begin(), step.arguments.end());
-                }
-            } else {
-                request.program = resolve_under_root(local_run_directory, step.program);
-                request.arguments = step.arguments;
-            }
-            request.working_directory = local_run_directory;
-            request.stdout_path = stdout_local;
-            request.stderr_path = stderr_local;
-            request.timeout = std::chrono::seconds(step.timeout_seconds);
-            request.max_output_bytes = kDefaultMaxOutputBytes;
-            request.stop_token = execution_stop_token;
-            const ProcessResult process_result = interactive_session
-                ? interactive_session->run(helper_executable_, request)
-                : runner_.run(request);
-            throw_if_stop_requested(execution_stop_token);
-            result.exit_code = process_result.exit_code;
-            process_timed_out = process_result.timed_out;
-            result.duration_ms = process_result.duration_ms;
-            if (process_result.output_limit_exceeded) {
-                throw Error("Process output exceeded the 64 MiB limit");
-            }
-
-            std::uintmax_t collected_total_bytes = 0;
-            for (const auto& collect_file : step.collect_files) {
-                throw_if_stop_requested(execution_stop_token);
-                const std::filesystem::path source = resolve_under_root(local_run_directory, collect_file);
-                if (!std::filesystem::is_regular_file(source)) {
-                    throw Error("Declared result file does not exist: " + path_to_utf8(collect_file));
-                }
-                const std::uintmax_t collected_size = std::filesystem::file_size(source);
-                if (collected_size > kMaxCollectedFileBytes ||
-                    collected_total_bytes > kMaxCollectedTotalBytes - collected_size) {
-                    throw Error("Declared result files exceed the collection size limit");
-                }
-                collected_total_bytes += collected_size;
-                const std::filesystem::path staged_destination = resolve_under_root(
-                    job_directory,
-                    std::filesystem::path(L"files") / collect_file);
-                const std::filesystem::path canonical_destination = resolve_under_root(
-                    result_directory,
-                    std::filesystem::path(L"files") / collect_file);
-                std::filesystem::create_directories(staged_destination.parent_path());
-                std::filesystem::create_directories(canonical_destination.parent_path());
-                std::filesystem::copy_file(
-                    source,
-                    staged_destination,
-                    std::filesystem::copy_options::overwrite_existing);
-                result.files.push_back({
-                    path_to_utf8(std::filesystem::relative(canonical_destination, run_directory)),
-                    sha256_file(staged_destination),
-                });
-                evidence_files.push_back({staged_destination, canonical_destination});
-            }
-        }
-
-        result.status = process_timed_out ? "timed_out" : "exited";
+        execute_step_payload(
+            run_directory,
+            manifest,
+            step,
+            claim,
+            execution_stop_token,
+            workspace);
     } catch (const std::exception& error) {
-        result.status = "failed";
-        result.error = std::filesystem::is_regular_file(cancellation_path)
+        workspace.result.status = "failed";
+        workspace.result.error = std::filesystem::is_regular_file(cancellation_path)
             ? "Run cancellation requested"
             : error.what();
     }
 
-    stage_local_log(stdout_local, stdout_staged, result);
-    stage_local_log(stderr_local, stderr_staged, result);
-    evidence_files.insert(
-        evidence_files.begin(),
-        {
-            {stdout_staged, stdout_final},
-            {stderr_staged, stderr_final},
-        });
-    result.finished_at = utc_timestamp();
-
-    if (lease_loss_token.stop_requested()) {
-        renewal_session.finish();
-        write_stale_result_best_effort(
-            job_directory,
-            result,
-            "ownership_lost",
-            renewal_session.loss_reason());
-        return;
-    }
-
-    const StepResultPublishStatus publish_status = runtime_options_.result_publish_operation
-        ? runtime_options_.result_publish_operation(
-            claim_path,
-            claim,
-            result_directory / L"execution.json",
-            result,
-            evidence_files)
-        : publish_step_result_if_owned(
-            claim_path,
-            claim,
-            result_directory / L"execution.json",
-            result,
-            evidence_files);
-    renewal_session.finish();
-    if (publish_status != StepResultPublishStatus::Published) {
-        const std::string claim_status = publish_status == StepResultPublishStatus::LeaseExpired
-            ? "lease_expired"
-            : "ownership_lost";
-        write_stale_result_best_effort(
-            job_directory,
-            result,
-            claim_status,
-            renewal_session.loss_reason());
-        return;
-    }
-    if (vmci_channel_) {
-        write_text(result_directory / L".vmci-complete", "completed\n");
-    }
-
-    std::error_code cleanup_error;
-    std::filesystem::remove_all(job_directory, cleanup_error);
-    std::filesystem::remove_all(local_job_directory, cleanup_error);
-    write_state(run_directory, "idle", "");
+    publish_step_execution(
+        run_directory,
+        claim_path,
+        claim,
+        lease_loss_token,
+        renewal_session,
+        workspace);
 }
 
 void Agent::write_state(

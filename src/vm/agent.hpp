@@ -61,6 +61,8 @@ public:
     void run_watch(std::stop_token stop_token = {});
 
 private:
+    struct ExecutionWorkspace;
+
     // 扫描并执行当前传输镜像中等待当前 VM 的任务。
     [[nodiscard]] int execute_pending_runs(std::stop_token stop_token);
 
@@ -72,6 +74,24 @@ private:
         const std::filesystem::path& claim_path,
         const StepClaimLease& claim,
         std::stop_token stop_token);
+
+    // 执行 echo、进程或脚本负载，并收集声明的证据文件。
+    void execute_step_payload(
+        const std::filesystem::path& run_directory,
+        const RunManifest& manifest,
+        const TaskStep& step,
+        const StepClaimLease& claim,
+        std::stop_token stop_token,
+        ExecutionWorkspace& workspace);
+
+    // 在 claim fencing 下发布规范结果，失权时只保留 job 取证文件。
+    void publish_step_execution(
+        const std::filesystem::path& run_directory,
+        const std::filesystem::path& claim_path,
+        const StepClaimLease& claim,
+        std::stop_token lease_loss_token,
+        ClaimRenewalSession& renewal_session,
+        ExecutionWorkspace& workspace);
 
     // 部署并校验当前 VM 的全部 Artifact。
     void deploy_artifacts(
