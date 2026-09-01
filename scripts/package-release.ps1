@@ -52,10 +52,12 @@ $preparingDirectory = Join-Path $outputPath ".$packageName.preparing"
 $releaseDirectory = Join-Path $outputPath $packageName
 $partialPackagePath = Join-Path $outputPath "$packageName.partial.zip"
 $packagePath = Join-Path $outputPath "$packageName.zip"
+$checksumPath = Join-Path $outputPath "$packageName.zip.sha256"
 Assert-ChildPath -Parent $outputPath -Child $preparingDirectory
 Assert-ChildPath -Parent $outputPath -Child $releaseDirectory
 Assert-ChildPath -Parent $outputPath -Child $partialPackagePath
 Assert-ChildPath -Parent $outputPath -Child $packagePath
+Assert-ChildPath -Parent $outputPath -Child $checksumPath
 
 New-Item -ItemType Directory -Path $outputPath -Force | Out-Null
 if (Test-Path -LiteralPath $preparingDirectory) {
@@ -134,6 +136,12 @@ try {
         Remove-Item -LiteralPath $packagePath -Force
     }
     Move-Item -LiteralPath $partialPackagePath -Destination $packagePath
+    $packageHash = (Get-FileHash -LiteralPath $packagePath -Algorithm SHA256).Hash.ToLowerInvariant()
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [IO.File]::WriteAllText(
+        $checksumPath,
+        "$packageHash  $packageName.zip`n",
+        $utf8NoBom)
 } catch {
     if (Test-Path -LiteralPath $preparingDirectory) {
         Remove-Item -LiteralPath $preparingDirectory -Recurse -Force
@@ -146,3 +154,4 @@ try {
 
 Write-Host "Release directory: $releaseDirectory"
 Write-Host "Release package: $packagePath"
+Write-Host "Release checksum: $checksumPath"
