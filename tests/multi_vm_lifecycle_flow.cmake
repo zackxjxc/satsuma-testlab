@@ -209,6 +209,11 @@ function(run_multi_vm_scenario name expected_exit expected_status vm_01_step vm_
         unset(ENV{SATSUMA_MULTI_VM_FAIL_VM_01_START})
         unset(ENV{SATSUMA_MULTI_VM_DELAYED_START_VMX})
     endif()
+    if(expected_status STREQUAL "COMPLETED")
+        set(inject_late_transport_write ON)
+    else()
+        set(inject_late_transport_write OFF)
+    endif()
     execute_process(
         COMMAND "${CMAKE_COMMAND}"
             "-DVM_EXE=${VM_EXE}"
@@ -217,6 +222,7 @@ function(run_multi_vm_scenario name expected_exit expected_status vm_01_step vm_
             "-DSTATE_ROOT=${host_state}"
             "-DRUN_ID=${run_id}"
             "-DLIFECYCLE_STATE=${lifecycle_state}"
+            "-DINJECT_LATE_TRANSPORT_WRITE=${inject_late_transport_write}"
             -P "${CMAKE_CURRENT_LIST_DIR}/run_two_agents_until_lifecycle_terminal.cmake"
         COMMAND "${HOST_EXE}" orchestrate
             --config "${root}/lab.json"

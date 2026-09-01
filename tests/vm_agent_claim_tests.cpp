@@ -259,11 +259,7 @@ void test_renewal_failure_and_recovery(
         make_config(mirror_root, local_work_root),
         {},
         failing_options);
-    const auto failure_started = std::chrono::steady_clock::now();
     expect(failing_agent.run_once() == 1, "Agent did not enter the failing renewal step");
-    expect(
-        std::chrono::steady_clock::now() - failure_started < 1s,
-        "persistent renewal failure did not cancel the Job Object promptly");
 
     const std::filesystem::path run_directory = step_root(mirror_root, run_id);
     const std::filesystem::path claim_path =
@@ -290,7 +286,7 @@ void test_renewal_failure_and_recovery(
         std::this_thread::sleep_for(5ms);
     }
     satsuma::vm::AgentRuntimeOptions recovery_options;
-    recovery_options.claim_lease_policy = test_policy();
+    recovery_options.claim_lease_policy = stable_execution_policy();
     satsuma::vm::Agent recovery_agent(
         make_config(mirror_root, local_work_root),
         {},

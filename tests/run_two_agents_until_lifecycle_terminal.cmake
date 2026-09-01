@@ -4,7 +4,8 @@ if(NOT DEFINED VM_EXE OR
    NOT DEFINED VM_02_CONFIG OR
    NOT DEFINED STATE_ROOT OR
    NOT DEFINED RUN_ID OR
-   NOT DEFINED LIFECYCLE_STATE)
+   NOT DEFINED LIFECYCLE_STATE OR
+   NOT DEFINED INJECT_LATE_TRANSPORT_WRITE)
     message(FATAL_ERROR "Two-Agent lifecycle driver arguments are incomplete")
 endif()
 
@@ -184,9 +185,18 @@ run_agent_once(VM01 "${VM_01_CONFIG}")
 run_agent_once(VM02 "${VM_02_CONFIG}")
 
 # finally 完成后继续轮询 Agent，以处理 Host 在归档后发布的 Guest 清理请求。
+set(late_transport_write_injected FALSE)
 foreach(attempt RANGE 1 300)
     run_agent_once(VM01 "${VM_01_CONFIG}")
     run_agent_once(VM02 "${VM_02_CONFIG}")
+    # 模拟 Agent 在 Host 首次删除后完成的一次迟到写入，验证清理需稳定收敛。
+    if(INJECT_LATE_TRANSPORT_WRITE AND
+       NOT late_transport_write_injected AND
+       NOT EXISTS "${main_manifest}")
+        file(MAKE_DIRECTORY "${STATE_ROOT}/runs/${RUN_ID}/state")
+        file(WRITE "${STATE_ROOT}/runs/${RUN_ID}/state/late-test-write" "late\n")
+        set(late_transport_write_injected TRUE)
+    endif()
     if(EXISTS "${LIFECYCLE_STATE}")
         execute_process(
             COMMAND "${CMAKE_COMMAND}" -E cat "${LIFECYCLE_STATE}"
@@ -196,6 +206,9 @@ foreach(attempt RANGE 1 300)
         )
         if(lifecycle_read_result EQUAL 0 AND lifecycle_json MATCHES
            "\"phase\": \"(completed|failed|recovery_failed|manual_intervention_required)\"")
+            if(INJECT_LATE_TRANSPORT_WRITE AND NOT late_transport_write_injected)
+                message(FATAL_ERROR "Host reached a terminal phase before the late-write regression ran")
+            endif()
             return()
         endif()
     endif()

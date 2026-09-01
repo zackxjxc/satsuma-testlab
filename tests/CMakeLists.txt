@@ -301,7 +301,8 @@ add_test(
         "-DVM_EXE=$<TARGET_FILE:SatsumaVMTestAgent>"
         "-DFIXTURE_EXE=$<TARGET_FILE:SatsumaTestFixture>"
         "-DVMRUN_EXE=$<TARGET_FILE:SatsumaMultiVmFakeVmrun>"
-        "-DTEST_ROOT=${CMAKE_CURRENT_BINARY_DIR}/multi-vm-lifecycle-flow"
+        # Agent 工作目录嵌套较深，保持短根目录以兼容未启用长路径的 Windows。
+        "-DTEST_ROOT=${CMAKE_CURRENT_BINARY_DIR}/mvl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/multi_vm_lifecycle_flow.cmake"
 )
 set_tests_properties(SatsumaHostMultiVmLifecycleFlow PROPERTIES TIMEOUT 420)

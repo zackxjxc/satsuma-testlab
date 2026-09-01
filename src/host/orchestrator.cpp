@@ -48,6 +48,7 @@ struct OrchestrationArchive {
 
 constexpr std::chrono::seconds kHostRunDeleteTimeout{5}; // 等待本机状态句柄释放的上限
 constexpr std::chrono::milliseconds kHostRunDeleteDelay{100}; // 状态目录删除重试间隔
+constexpr std::chrono::milliseconds kHostRunDeleteStabilityWindow{500}; // 防止迟到写入重新创建目录
 constexpr std::chrono::seconds kEvidenceArchiveStabilityTimeout{5}; // 等待运行证据停止变化的上限
 constexpr std::chrono::milliseconds kEvidenceArchiveStabilityDelay{100}; // 证据稳定性重试间隔
 
@@ -511,37 +512,55 @@ void archive_run_evidence(
     }
 }
 
-// 删除已经归档并完成 Guest 清理的 Host 状态运行目录。
-void delete_host_run(const LabConfig& config, const std::string& run_id) {
-    const std::filesystem::path run_directory = resolve_under_root(
-        config.transport.state_root,
-        std::filesystem::path(L"runs") / path_from_utf8(run_id));
-    const DWORD attributes = GetFileAttributesW(run_directory.c_str());
-    if (attributes == INVALID_FILE_ATTRIBUTES ||
-        (attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
-        throw Error("Host run directory is missing or unsafe: " + run_id);
+// 删除已经归档并完成 Guest 清理的 Host 状态运行目录，并确认整组目录稳定消失。
+void delete_host_runs(const LabConfig& config, const std::vector<std::string>& run_ids) {
+    std::vector<std::filesystem::path> run_directories;
+    run_directories.reserve(run_ids.size());
+    for (const std::string& run_id : run_ids) {
+        const std::filesystem::path run_directory = resolve_under_root(
+            config.transport.state_root,
+            std::filesystem::path(L"runs") / path_from_utf8(run_id));
+        const DWORD attributes = GetFileAttributesW(run_directory.c_str());
+        if (attributes == INVALID_FILE_ATTRIBUTES ||
+            (attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
+            throw Error("Host run directory is missing or unsafe: " + run_id);
+        }
+        run_directories.push_back(run_directory);
     }
 
     const auto deadline = std::chrono::steady_clock::now() + kHostRunDeleteTimeout;
+    std::optional<std::chrono::steady_clock::time_point> absent_since;
     std::error_code last_error;
     while (true) {
-        std::error_code remove_error;
-        std::filesystem::remove_all(run_directory, remove_error);
+        bool any_exists = false;
+        for (const std::filesystem::path& run_directory : run_directories) {
+            std::error_code remove_error;
+            std::filesystem::remove_all(run_directory, remove_error);
 
-        std::error_code exists_error;
-        const bool still_exists = std::filesystem::exists(run_directory, exists_error);
-        if (!still_exists && !exists_error) {
-            return;
+            std::error_code exists_error;
+            any_exists = std::filesystem::exists(run_directory, exists_error) || any_exists;
+            if (remove_error || exists_error) {
+                last_error = remove_error ? remove_error : exists_error;
+            }
         }
-        last_error = remove_error ? remove_error : exists_error;
+        if (!any_exists && !last_error) {
+            const auto now = std::chrono::steady_clock::now();
+            if (!absent_since.has_value()) {
+                absent_since = now;
+            } else if (now - *absent_since >= kHostRunDeleteStabilityWindow) {
+                return;
+            }
+        } else {
+            absent_since.reset();
+        }
         if (std::chrono::steady_clock::now() >= deadline) {
             const std::string detail = last_error
                 ? last_error.message()
                 : "directory still exists";
             throw Error(
-                "Failed to delete Host run directory within retry timeout: " +
-                run_id + ": " + detail);
+                "Failed to delete Host run directories within retry timeout: " + detail);
         }
+        last_error.clear();
         std::this_thread::sleep_for(kHostRunDeleteDelay);
     }
 }
@@ -1011,9 +1030,7 @@ void execute_finally_phase(OrchestrationContext& context) {
 
     if (!cleanup_failed && host_cleanup == HostRunCleanupAction::ArchiveThenDelete) {
         try {
-            for (const std::string& execution_run_id : execution_run_ids) {
-                delete_host_run(context.config, execution_run_id);
-            }
+            delete_host_runs(context.config, execution_run_ids);
         } catch (const std::exception& error) {
             cleanup_failed = true;
             append_error(context.business_error, error.what());
