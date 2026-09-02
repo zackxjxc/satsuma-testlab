@@ -183,7 +183,7 @@
             },
             "run_as": {
               "enum": ["system", "interactive_user"],
-              "default": "system"
+              "default": "interactive_user"
             },
             "retry_safe": {"type": "boolean"},
             "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 86400},
@@ -215,7 +215,7 @@
               "maxItems": 256,
               "items": {"type": "string"}
             },
-            "run_as": {"enum": ["system", "interactive_user"], "default": "system"},
+            "run_as": {"enum": ["system", "interactive_user"], "default": "interactive_user"},
             "retry_safe": {"type": "boolean", "default": false},
             "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 86400},
             "collect_files": {

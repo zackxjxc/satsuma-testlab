@@ -57,6 +57,7 @@ void expect_error(Operation operation, const std::string& message) {
         step.vm = "vm_01";
         step.type = "echo";
         step.message = step_id;
+        step.run_as = satsuma::TaskRunAs::System;
         step.retry_safe = true;
         plan.steps.push_back(std::move(step));
     }

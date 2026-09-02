@@ -119,6 +119,7 @@ void write_execute_run(
     step.vm = "vm_01";
     step.type = "execute";
     step.program = satsuma::path_from_utf8("artifacts/vm_01/fixture.exe");
+    step.run_as = satsuma::TaskRunAs::System;
     step.arguments = {
         "--ready-file", "ready.marker",
         "--sleep-ms", std::to_string(sleep_ms),
@@ -155,6 +156,7 @@ void write_echo_run(
     step.vm = "vm_01";
     step.type = "echo";
     step.message = "single owner";
+    step.run_as = satsuma::TaskRunAs::System;
     step.retry_safe = true;
     manifest.steps.push_back(std::move(step));
     satsuma::write_json_atomic(

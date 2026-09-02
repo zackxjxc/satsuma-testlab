@@ -505,8 +505,9 @@ void test_task_run_as_protocol(const std::filesystem::path& root) {
     const std::filesystem::path plan_path = root / L"run-as-plan.json";
     satsuma::write_json_atomic(plan_path, plan_value);
     expect(
-        satsuma::load_task_plan(plan_path).steps.at(0).run_as == satsuma::TaskRunAs::System,
-        "task plan did not default execute.run_as to system");
+        satsuma::load_task_plan(plan_path).steps.at(0).run_as ==
+            satsuma::TaskRunAs::InteractiveUser,
+        "task plan did not default execute.run_as to interactive_user");
 
     plan_value["steps"][0]["run_as"] = "interactive_user";
     satsuma::write_json_atomic(plan_path, plan_value);
@@ -532,6 +533,12 @@ void test_task_run_as_protocol(const std::filesystem::path& root) {
     expect_error(
         [&plan_path] { static_cast<void>(satsuma::load_task_plan(plan_path)); },
         "echo step accepted an explicit run identity");
+    plan_value["steps"][0].erase("run_as");
+    satsuma::write_json_atomic(plan_path, plan_value);
+    expect(
+        satsuma::load_task_plan(plan_path).steps.at(0).run_as ==
+            satsuma::TaskRunAs::System,
+        "task plan did not normalize echo.run_as to system");
 
     satsuma::RunManifest manifest;
     manifest.lab_id = "test_lab";
@@ -547,8 +554,8 @@ void test_task_run_as_protocol(const std::filesystem::path& root) {
 
     const nlohmann::json encoded_manifest = manifest;
     expect(
-        encoded_manifest.at("steps").at(0).at("run_as") == "system",
-        "run manifest did not explicitly serialize system run_as");
+        encoded_manifest.at("steps").at(0).at("run_as") == "interactive_user",
+        "run manifest did not explicitly serialize interactive_user run_as");
 
     nlohmann::json missing_identity = encoded_manifest;
     missing_identity["steps"][0].erase("run_as");
@@ -572,6 +579,7 @@ void test_task_run_as_protocol(const std::filesystem::path& root) {
     echo_step.vm = "vm_01";
     echo_step.type = "echo";
     echo_step.message = "hello";
+    echo_step.run_as = satsuma::TaskRunAs::System;
     manifest.steps = {echo_step};
     const nlohmann::json encoded_echo = manifest;
     expect(

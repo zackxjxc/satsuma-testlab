@@ -138,7 +138,7 @@ void validate_sha256(const std::string& hash) {
         if (mode == StepParseMode::RunManifest && !has_run_as) {
             throw Error("Run manifest requires run_as for executable step " + step.id);
         }
-        step.run_as = has_run_as ? parse_task_run_as(value) : TaskRunAs::System;
+        step.run_as = has_run_as ? parse_task_run_as(value) : TaskRunAs::InteractiveUser;
         if (step.type == "execute") {
             step.program = path_from_utf8(required_string(value, "program"));
             validate_relative_path(step.program);
@@ -161,6 +161,7 @@ void validate_sha256(const std::string& hash) {
         if (value.contains("run_as")) {
             throw Error("echo step does not accept run_as: " + step.id);
         }
+        step.run_as = TaskRunAs::System;
         step.message = required_string(value, "message");
         if (!step.arguments.empty() || !step.collect_files.empty()) {
             throw Error("echo step does not accept arguments or collect_files: " + step.id);

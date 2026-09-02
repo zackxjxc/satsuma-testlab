@@ -70,6 +70,7 @@ void write_echo_run(const std::filesystem::path& mirror_root) {
     step.vm = "vm_01";
     step.type = "echo";
     step.message = "VMCI channel completed without Host";
+    step.run_as = satsuma::TaskRunAs::System;
     step.retry_safe = true;
     manifest.steps.push_back(std::move(step));
 
@@ -101,6 +102,7 @@ void write_cancellable_run(
     step.vm = "vm_01";
     step.type = "execute";
     step.program = satsuma::path_from_utf8("artifacts/vm_01/fixture.exe");
+    step.run_as = satsuma::TaskRunAs::System;
     step.arguments = {
         "--ready-file", "ready.marker",
         "--sleep-ms", "30000",
@@ -138,6 +140,7 @@ void write_timeout_run(
     step.vm = "vm_01";
     step.type = "execute";
     step.program = satsuma::path_from_utf8("artifacts/vm_01/fixture.exe");
+    step.run_as = satsuma::TaskRunAs::System;
     step.arguments = {"--sleep-ms", "30000"};
     step.timeout_seconds = 1;
     step.collect_files = {satsuma::path_from_utf8("results/missing.json")};
@@ -195,6 +198,7 @@ void write_interactive_run(
         echo.vm = "vm_01";
         echo.type = "echo";
         echo.message = "Agent continued";
+        echo.run_as = satsuma::TaskRunAs::System;
         manifest.steps.push_back(std::move(echo));
     }
     satsuma::write_json_atomic(
@@ -237,6 +241,7 @@ void write_powershell_run(const std::filesystem::path& mirror_root) {
     step.type = "script";
     step.engine = satsuma::ScriptEngine::WindowsPowerShell;
     step.script = satsuma::path_from_utf8("artifacts/vm_01/script.ps1");
+    step.run_as = satsuma::TaskRunAs::System;
     step.arguments = {"", "argument with spaces", "中文", "quote\"value", "C:\\tail\\"};
     step.collect_files = {satsuma::path_from_utf8("results/script.txt")};
     manifest.steps.push_back(std::move(step));
@@ -274,6 +279,7 @@ void write_cmd_run(const std::filesystem::path& mirror_root) {
     step.type = "script";
     step.engine = satsuma::ScriptEngine::Cmd;
     step.script = satsuma::path_from_utf8("artifacts/vm_01/script.cmd");
+    step.run_as = satsuma::TaskRunAs::System;
     step.arguments = {"percent%PATH% bang! amp& pipe| caret^"};
     step.collect_files = {satsuma::path_from_utf8("results/cmd.txt")};
     manifest.steps.push_back(std::move(step));
@@ -452,7 +458,7 @@ void test_file_watch_and_agent_stop(
         satsuma::load_json(stopped_result).get<satsuma::ExecutionResult>();
     expect(stopped.status == "failed", "Agent stop did not mark the step as failed");
     expect(stopped.run_as == satsuma::TaskRunAs::System,
-        "default execute step did not retain the SYSTEM identity");
+        "cancellable execute step did not retain the SYSTEM identity");
     expect(stopped.status != "timed_out", "Agent stop was incorrectly recorded as a timeout");
     expect(stopped.error == "Agent stop requested", "Agent stop did not preserve the stable error text");
 }

@@ -185,6 +185,7 @@ int main() {
     step.vm = "vm_01";
     step.type = "echo";
     step.message = "stale cache";
+    step.run_as = satsuma::TaskRunAs::System;
     step.retry_safe = true;
     manifest.steps.push_back(step);
     const std::filesystem::path stale_run =
