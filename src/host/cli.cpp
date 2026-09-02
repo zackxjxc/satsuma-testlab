@@ -6,6 +6,7 @@
 #include <chrono>
 #include <exception>
 #include <filesystem>
+#include <future>
 #include <initializer_list>
 #include <iostream>
 #include <map>
@@ -25,6 +26,7 @@
 #include "satsuma/core/errors.hpp"
 #include "satsuma/core/id.hpp"
 #include "satsuma/core/json_io.hpp"
+#include "satsuma/core/lifecycle.hpp"
 #include "satsuma/core/path.hpp"
 #include "satsuma/core/snapshot.hpp"
 #include "satsuma/core/version.hpp"
@@ -126,11 +128,12 @@ void validate_command_options(
     } else if (command == L"orchestrate") {
         validate_options(
             options,
-            {L"config", L"plan", L"timeout-seconds", L"boot-wait-seconds", L"dry-run"});
+            {L"config", L"plan", L"timeout-seconds", L"boot-wait-seconds", L"dry-run",
+             L"output", L"report-out"});
     } else if (command == L"plan" && subcommand == L"validate") {
         validate_options(options, {L"config", L"plan"});
     } else if (command == L"report") {
-        validate_options(options, {L"config", L"run", L"wait-seconds"});
+        validate_options(options, {L"config", L"run", L"wait-seconds", L"report-out"});
     } else if (command == L"vm" && subcommand == L"start") {
         validate_options(options, {L"config", L"id"});
     } else if (command == L"vm" && subcommand == L"stop") {
@@ -285,6 +288,17 @@ void validate_command_options(
     return std::chrono::seconds(seconds);
 }
 
+// 将最终 JSON 原子写入用户指定的报告文件。
+void write_report_out(
+    const std::map<std::wstring, std::wstring>& options,
+    const nlohmann::json& report) {
+    const auto destination = options.find(L"report-out");
+    if (destination == options.end() || destination->second.empty()) {
+        return;
+    }
+    satsuma::write_json_atomic(std::filesystem::absolute(destination->second), report);
+}
+
 // 在控制命令报错后重新读取 VMware 状态，判断目标快照是否存在。
 [[nodiscard]] bool snapshot_exists(
     const satsuma::vmware::VmrunProvider& provider,
@@ -333,9 +347,11 @@ void print_usage() {
         << "  SatsumaHost run --config lab.local.json --plan task.json "
            "[--timeout-seconds <1-300>] [--vm <vm-id>]\n"
         << "  SatsumaHost orchestrate --config lab.local.json --plan task.json "
-           "[--timeout-seconds <1-86400>] [--boot-wait-seconds <5-300>] [--dry-run]\n"
+           "[--timeout-seconds <1-86400>] [--boot-wait-seconds <5-300>] "
+           "[--dry-run] [--output json|jsonl] [--report-out <path>]\n"
         << "  SatsumaHost plan validate --config lab.local.json --plan task.json\n"
-        << "  SatsumaHost report --config lab.local.json --run <run-id> [--wait-seconds <1-86400>]\n"
+        << "  SatsumaHost report --config lab.local.json --run <run-id> "
+           "[--wait-seconds <1-86400>] [--report-out <path>]\n"
         << "  SatsumaHost runs list --config lab.local.json\n"
         << "  SatsumaHost runs cancel --config lab.local.json --run <run-id> "
            "[--reason <text>] [--break-lease]\n"
@@ -771,29 +787,105 @@ using Options = std::map<std::wstring, std::wstring>;
     }
     satsuma::host::Controller validator(config);
     validator.validate_plan(plan, false);
+    const auto output_option = options.find(L"output");
+    const std::string output_mode = output_option == options.end()
+        ? "json" : satsuma::path_to_utf8(output_option->second);
+    if (output_mode != "json" && output_mode != "jsonl") {
+        throw satsuma::Error("Orchestrate output mode must be json or jsonl");
+    }
     if (options.contains(L"dry-run")) {
-        std::cout << nlohmann::json({
+        const nlohmann::json output = {
             {"schema_version", 1},
             {"status", "valid"},
             {"dry_run", true},
             {"run_id", *plan.run_id},
             {"step_count", plan.steps.size()},
             {"vm_count", plan.lifecycle->vms.size()},
-        }).dump(2) << '\n';
+        };
+        write_report_out(options, output);
+        std::cout << output.dump(output_mode == "jsonl" ? -1 : 2) << '\n';
         return 0;
     }
+    const std::filesystem::path lifecycle_path =
+        config.host.archive_root / L"runs" / satsuma::path_from_utf8(*plan.run_id) /
+            L"lifecycle.json";
     auto lease = satsuma::host::LabLease::acquire(
         config, config_path, "orchestrate", plan.run_id);
+    lease->release_on_scope_exit("failed");
     satsuma::host::Orchestrator orchestrator(std::move(config));
-    const nlohmann::json output = orchestrator.execute(
-        plan_path,
-        timeout,
-        parse_boot_wait(options));
+    const std::chrono::seconds boot_wait = parse_boot_wait(options);
+    nlohmann::json output;
+    if (output_mode == "jsonl") {
+        auto execution = std::async(std::launch::async, [&] {
+            return orchestrator.execute(plan_path, timeout, boot_wait);
+        });
+        std::uint64_t emitted_sequence = 0;
+        auto next_heartbeat = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+        const auto emit_transitions = [&] {
+            try {
+                if (!std::filesystem::is_regular_file(lifecycle_path)) {
+                    return;
+                }
+                const satsuma::RunLifecycleState state =
+                    satsuma::load_run_lifecycle_state(lifecycle_path);
+                for (const satsuma::RunTransition& transition : state.transitions) {
+                    if (transition.sequence <= emitted_sequence) {
+                        continue;
+                    }
+                    std::cout << nlohmann::json({
+                        {"event", "phase_changed"},
+                        {"run_id", *plan.run_id},
+                        {"sequence", transition.sequence},
+                        {"from", satsuma::run_phase_name(transition.from)},
+                        {"to", satsuma::run_phase_name(transition.to)},
+                        {"occurred_at", transition.occurred_at},
+                        {"message", transition.message},
+                    }).dump() << '\n' << std::flush;
+                    emitted_sequence = transition.sequence;
+                }
+            } catch (const std::exception&) {
+                // 生命周期文件使用原子替换；短暂不可读时由下一轮重新读取。
+            }
+        };
+        while (execution.wait_for(std::chrono::milliseconds(100)) !=
+               std::future_status::ready) {
+            emit_transitions();
+            if (std::chrono::steady_clock::now() >= next_heartbeat) {
+                try {
+                    const satsuma::RunLifecycleState state =
+                        satsuma::load_run_lifecycle_state(lifecycle_path);
+                    std::cout << nlohmann::json({
+                        {"event", "heartbeat"},
+                        {"run_id", *plan.run_id},
+                        {"sequence", state.sequence},
+                        {"phase", satsuma::run_phase_name(state.phase)},
+                        {"observed_at", satsuma::utc_timestamp()},
+                    }).dump() << '\n' << std::flush;
+                } catch (const std::exception&) {
+                }
+                next_heartbeat =
+                    std::chrono::steady_clock::now() + std::chrono::seconds(10);
+            }
+        }
+        output = execution.get();
+        emit_transitions();
+    } else {
+        output = orchestrator.execute(plan_path, timeout, boot_wait);
+    }
     const std::string status = output.at("status").get<std::string>();
     if (status == "COMPLETED" || status == "FAILED") {
         lease->release("released");
     }
-    std::cout << output.dump(2) << '\n';
+    write_report_out(options, output);
+    if (output_mode == "jsonl") {
+        std::cout << nlohmann::json({
+            {"event", "run_finished"},
+            {"run_id", *plan.run_id},
+            {"result", output},
+        }).dump() << '\n';
+    } else {
+        std::cout << output.dump(2) << '\n';
+    }
     if (status == "COMPLETED") {
         return 0;
     }
@@ -911,6 +1003,7 @@ using Options = std::map<std::wstring, std::wstring>;
         report["waited_ms"] = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - started).count();
     }
+    write_report_out(options, report);
     std::cout << report.dump(2) << '\n';
     if (report.at("status") == "manual_intervention_required") {
         return 5;
