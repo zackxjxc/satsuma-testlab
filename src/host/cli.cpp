@@ -513,6 +513,7 @@ using Options = std::map<std::wstring, std::wstring>;
 
     const std::filesystem::path binary = require_option(options, L"binary");
     const std::string version = satsuma::path_to_utf8(require_option(options, L"version"));
+    const std::string configured_base_snapshot = vm->snapshots.base;
     std::optional<std::string> next_vm_id;
     if (subcommand == L"rebind") {
         next_vm_id = satsuma::path_to_utf8(require_option(options, L"next-vm"));
@@ -527,6 +528,14 @@ using Options = std::map<std::wstring, std::wstring>;
         timeout);
     nlohmann::json output = result;
     output["manifest"] = manifest;
+    if (result.status == "succeeded") {
+        output["warnings"] = nlohmann::json::array({{
+            {"code", "AGENT_UPDATE_NOT_IN_BASE_SNAPSHOT"},
+            {"message", "Restoring the configured base snapshot may restore an older Agent build"},
+            {"configured_base_snapshot", configured_base_snapshot},
+            {"suggested_action", "Verify the Agent hash, shut down the Guest, and create or approve a new cold snapshot before lifecycle-managed tasks"},
+        }});
+    }
     lease->release(result.status == "succeeded" ? "released" : "failed");
     std::cout << output.dump(2) << '\n';
     return result.status == "succeeded" ? 0 : 1;
