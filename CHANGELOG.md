@@ -2,6 +2,28 @@
 
 本文件记录项目的重要变化。首个稳定版本发布后，项目将遵循语义化版本规则。
 
+## 0.3.2 - 2026-09-02
+
+### 新增
+
+- Host 与 Agent 的 `--version --json` 输出 GitHub Actions Build Number、Run Attempt 和 Git Commit；Agent
+  presence 同时发布构建身份和二进制 SHA-256，Lab 可选择锁定精确 Agent 哈希。
+- `plan validate` 和 `orchestrate --dry-run` 在改变 VM 前静态检查任务、VM 引用、Artifact 和生命周期要求。
+- `orchestrate --output jsonl` 输出阶段变化、心跳和最终结果；`orchestrate`/`report` 支持原子
+  `--report-out` 文件。
+- `report` 和 `runs list` 可以直接查询已完成并校验的独立归档，不再依赖 Host 活跃运行目录。
+
+### 变更
+
+- 文档明确同 VM 串行、跨 VM 并发、Windows Job 完整进程树、Lab 单写租约和快照所有权语义。
+- Agent 更新成功后提示已有基础快照仍可能恢复旧 Agent，并给出冷快照升级流程。
+- 写租约冲突错误增加占用命令、PID、租约路径和安全重试建议。
+
+### 修复
+
+- 步骤超时时保留进程树超时作为主错误，将收集文件缺失作为次生诊断追加。
+- 恢复失败时继续保留实验室租约，避免不确定外部状态被误判为可以安全重试。
+
 ## 0.3.1 - 2026-09-02
 
 ### 新增
