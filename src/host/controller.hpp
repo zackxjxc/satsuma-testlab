@@ -27,10 +27,10 @@ public:
     // 将内存中的可信任务计划原子物化到新的运行目录。
     [[nodiscard]] RunManifest create_run(const TaskPlan& plan) const;
 
-    // 汇总指定运行当前已落盘的执行结果。
+    // 汇总 active 状态或已完成归档中的指定运行结果。
     [[nodiscard]] nlohmann::json build_report(const std::string& run_id) const;
 
-    // 列出传输状态根中的运行及其当前状态。
+    // 列出 active 状态和已完成归档中的运行及其当前状态。
     [[nodiscard]] nlohmann::json list_runs() const;
 
     // 原子发布单个运行的取消请求。

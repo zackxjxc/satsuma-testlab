@@ -166,6 +166,41 @@ void prepare_agent_update_queue(
     }
 }
 
+struct ReportRunLocation {
+    std::filesystem::path directory;
+    std::string source;
+};
+
+// Active 状态优先；不存在时读取已经完成发布的编排证据归档。
+[[nodiscard]] ReportRunLocation locate_report_run(
+    const LabConfig& config,
+    const std::string& run_id) {
+    const std::filesystem::path active = resolve_under_root(
+        config.transport.state_root,
+        std::filesystem::path(L"runs") / path_from_utf8(run_id));
+    if (std::filesystem::is_regular_file(active / L"task.json")) {
+        return {active, "active"};
+    }
+    if (!config.host.archive_root.empty()) {
+        const std::filesystem::path archived = resolve_under_root(
+            config.host.archive_root,
+            std::filesystem::path(L"runs") / path_from_utf8(run_id) /
+                L"evidence" / L"main");
+        const std::filesystem::path marker_path = archived / L".archive-complete.json";
+        if (std::filesystem::is_regular_file(archived / L"task.json") &&
+            std::filesystem::is_regular_file(marker_path)) {
+            const nlohmann::json marker = load_json(marker_path);
+            if (marker.value("schema_version", 0) != 1 ||
+                marker.value("status", std::string{}) != "complete" ||
+                marker.value("source_run_id", std::string{}) != run_id) {
+                throw Error("Archived run completion marker is invalid: " + run_id);
+            }
+            return {archived, "archive"};
+        }
+    }
+    throw Error("Unknown run_id: " + run_id);
+}
+
 }  // namespace
 
 Controller::Controller(LabConfig config) : config_(std::move(config)) {}
@@ -380,12 +415,8 @@ AgentUpdateResult Controller::wait_agent_update(
 
 nlohmann::json Controller::build_report(const std::string& run_id) const {
     validate_identifier(run_id, "run_id");
-    const std::filesystem::path run_directory = resolve_under_root(
-        config_.transport.state_root,
-        std::filesystem::path(L"runs") / path_from_utf8(run_id));
-    if (!std::filesystem::is_regular_file(run_directory / L"task.json")) {
-        throw Error("Unknown run_id: " + run_id);
-    }
+    const ReportRunLocation location = locate_report_run(config_, run_id);
+    const std::filesystem::path& run_directory = location.directory;
 
     const RunManifest manifest = load_run_manifest(run_directory / L"task.json");
     nlohmann::json executions = nlohmann::json::array();
@@ -452,6 +483,7 @@ nlohmann::json Controller::build_report(const std::string& run_id) const {
     return {
         {"schema_version", 1},
         {"run_id", run_id},
+        {"source", location.source},
         {"name", manifest.name},
         {"status", status},
         {"expected_steps", manifest.steps.size()},
@@ -468,23 +500,33 @@ nlohmann::json Controller::build_report(const std::string& run_id) const {
 nlohmann::json Controller::list_runs() const {
     const std::filesystem::path runs_root = config_.transport.state_root / L"runs";
     nlohmann::json runs = nlohmann::json::array();
-    if (!std::filesystem::is_directory(runs_root)) {
-        return {{"schema_version", 1}, {"runs", std::move(runs)}};
-    }
-    std::vector<std::filesystem::path> directories;
-    for (const auto& entry : std::filesystem::directory_iterator(runs_root)) {
-        if (entry.is_directory() && !is_reparse_point(entry.path()) &&
-            !entry.path().filename().native().starts_with(L".")) {
-            directories.push_back(entry.path());
+    std::set<std::string> run_ids;
+    if (std::filesystem::is_directory(runs_root)) {
+        for (const auto& entry : std::filesystem::directory_iterator(runs_root)) {
+            if (entry.is_directory() && !is_reparse_point(entry.path()) &&
+                !entry.path().filename().native().starts_with(L".")) {
+                run_ids.insert(path_to_utf8(entry.path().filename()));
+            }
         }
     }
-    std::sort(directories.begin(), directories.end());
-    for (const auto& directory : directories) {
-        const std::string run_id = path_to_utf8(directory.filename());
+    const std::filesystem::path archive_runs_root = config_.host.archive_root / L"runs";
+    if (!config_.host.archive_root.empty() &&
+        std::filesystem::is_directory(archive_runs_root)) {
+        for (const auto& entry : std::filesystem::directory_iterator(archive_runs_root)) {
+            if (entry.is_directory() && !is_reparse_point(entry.path()) &&
+                !entry.path().filename().native().starts_with(L".") &&
+                std::filesystem::is_regular_file(
+                    entry.path() / L"evidence" / L"main" / L"task.json")) {
+                run_ids.insert(path_to_utf8(entry.path().filename()));
+            }
+        }
+    }
+    for (const std::string& run_id : run_ids) {
         try {
             nlohmann::json report = build_report(run_id);
             runs.push_back({
                 {"run_id", run_id},
+                {"source", report.at("source")},
                 {"name", report.at("name")},
                 {"status", report.at("status")},
                 {"complete", report.at("complete")},

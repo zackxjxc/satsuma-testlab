@@ -240,6 +240,46 @@ void test_run_management(const std::filesystem::path& root) {
         "run pruning removed a pending run or retained a completed run");
 }
 
+// 验证 active 状态删除后，报告和列表仍可读取已完成的证据归档。
+void test_archived_run_reporting(const std::filesystem::path& root) {
+    satsuma::LabConfig config = make_config(root);
+    config.host.archive_root = root / L"archive";
+    const satsuma::host::Controller controller(config);
+    satsuma::TaskPlan plan = make_plan("archived_report");
+    plan.steps.resize(1);
+    const satsuma::RunManifest manifest = controller.create_run(plan);
+    satsuma::write_json_atomic(
+        result_path(config, manifest.run_id, manifest.steps.front()),
+        make_execution(manifest, manifest.steps.front(), "job_archived_report"));
+
+    const std::filesystem::path active =
+        config.transport.state_root / L"runs" / L"archived_report";
+    const std::filesystem::path archived =
+        config.host.archive_root / L"runs" / L"archived_report" /
+            L"evidence" / L"main";
+    std::filesystem::create_directories(archived.parent_path());
+    std::filesystem::copy(active, archived, std::filesystem::copy_options::recursive);
+    satsuma::write_json_atomic(archived / L".archive-complete.json", {
+        {"schema_version", 1},
+        {"status", "complete"},
+        {"source_run_id", "archived_report"},
+        {"files", nlohmann::json::array()},
+    });
+    std::filesystem::remove_all(active);
+
+    const nlohmann::json report = controller.build_report("archived_report");
+    expect(
+        report.at("source") == "archive" && report.at("status") == "succeeded" &&
+            report.at("complete").get<bool>(),
+        "report did not read the completed archive after active-state deletion");
+    const nlohmann::json listed = controller.list_runs();
+    expect(
+        listed.at("runs").size() == 1 &&
+            listed.at("runs").front().at("run_id") == "archived_report" &&
+            listed.at("runs").front().at("source") == "archive",
+        "runs list omitted the archived run or its source");
+}
+
 // 验证硬件发现、Host 配置写回和共享绑定发布。
 void test_agent_hardware_discovery_and_binding(const std::filesystem::path& root) {
     constexpr char hardware_id[] = "564d1234-abcd-4321-9876-001122334455";
@@ -480,6 +520,7 @@ int main() {
         test_report_exposes_manual_intervention(root / L"manual");
         test_report_rejects_mismatched_identity(root / L"identity");
         test_run_management(root / L"run-management");
+        test_archived_run_reporting(root / L"archived-reporting");
         test_agent_hardware_discovery_and_binding(root / L"hardware-binding");
         test_lab_lease_lifecycle(root / L"lab-lease");
         std::filesystem::remove_all(root);
