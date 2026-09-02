@@ -167,7 +167,8 @@ execute_process(
     ERROR_VARIABLE host_version_error
 )
 string(STRIP "${host_version_output}" host_version_output)
-if(NOT host_version_result EQUAL 0 OR NOT host_version_output STREQUAL "0.3.1")
+if(NOT host_version_result EQUAL 0 OR
+   NOT host_version_output STREQUAL "${EXPECTED_VERSION}")
     message(FATAL_ERROR
         "SatsumaHost --version returned an unexpected result: "
         "${host_version_error}\n${host_version_output}")
