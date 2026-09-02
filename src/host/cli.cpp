@@ -811,7 +811,6 @@ using Options = std::map<std::wstring, std::wstring>;
             L"lifecycle.json";
     auto lease = satsuma::host::LabLease::acquire(
         config, config_path, "orchestrate", plan.run_id);
-    lease->release_on_scope_exit("failed");
     satsuma::host::Orchestrator orchestrator(std::move(config));
     const std::chrono::seconds boot_wait = parse_boot_wait(options);
     nlohmann::json output;
