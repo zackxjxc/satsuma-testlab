@@ -786,6 +786,12 @@ void Agent::execute_step_payload(
     if (process_result.output_limit_exceeded) {
         throw Error("Process output exceeded the 64 MiB limit");
     }
+    workspace.result.status = process_result.timed_out ? "timed_out" : "exited";
+    if (process_result.timed_out) {
+        workspace.result.error =
+            "Process Job tree exceeded the step timeout of " +
+            std::to_string(step.timeout_seconds) + " seconds";
+    }
 
     std::uintmax_t collected_total_bytes = 0;
     for (const auto& collect_file : step.collect_files) {
@@ -820,7 +826,6 @@ void Agent::execute_step_payload(
         });
         workspace.evidence_files.push_back({staged_destination, canonical_destination});
     }
-    workspace.result.status = process_result.timed_out ? "timed_out" : "exited";
 }
 
 void Agent::publish_step_execution(
@@ -982,10 +987,16 @@ void Agent::execute_step(
             execution_stop_token,
             workspace);
     } catch (const std::exception& error) {
-        workspace.result.status = "failed";
-        workspace.result.error = std::filesystem::is_regular_file(cancellation_path)
-            ? "Run cancellation requested"
-            : error.what();
+        if (std::filesystem::is_regular_file(cancellation_path)) {
+            workspace.result.status = "failed";
+            workspace.result.error = "Run cancellation requested";
+        } else if (workspace.result.status == "timed_out") {
+            workspace.result.error += "; secondary error: ";
+            workspace.result.error += error.what();
+        } else {
+            workspace.result.status = "failed";
+            workspace.result.error = error.what();
+        }
     }
 
     publish_step_execution(

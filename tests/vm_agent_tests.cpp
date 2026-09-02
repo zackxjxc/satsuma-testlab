@@ -111,6 +111,40 @@ void write_cancellable_run(
     satsuma::write_json_atomic(run_directory / L"task.json", nlohmann::json(manifest));
 }
 
+// 创建一个必然超时且缺少声明结果文件的任务，验证主错误不会被次生错误覆盖。
+void write_timeout_run(
+    const std::filesystem::path& mirror_root,
+    const std::filesystem::path& fixture) {
+    const std::filesystem::path run_directory =
+        mirror_root / L"runs" / L"run_timeout_missing_result";
+    const std::filesystem::path artifact =
+        run_directory / L"artifacts" / L"vm_01" / L"fixture.exe";
+    std::filesystem::create_directories(artifact.parent_path());
+    std::filesystem::copy_file(fixture, artifact);
+
+    satsuma::RunManifest manifest;
+    manifest.protocol_version = satsuma::kRunManifestProtocolVersion;
+    manifest.lab_id = "vm_agent_test";
+    manifest.run_id = "run_timeout_missing_result";
+    manifest.name = "timeout missing result";
+    manifest.created_at = "2026-09-02T00:00:00.000Z";
+    manifest.artifacts.push_back({
+        "vm_01",
+        satsuma::path_from_utf8("artifacts/vm_01/fixture.exe"),
+        satsuma::sha256_file(artifact),
+    });
+    satsuma::TaskStep step;
+    step.id = "timeout";
+    step.vm = "vm_01";
+    step.type = "execute";
+    step.program = satsuma::path_from_utf8("artifacts/vm_01/fixture.exe");
+    step.arguments = {"--sleep-ms", "30000"};
+    step.timeout_seconds = 1;
+    step.collect_files = {satsuma::path_from_utf8("results/missing.json")};
+    manifest.steps.push_back(std::move(step));
+    satsuma::write_json_atomic(run_directory / L"task.json", nlohmann::json(manifest));
+}
+
 // 创建一个交互用户 execute 步骤，可附带后续 echo 证明 Agent 继续运行。
 void write_interactive_run(
     const std::filesystem::path& mirror_root,
@@ -311,6 +345,33 @@ void test_process_runner_output_limit(
     const satsuma::vm::ProcessResult result = satsuma::vm::ProcessRunner{}.run(request);
     expect(result.output_limit_exceeded, "ProcessRunner accepted output above its limit");
     expect(!result.timed_out, "output limit was reported as a timeout");
+}
+
+// 验证超时是主状态，声明结果缺失只作为次生诊断保留。
+void test_timeout_preserves_primary_error(
+    const std::filesystem::path& root,
+    const std::filesystem::path& fixture) {
+    const std::filesystem::path mirror_root = root / L"mirror";
+    write_timeout_run(mirror_root, fixture);
+    satsuma::AgentConfig config;
+    config.lab_id = "vm_agent_test";
+    config.vm_id = "vm_01";
+    config.agent_version = "0.1.0";
+    config.mirror_root = mirror_root;
+    config.local_work_root = root / L"work";
+    satsuma::vm::Agent agent(std::move(config));
+
+    expect(agent.run_once() == 1, "Agent did not execute the timeout fixture");
+    const satsuma::ExecutionResult result = satsuma::load_json(
+        mirror_root / L"runs" / L"run_timeout_missing_result" / L"results" /
+            L"vm_01" / L"timeout" / L"execution.json")
+        .get<satsuma::ExecutionResult>();
+    expect(result.status == "timed_out", "missing result file replaced the timeout status");
+    expect(
+        result.error.find("Process Job tree exceeded the step timeout of 1 seconds") == 0 &&
+            result.error.find("secondary error: Declared result file does not exist") !=
+                std::string::npos,
+        "timeout result did not preserve primary and secondary diagnostics: " + result.error);
 }
 
 // 验证 watch 模式不依赖 Host，并在停止时生成失败执行证据。
@@ -920,6 +981,7 @@ int main(const int argc, char* argv[]) {
         const std::filesystem::path helper = std::filesystem::absolute(argv[2]);
         test_process_runner_cancellation(root / L"process-runner", fixture);
         test_process_runner_output_limit(root / L"process-output-limit", fixture);
+        test_timeout_preserves_primary_error(root / L"timeout-primary-error", fixture);
         test_file_watch_and_agent_stop(root / L"agent-watch", fixture);
         test_vmci_channel_runtime_recovery(root / L"vmci-channel-recovery");
         test_inventory_cache_and_refresh(root / L"inventory");
