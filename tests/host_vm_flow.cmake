@@ -1246,6 +1246,38 @@ if(check_tools_position EQUAL -1 OR
    check_capacity_position EQUAL -1)
     message(FATAL_ERROR "SatsumaHost active check omitted Tools or capacity details: ${check_output}")
 endif()
+
+# 已在线 Agent 的固定版本不匹配必须立即失败，不能被当作暂时未就绪等满 timeout。
+string(REPLACE
+    "\"agent_version\": \"0.1.0\""
+    "\"agent_version\": \"9.9.9\""
+    mismatched_version_lab_json
+    "${lab_json}")
+file(WRITE "${TEST_ROOT}/lab-version-mismatch.json" "${mismatched_version_lab_json}")
+string(TIMESTAMP version_mismatch_started "%s" UTC)
+execute_process(
+    COMMAND "${HOST_EXE}" check
+        --config "${TEST_ROOT}/lab-version-mismatch.json"
+        --vm vm_01
+        --timeout-seconds 10
+    RESULT_VARIABLE version_mismatch_result
+    OUTPUT_VARIABLE version_mismatch_output
+    ERROR_VARIABLE version_mismatch_error
+)
+string(TIMESTAMP version_mismatch_finished "%s" UTC)
+math(EXPR version_mismatch_elapsed
+    "${version_mismatch_finished} - ${version_mismatch_started}")
+if(NOT version_mismatch_result EQUAL 1 OR
+   NOT version_mismatch_output MATCHES "Agent version mismatch for VM vm_01")
+    message(FATAL_ERROR
+        "Agent version mismatch returned ${version_mismatch_result}: "
+        "${version_mismatch_error}\n${version_mismatch_output}")
+endif()
+if(version_mismatch_elapsed GREATER_EQUAL 5)
+    message(FATAL_ERROR
+        "Agent version mismatch waited ${version_mismatch_elapsed}s instead of failing early")
+endif()
+
 file(GLOB diagnostic_claims "${state_path}/runs/check-*/state/vm_01/vm_01.claim.json")
 list(LENGTH diagnostic_claims diagnostic_claim_count)
 if(diagnostic_claim_count LESS 1)

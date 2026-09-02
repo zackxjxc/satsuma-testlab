@@ -386,7 +386,8 @@ nlohmann::json Diagnostics::run_probe(
     const auto deadline = std::chrono::steady_clock::now() + diagnostic_timeout;
     std::map<std::string, std::string> presence_errors;
     std::set<std::string> ready_presence;
-    while (ready_presence.size() < targets.size() &&
+    std::set<std::string> rejected_presence;
+    while (ready_presence.size() < targets.size() && rejected_presence.empty() &&
            std::chrono::steady_clock::now() < deadline) {
         for (const VmConfig* vm : targets) {
             if (ready_presence.contains(vm->id)) {
@@ -396,11 +397,15 @@ nlohmann::json Diagnostics::run_probe(
                 static_cast<void>(load_vm_presence(config_, *vm));
                 ready_presence.insert(vm->id);
                 presence_errors.erase(vm->id);
+            } catch (const JsonIoError& error) {
+                presence_errors[vm->id] = error.what();
             } catch (const std::exception& error) {
                 presence_errors[vm->id] = error.what();
+                rejected_presence.insert(vm->id);
+                break;
             }
         }
-        if (ready_presence.size() < targets.size()) {
+        if (ready_presence.size() < targets.size() && rejected_presence.empty()) {
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
     }
@@ -408,13 +413,19 @@ nlohmann::json Diagnostics::run_probe(
         nlohmann::json waits = nlohmann::json::array();
         for (const VmConfig* vm : targets) {
             const bool ready = ready_presence.contains(vm->id);
+            const bool rejected = rejected_presence.contains(vm->id);
             nlohmann::json wait = {
                 {"vm_id", vm->id},
-                {"status", ready ? "ready" : "timeout"},
-                {"waited_seconds", diagnostic_timeout.count()},
+                {"status", ready ? "ready" : rejected ? "failed" :
+                    rejected_presence.empty() ? "timeout" : "skipped"},
+                {"waited_seconds", rejected_presence.empty() ? diagnostic_timeout.count() : 0},
             };
             if (!ready && presence_errors.contains(vm->id)) {
                 wait["last_error"] = presence_errors.at(vm->id);
+            }
+            if (!ready && !rejected && !rejected_presence.empty()) {
+                wait["message"] =
+                    "Agent readiness was skipped because another Agent failed identity validation";
             }
             waits.push_back(std::move(wait));
         }
