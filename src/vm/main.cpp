@@ -26,7 +26,7 @@ void print_usage() {
         << "SatsumaVM " << satsuma::kVersion << '\n'
         << "Usage:\n"
         << "  SatsumaVM --help\n"
-        << "  SatsumaVM --version\n"
+        << "  SatsumaVM --version [--json]\n"
         << "  SatsumaVM --config agent.json --once\n"
         << "  SatsumaVM --config agent.json --watch\n"
         << "  SatsumaVM --config agent.json --service\n"
@@ -79,8 +79,22 @@ int wmain(const int argc, wchar_t* argv[]) {
             return satsuma::vm::run_interactive_process_helper(
                 std::filesystem::path(argv[2]));
         }
-        if (argc == 2 && std::wstring(argv[1]) == L"--version") {
-            std::cout << satsuma::kVersion << '\n';
+        if ((argc == 2 || argc == 3) && std::wstring(argv[1]) == L"--version") {
+            if (argc == 3 && std::wstring_view(argv[2]) != L"--json") {
+                print_usage();
+                return 2;
+            }
+            if (argc == 3) {
+                std::cout << nlohmann::json({
+                    {"component", "SatsumaVM"},
+                    {"version", satsuma::kVersion},
+                    {"build_number", satsuma::kBuildNumber},
+                    {"build_attempt", satsuma::kBuildAttempt},
+                    {"git_commit", satsuma::kGitCommit},
+                }).dump() << '\n';
+            } else {
+                std::cout << satsuma::kVersion << '\n';
+            }
             return 0;
         }
         if (argc == 2 && (std::wstring(argv[1]) == L"--help" || std::wstring(argv[1]) == L"help")) {

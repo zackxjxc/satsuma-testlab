@@ -23,6 +23,9 @@ BEGIN
             VALUE "OriginalFilename", "@SATSUMA_VERSION_ORIGINAL_FILENAME@\0"
             VALUE "ProductName", "Satsuma TestLab\0"
             VALUE "ProductVersion", "@PROJECT_VERSION@\0"
+            VALUE "BuildNumber", "@SATSUMA_BUILD_NUMBER@\0"
+            VALUE "BuildAttempt", "@SATSUMA_BUILD_ATTEMPT@\0"
+            VALUE "GitCommit", "@SATSUMA_GIT_COMMIT@\0"
         END
     END
     BLOCK "VarFileInfo"

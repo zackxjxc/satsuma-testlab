@@ -280,6 +280,35 @@ void test_archived_run_reporting(const std::filesystem::path& root) {
         "runs list omitted the archived run or its source");
 }
 
+// 验证 Host 可用配置中的精确哈希拒绝同版本的错误 Agent 构建。
+void test_agent_build_hash_validation(const std::filesystem::path& root) {
+    satsuma::LabConfig config = make_config(root);
+    config.vms.front().agent_version = "0.3.1";
+    config.vms.front().agent_sha256 = std::string(64, 'a');
+    const std::filesystem::path presence_path =
+        config.transport.state_root / L"agents" / L"vm_01.json";
+    satsuma::write_json_atomic(presence_path, {
+        {"lab_id", config.lab_id},
+        {"vm_id", "vm_01"},
+        {"agent_version", "0.3.1"},
+        {"binary_sha256", std::string(64, 'a')},
+    });
+    expect(
+        satsuma::host::load_vm_presence(config, config.vms.front())
+                .at("binary_sha256") == std::string(64, 'a'),
+        "Host rejected the configured Agent build hash");
+
+    nlohmann::json mismatched = satsuma::load_json(presence_path);
+    mismatched["binary_sha256"] = std::string(64, 'b');
+    satsuma::write_json_atomic(presence_path, mismatched);
+    expect_error(
+        [&] {
+            static_cast<void>(
+                satsuma::host::load_vm_presence(config, config.vms.front()));
+        },
+        "Host accepted an Agent build hash different from lab configuration");
+}
+
 // 验证硬件发现、Host 配置写回和共享绑定发布。
 void test_agent_hardware_discovery_and_binding(const std::filesystem::path& root) {
     constexpr char hardware_id[] = "564d1234-abcd-4321-9876-001122334455";
@@ -521,6 +550,7 @@ int main() {
         test_report_rejects_mismatched_identity(root / L"identity");
         test_run_management(root / L"run-management");
         test_archived_run_reporting(root / L"archived-reporting");
+        test_agent_build_hash_validation(root / L"agent-build-hash");
         test_agent_hardware_discovery_and_binding(root / L"hardware-binding");
         test_lab_lease_lifecycle(root / L"lab-lease");
         std::filesystem::remove_all(root);

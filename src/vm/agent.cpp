@@ -23,6 +23,7 @@
 #include "satsuma/core/claim_store.hpp"
 #include "hardware_identity.hpp"
 #include "satsuma/core/sha256.hpp"
+#include "satsuma/core/version.hpp"
 #include "interactive_process.hpp"
 #include "vmci_channel.hpp"
 #include "update.hpp"
@@ -618,6 +619,9 @@ void Agent::write_presence() const {
         {"vm_id", config_.vm_id},
         {"hardware_id", config_.hardware_id},
         {"agent_version", config_.agent_version},
+        {"build_number", kBuildNumber},
+        {"build_attempt", kBuildAttempt},
+        {"git_commit", kGitCommit},
         {"update_id", config_.last_update_id},
         {"session_id", session_id_},
         {"boot_id", boot_id_},

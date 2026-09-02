@@ -48,6 +48,7 @@ struct VmConfig {
     std::string hardware_id;      // 可选 SMBIOS UUID 绑定
     std::filesystem::path vmx;    // VMX 文件路径
     std::string agent_version;    // 快照中的 Agent 版本
+    std::string agent_sha256;     // 可选的预期 Agent 二进制哈希
     SnapshotConfig snapshots;     // 快照保护策略
 };
 

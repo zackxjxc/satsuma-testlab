@@ -47,6 +47,7 @@
           "hardware_id": {"$ref": "#/$defs/hardware_id"},
           "vmx": {"type": "string", "minLength": 1},
           "agent_version": {"type": "string", "minLength": 1},
+          "agent_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
           "snapshots": {
             "type": "object",
             "additionalProperties": false,

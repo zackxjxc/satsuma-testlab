@@ -66,6 +66,15 @@ function(satsuma_add_windows_version_resource target original_filename file_desc
     target_sources(${target} PRIVATE "${resource_file}")
 endfunction()
 
+set(SATSUMA_BUILD_NUMBER "local" CACHE STRING "CI build number embedded in binaries")
+set(SATSUMA_BUILD_ATTEMPT "0" CACHE STRING "CI build attempt embedded in binaries")
+set(SATSUMA_GIT_COMMIT "unknown" CACHE STRING "Git commit embedded in binaries")
+foreach(metadata_value SATSUMA_BUILD_NUMBER SATSUMA_BUILD_ATTEMPT SATSUMA_GIT_COMMIT)
+    if(NOT "${${metadata_value}}" MATCHES "^[A-Za-z0-9._-]+$")
+        message(FATAL_ERROR "${metadata_value} contains unsupported characters")
+    endif()
+endforeach()
+
 option(SATSUMA_BUILD_TESTS "Build Satsuma tests" ON)
 option(SATSUMA_ENABLE_REAL_VMWARE_SMOKE "Expose the destructive real VMware smoke target" OFF)
 option(
@@ -209,6 +218,9 @@ target_compile_definitions(
         _WIN32_WINNT=0x0A00
         WINVER=0x0A00
         SATSUMA_VERSION="${PROJECT_VERSION}"
+        SATSUMA_BUILD_NUMBER="${SATSUMA_BUILD_NUMBER}"
+        SATSUMA_BUILD_ATTEMPT="${SATSUMA_BUILD_ATTEMPT}"
+        SATSUMA_GIT_COMMIT="${SATSUMA_GIT_COMMIT}"
 )
 target_link_libraries(SatsumaCore PUBLIC nlohmann_json::nlohmann_json PRIVATE bcrypt)
 

@@ -43,7 +43,11 @@ jobs:
           check-jsonschema --schemafile schemas/task.schema.json examples/multi-vm-task.json
 
       - name: Configure
-        run: cmake --preset windows-default
+        run: >-
+          cmake --preset windows-default
+          -DSATSUMA_BUILD_NUMBER=${{ github.run_number }}
+          -DSATSUMA_BUILD_ATTEMPT=${{ github.run_attempt }}
+          -DSATSUMA_GIT_COMMIT=${{ github.sha }}
 
       - name: Build Debug
         run: cmake --build --preset windows-debug --parallel

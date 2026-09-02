@@ -303,7 +303,7 @@ void print_usage() {
         << "SatsumaHost " << satsuma::kVersion << '\n'
         << "Usage:\n"
         << "  SatsumaHost --help\n"
-        << "  SatsumaHost --version\n"
+        << "  SatsumaHost --version [--json]\n"
         << "  SatsumaHost gateway --config lab.local.json\n"
         << "  SatsumaHost check --config lab.local.json [--vm <vm-id>] [--timeout-seconds <1-300>]\n"
         << "  SatsumaHost discover --config lab.local.json\n"
@@ -890,8 +890,22 @@ int run_cli(const int argc, wchar_t* argv[]) {
             print_usage();
             return 0;
         }
-        if (argc == 2 && command == L"--version") {
-            std::cout << satsuma::kVersion << '\n';
+        if ((argc == 2 || argc == 3) && command == L"--version") {
+            if (argc == 3 && std::wstring_view(argv[2]) != L"--json") {
+                print_usage();
+                return 2;
+            }
+            if (argc == 3) {
+                std::cout << nlohmann::json({
+                    {"component", "SatsumaHost"},
+                    {"version", satsuma::kVersion},
+                    {"build_number", satsuma::kBuildNumber},
+                    {"build_attempt", satsuma::kBuildAttempt},
+                    {"git_commit", satsuma::kGitCommit},
+                }).dump() << '\n';
+            } else {
+                std::cout << satsuma::kVersion << '\n';
+            }
             return 0;
         }
 

@@ -227,6 +227,14 @@ nlohmann::json load_vm_presence(const LabConfig& config, const VmConfig& vm) {
     if (!vm.hardware_id.empty()) {
         validate_presence_common(presence, config, vm.hardware_id);
     }
+    if (!vm.agent_version.empty() &&
+        presence.value("agent_version", std::string{}) != vm.agent_version) {
+        throw Error("Agent version mismatch for VM " + vm.id);
+    }
+    if (!vm.agent_sha256.empty() &&
+        presence.value("binary_sha256", std::string{}) != vm.agent_sha256) {
+        throw Error("Agent binary SHA-256 mismatch for VM " + vm.id);
+    }
     return presence;
 }
 
@@ -336,6 +344,9 @@ nlohmann::json discover_agents(const LabConfig& config) {
                 {"vm_id", presence.value("vm_id", std::string{})},
                 {"status", presence.value("status", std::string{})},
                 {"agent_version", presence.value("agent_version", std::string{})},
+                {"build_number", presence.value("build_number", std::string{})},
+                {"build_attempt", presence.value("build_attempt", std::string{})},
+                {"git_commit", presence.value("git_commit", std::string{})},
                 {"binary_sha256", presence.value("binary_sha256", std::string{})},
                 {"inventory", presence.value("inventory", nlohmann::json(nullptr))},
                 {"runtime", presence.value("runtime", nlohmann::json(nullptr))},

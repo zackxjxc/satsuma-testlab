@@ -583,6 +583,9 @@ nlohmann::json Diagnostics::run_probe(
                     const nlohmann::json& presence = presence_it->second;
                     agent["presence"] = {
                         {"agent_version", presence.value("agent_version", std::string{})},
+                        {"build_number", presence.value("build_number", std::string{})},
+                        {"build_attempt", presence.value("build_attempt", std::string{})},
+                        {"git_commit", presence.value("git_commit", std::string{})},
                         {"binary_sha256", presence.value("binary_sha256", std::string{})},
                         {"boot_id", presence.value("boot_id", std::string{})},
                         {"process_id", presence.value("process_id", 0)},

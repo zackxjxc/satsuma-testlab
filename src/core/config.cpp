@@ -2,6 +2,7 @@
 #include "satsuma/core/config.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <limits>
 #include <set>
 #include <string_view>
@@ -61,6 +62,18 @@ void validate_schema_version(const nlohmann::json& value, const char* source) {
     }
 }
 
+// 验证可选的二进制 SHA-256 使用规范小写十六进制。
+void validate_optional_sha256(const std::string& value, const std::string_view field) {
+    const bool valid = value.empty() ||
+        (value.size() == 64 && std::all_of(
+            value.begin(), value.end(), [](const unsigned char character) {
+                return std::isdigit(character) || (character >= 'a' && character <= 'f');
+            }));
+    if (!valid) {
+        throw Error(std::string(field) + " must be 64 lowercase hexadecimal characters");
+    }
+}
+
 }  // namespace
 
 LabConfig load_lab_config(const std::filesystem::path& path) {
@@ -111,7 +124,7 @@ LabConfig load_lab_config(const std::filesystem::path& path) {
     for (const auto& vm_value : value.at("vms")) {
         reject_unknown_fields(
             vm_value,
-            {"id", "hardware_id", "vmx", "agent_version", "snapshots"},
+            {"id", "hardware_id", "vmx", "agent_version", "agent_sha256", "snapshots"},
             "VM configuration");
         VmConfig vm;
         vm.id = required_string(vm_value, "id");
@@ -126,6 +139,8 @@ LabConfig load_lab_config(const std::filesystem::path& path) {
         vm.vmx = path_from_utf8(required_string(vm_value, "vmx"));
         require_absolute_path(vm.vmx, "vms[].vmx for " + vm.id);
         vm.agent_version = required_string(vm_value, "agent_version");
+        vm.agent_sha256 = vm_value.value("agent_sha256", std::string{});
+        validate_optional_sha256(vm.agent_sha256, "vms[].agent_sha256");
         if (!vm_value.contains("snapshots") || !vm_value.at("snapshots").is_object()) {
             throw Error("Missing or invalid snapshots object for VM: " + vm.id);
         }
