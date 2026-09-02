@@ -21,6 +21,9 @@ public:
     // 使用已验证的实验室配置创建 Controller。
     explicit Controller(LabConfig config);
 
+    // 在不发布运行的情况下校验 VM、Artifact 和可选的在线 Agent inventory。
+    void validate_plan(const TaskPlan& plan, bool require_agent_inventory) const;
+
     // 将任务计划和 Artifact 原子物化到新的运行目录。
     [[nodiscard]] RunManifest create_run(const std::filesystem::path& plan_path) const;
 

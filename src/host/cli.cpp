@@ -87,6 +87,9 @@ void validate_options(
         command == L"orchestrate" || command == L"report") {
         return subcommand.empty();
     }
+    if (command == L"plan") {
+        return subcommand == L"validate";
+    }
     if (command == L"vm") {
         return subcommand == L"start" || subcommand == L"stop" || subcommand == L"restore";
     }
@@ -121,7 +124,11 @@ void validate_command_options(
     } else if (command == L"run") {
         validate_options(options, {L"config", L"plan", L"timeout-seconds", L"vm"});
     } else if (command == L"orchestrate") {
-        validate_options(options, {L"config", L"plan", L"timeout-seconds", L"boot-wait-seconds"});
+        validate_options(
+            options,
+            {L"config", L"plan", L"timeout-seconds", L"boot-wait-seconds", L"dry-run"});
+    } else if (command == L"plan" && subcommand == L"validate") {
+        validate_options(options, {L"config", L"plan"});
     } else if (command == L"report") {
         validate_options(options, {L"config", L"run", L"wait-seconds"});
     } else if (command == L"vm" && subcommand == L"start") {
@@ -326,7 +333,8 @@ void print_usage() {
         << "  SatsumaHost run --config lab.local.json --plan task.json "
            "[--timeout-seconds <1-300>] [--vm <vm-id>]\n"
         << "  SatsumaHost orchestrate --config lab.local.json --plan task.json "
-           "[--timeout-seconds <1-86400>] [--boot-wait-seconds <5-300>]\n"
+           "[--timeout-seconds <1-86400>] [--boot-wait-seconds <5-300>] [--dry-run]\n"
+        << "  SatsumaHost plan validate --config lab.local.json --plan task.json\n"
         << "  SatsumaHost report --config lab.local.json --run <run-id> [--wait-seconds <1-86400>]\n"
         << "  SatsumaHost runs list --config lab.local.json\n"
         << "  SatsumaHost runs cancel --config lab.local.json --run <run-id> "
@@ -752,6 +760,19 @@ using Options = std::map<std::wstring, std::wstring>;
         throw satsuma::Error(
             "Host orchestrate requires an explicit plan run_id for crash recovery");
     }
+    satsuma::host::Controller validator(config);
+    validator.validate_plan(plan, false);
+    if (options.contains(L"dry-run")) {
+        std::cout << nlohmann::json({
+            {"schema_version", 1},
+            {"status", "valid"},
+            {"dry_run", true},
+            {"run_id", *plan.run_id},
+            {"step_count", plan.steps.size()},
+            {"vm_count", plan.lifecycle->vms.size()},
+        }).dump(2) << '\n';
+        return 0;
+    }
     auto lease = satsuma::host::LabLease::acquire(
         config, config_path, "orchestrate", plan.run_id);
     satsuma::host::Orchestrator orchestrator(std::move(config));
@@ -771,6 +792,24 @@ using Options = std::map<std::wstring, std::wstring>;
         return 4;
     }
     return status == "MANUAL_INTERVENTION_REQUIRED" ? 5 : 1;
+}
+
+// 静态校验任务引用和 Artifact，不创建租约、运行目录或改变 VM 状态。
+[[nodiscard]] int handle_plan_validate_command(
+    const Options& options,
+    const satsuma::LabConfig& config) {
+    const std::filesystem::path plan_path = require_option(options, L"plan");
+    const satsuma::TaskPlan plan = satsuma::load_task_plan(plan_path);
+    satsuma::host::Controller(config).validate_plan(plan, false);
+    std::cout << nlohmann::json({
+        {"schema_version", 1},
+        {"status", "valid"},
+        {"plan", satsuma::path_to_utf8(std::filesystem::absolute(plan_path))},
+        {"run_id", plan.run_id.has_value() ? nlohmann::json(*plan.run_id) : nlohmann::json(nullptr)},
+        {"artifact_count", plan.artifacts.size()},
+        {"step_count", plan.steps.size()},
+    }).dump(2) << '\n';
+    return 0;
 }
 
 // 诊断涉及的 VM 后发布一次普通任务。
@@ -913,7 +952,7 @@ int run_cli(const int argc, wchar_t* argv[]) {
         int options_start = 2;
         const bool grouped_command =
             command == L"vm" || command == L"snapshot" || command == L"agent" ||
-            command == L"runs" || command == L"lab";
+            command == L"runs" || command == L"lab" || command == L"plan";
         if (grouped_command) {
             if (argc < 3) {
                 print_usage();
@@ -973,6 +1012,10 @@ int run_cli(const int argc, wchar_t* argv[]) {
 
         if (command == L"orchestrate") {
             return handle_orchestrate_command(options, config_path, std::move(config));
+        }
+
+        if (command == L"plan") {
+            return handle_plan_validate_command(options, config);
         }
 
         if (command == L"run") {

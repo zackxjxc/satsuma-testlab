@@ -22,13 +22,22 @@ namespace satsuma::host {
 namespace {
 
 // 验证计划只引用 lab.json 中登记的 VM。
-void validate_vm_references(const LabConfig& config, const TaskPlan& plan) {
+void validate_vm_references(
+    const LabConfig& config,
+    const TaskPlan& plan,
+    const bool require_agent_inventory) {
     for (const auto& artifact : plan.artifacts) {
         if (find_vm(config, artifact.vm) == nullptr) {
             throw Error("Artifact references an unknown VM: " + artifact.vm);
         }
+        if (!std::filesystem::is_regular_file(artifact.source)) {
+            throw Error("Artifact source is not a regular file: " + path_to_utf8(artifact.source));
+        }
+        if (std::filesystem::file_size(artifact.source) > kMaxArtifactBytes) {
+            throw Error("Artifact exceeds the 2 GiB size limit: " + path_to_utf8(artifact.source));
+        }
     }
-    const auto validate_step = [&config, &plan](const TaskStep& step) {
+    const auto validate_step = [&config, &plan, require_agent_inventory](const TaskStep& step) {
         if (find_vm(config, step.vm) == nullptr) {
             throw Error("Step references an unknown VM: " + step.vm);
         }
@@ -46,7 +55,7 @@ void validate_vm_references(const LabConfig& config, const TaskPlan& plan) {
                 throw Error("Executable file is not a registered Artifact: " + path_to_utf8(executable));
             }
         }
-        if (step.type == "script") {
+        if (step.type == "script" && require_agent_inventory) {
             const VmConfig& vm = *find_vm(config, step.vm);
             const nlohmann::json presence = load_vm_presence(config, vm);
             if (presence.value("protocol_version", 0) != kRunManifestProtocolVersion) {
@@ -205,6 +214,12 @@ struct ReportRunLocation {
 
 Controller::Controller(LabConfig config) : config_(std::move(config)) {}
 
+void Controller::validate_plan(
+    const TaskPlan& plan,
+    const bool require_agent_inventory) const {
+    validate_vm_references(config_, plan, require_agent_inventory);
+}
+
 RunManifest Controller::create_run(const std::filesystem::path& plan_path) const {
     const TaskPlan plan = load_task_plan(plan_path);
     return create_run(plan);
@@ -214,7 +229,7 @@ RunManifest Controller::create_run(const TaskPlan& plan) const {
     if (plan.lifecycle.has_value()) {
         throw Error("Task lifecycle policies require the Host orchestrator and cannot use run");
     }
-    validate_vm_references(config_, plan);
+    validate_plan(plan, true);
 
     RunManifest manifest;
     manifest.protocol_version = kRunManifestProtocolVersion;

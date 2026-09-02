@@ -240,6 +240,34 @@ void test_run_management(const std::filesystem::path& root) {
         "run pruning removed a pending run or retained a completed run");
 }
 
+// 验证只读预检可成功返回，并在创建运行目录前拒绝缺失 Artifact。
+void test_plan_preflight_validation(const std::filesystem::path& root) {
+    const satsuma::LabConfig config = make_config(root);
+    const satsuma::host::Controller controller(config);
+    controller.validate_plan(make_plan("preflight_valid"), false);
+
+    satsuma::TaskPlan missing = make_plan("preflight_missing_artifact");
+    missing.artifacts.push_back({
+        root / L"missing.exe",
+        "vm_01",
+        satsuma::path_from_utf8("artifacts/vm_01/missing.exe"),
+        std::nullopt,
+    });
+    satsuma::TaskStep execute;
+    execute.id = "missing";
+    execute.vm = "vm_01";
+    execute.type = "execute";
+    execute.program = satsuma::path_from_utf8("artifacts/vm_01/missing.exe");
+    missing.steps = {execute};
+    expect_error(
+        [&] { controller.validate_plan(missing, false); },
+        "plan preflight accepted a missing Artifact source");
+    expect(
+        !std::filesystem::exists(
+            config.transport.state_root / L"runs" / L"preflight_missing_artifact"),
+        "plan preflight created a run directory");
+}
+
 // 验证 active 状态删除后，报告和列表仍可读取已完成的证据归档。
 void test_archived_run_reporting(const std::filesystem::path& root) {
     satsuma::LabConfig config = make_config(root);
@@ -548,6 +576,7 @@ int main() {
         test_report_uses_canonical_result_paths(root / L"paths");
         test_report_exposes_manual_intervention(root / L"manual");
         test_report_rejects_mismatched_identity(root / L"identity");
+        test_plan_preflight_validation(root / L"plan-preflight");
         test_run_management(root / L"run-management");
         test_archived_run_reporting(root / L"archived-reporting");
         test_agent_build_hash_validation(root / L"agent-build-hash");
