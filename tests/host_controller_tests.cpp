@@ -396,9 +396,19 @@ void test_lab_lease_lifecycle(const std::filesystem::path& root) {
     expect(
         satsuma::host::LabLease::status(config).at("status") == "busy",
         "active lab lease was not reported as busy");
-    expect_error(
-        [&] { static_cast<void>(satsuma::host::LabLease::acquire(config, config_path, "other")); },
-        "second Host acquired the same lab process mutex");
+    bool conflict_diagnosed = false;
+    try {
+        static_cast<void>(satsuma::host::LabLease::acquire(config, config_path, "other"));
+    } catch (const satsuma::Error& error) {
+        const std::string message = error.what();
+        conflict_diagnosed =
+            message.find("Another SatsumaHost write session") != std::string::npos &&
+            message.find("Command: test") != std::string::npos &&
+            message.find("PID:") != std::string::npos &&
+            message.find("Lease:") != std::string::npos &&
+            message.find("retry sequentially") != std::string::npos;
+    }
+    expect(conflict_diagnosed, "write-session conflict omitted the active lease diagnosis");
     first->release("released");
     first.reset();
 

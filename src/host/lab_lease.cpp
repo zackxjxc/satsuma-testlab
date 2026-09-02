@@ -84,14 +84,35 @@ private:
     return process.get() != nullptr && WaitForSingleObject(process.get(), 0) == WAIT_TIMEOUT;
 }
 
+// 格式化当前写租约的有限诊断信息，不暴露配置或归档路径。
+[[nodiscard]] std::string active_lease_detail(const nlohmann::json& lease) {
+    return " Command: " + lease.value("command", std::string("<unknown>")) +
+        "; PID: " + std::to_string(lease.value("host_process_id", 0U)) +
+        "; Lease: " + lease.value("lease_id", std::string("<unknown>")) + ".";
+}
+
 // 在写操作前独占进程互斥。
-[[nodiscard]] UniqueHandle acquire_mutex(const std::wstring& name) {
+[[nodiscard]] UniqueHandle acquire_mutex(
+    const std::wstring& name,
+    const LabConfig& config) {
     UniqueHandle handle(CreateMutexW(nullptr, FALSE, name.c_str()));
     if (handle.get() == nullptr) {
         throw Error("CreateMutexW failed with Win32 error " + std::to_string(GetLastError()));
     }
     if (WaitForSingleObject(handle.get(), 0) != WAIT_OBJECT_0) {
-        throw Error("Another SatsumaHost write session is active for this lab");
+        std::string detail;
+        try {
+            const std::filesystem::path path = lease_path(config);
+            if (std::filesystem::is_regular_file(path)) {
+                const nlohmann::json lease = load_json(path);
+                detail = active_lease_detail(lease);
+            }
+        } catch (...) {
+            // 互斥冲突本身是权威事实，损坏的辅助租约不能覆盖它。
+        }
+        throw Error(
+            "Another SatsumaHost write session is active for this lab." + detail +
+            " Suggested action: wait for the active command and retry sequentially.");
     }
     return handle;
 }
@@ -152,7 +173,7 @@ std::unique_ptr<LabLease> LabLease::acquire(
     std::optional<std::string> run_id,
     const bool recovery) {
     auto state = std::make_unique<State>();
-    state->mutex = acquire_mutex(mutex_name(config, config_path));
+    state->mutex = acquire_mutex(mutex_name(config, config_path), config);
     state->path = lease_path(config);
     if (std::filesystem::is_regular_file(state->path)) {
         const nlohmann::json previous = load_json(state->path);
@@ -160,8 +181,10 @@ std::unique_ptr<LabLease> LabLease::acquire(
             const std::uint32_t process_id = previous.value("host_process_id", 0U);
             const std::string previous_run = previous.value("run_id", std::string{});
             if (process_is_alive(process_id)) {
-                throw Error("Lab write lease is held by active Host process " +
-                    std::to_string(process_id));
+                throw Error(
+                    "Another SatsumaHost write session is active for this lab." +
+                    active_lease_detail(previous) +
+                    " Suggested action: wait for the active command and retry sequentially.");
             }
             if (!recovery || !run_id.has_value() || previous_run != *run_id) {
                 throw Error(
@@ -255,7 +278,7 @@ nlohmann::json LabLease::status(const LabConfig& config) {
 nlohmann::json LabLease::force_unlock(
     const LabConfig& config,
     const std::filesystem::path& config_path) {
-    UniqueHandle mutex = acquire_mutex(mutex_name(config, config_path));
+    UniqueHandle mutex = acquire_mutex(mutex_name(config, config_path), config);
     const std::filesystem::path path = lease_path(config);
     if (!std::filesystem::is_regular_file(path)) {
         ReleaseMutex(mutex.get());
@@ -279,7 +302,7 @@ nlohmann::json LabLease::finalize_run(
     const std::filesystem::path& config_path,
     const std::string& run_id) {
     validate_identifier(run_id, "finalize run_id");
-    UniqueHandle mutex = acquire_mutex(mutex_name(config, config_path));
+    UniqueHandle mutex = acquire_mutex(mutex_name(config, config_path), config);
     const std::filesystem::path path = lease_path(config);
     nlohmann::json lease = load_json(path);
     if (lease.value("state", std::string{}) != "active" ||
