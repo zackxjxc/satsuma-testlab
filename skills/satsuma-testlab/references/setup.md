@@ -28,6 +28,27 @@ Copy-Item config\agent.template.json config\agent.json
 
 准备好 `bin/SatsumaVM.exe`、`scripts/install-agent.ps1` 和 `agent.json`，以便传入每台 Guest。安装 Windows 服务及确认 UAC 属于管理员操作。如果 AI 在当前环境中无法完成这些操作，应给出准确的人工接管步骤，不能声称配置已经完成。
 
+## 未初始化 Guest 的人工交接
+
+当 Guest 尚未安装 Agent，且 Host 与 Guest 之间还没有可用的 Satsuma 通道时，不要把启用 Guest Account
+控制通道、VMware Shared Folders、网络共享或其他长期集成机制作为初始化前提。首次引导应采用一次性的人工
+文件交接：AI 先在 Host 上完成所有能够完成的准备工作，再由用户使用自己熟悉的方式把文件复制进 VM 并执行。
+
+AI 应创建一个内容完整、可以直接交付的目录，至少包含 `SatsumaVM.exe`、`install-agent.ps1` 和已经填写且完成
+基本校验的 `agent.json`；如当前初始化还需要其他脚本、配置或辅助文件，也应一并准备好。不要让用户进入 Guest
+后再手工拼接命令、编辑 JSON 或从多个位置寻找依赖。
+
+准备完成后，向用户提供一段可核对的人工操作说明，其中必须明确：
+
+- Host 上待复制目录的准确路径和目录内文件；
+- Guest 中建议放置的本机目录，以及需要管理员权限的准确执行命令；
+- 用于判断成功的关键输出或状态，例如 Agent 版本、Service 名称、`Running` 状态和 `Auto` 启动类型；
+- 如果结果不一致，应停止在哪一步，并让用户原样返回错误信息；
+- 用户确认成功后，AI 将继续执行的 Host 侧发现、绑定和 `check` 步骤。
+
+发出说明后等待用户确认，不要把“文件已准备好”当成“Guest 已初始化”，也不要在用户尚未回报执行结果时继续
+进行依赖 Agent 在线的操作。用户已有便捷复制方式时直接沿用；只有用户明确要求时，才协助配置额外的传输机制。
+
 ## 绑定并验收环境
 
 在独立的 Host 进程中启动网关：

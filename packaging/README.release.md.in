@@ -19,6 +19,8 @@ Skill，也可以把整个目录安装到客户端的 Skill 目录。安装位�
 
 1. 阅读 [`docs/首次配置.md`](docs/首次配置.md)，填写 Host 和 Agent 配置。
 2. 在 Guest 中安装并启动 `SatsumaVM.exe` Windows Service。
+   如果 Guest 尚未初始化，可让 AI 先准备好二进制、安装脚本和已填写的配置；再按 AI 给出的路径、命令和
+   成功判据，将整套文件手动复制到 VM 中执行。初始化不要求额外开启 Guest Account 通道或共享目录。
 3. 在 Host 的独立终端启动 VMCI 网关：
 
 ```powershell
