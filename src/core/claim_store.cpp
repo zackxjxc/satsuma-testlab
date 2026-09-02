@@ -149,9 +149,6 @@ void validate_evidence_files(const std::vector<StepResultEvidenceFile>& evidence
         if (!std::filesystem::is_regular_file(evidence.staged_path)) {
             throw Error("Staged step result evidence is not a regular file");
         }
-        if (!std::filesystem::is_directory(evidence.canonical_path.parent_path())) {
-            throw Error("Canonical step result evidence parent does not exist");
-        }
         if (!canonical_paths.insert(evidence.canonical_path).second) {
             throw Error("Step result evidence contains a duplicate canonical path");
         }
@@ -282,6 +279,7 @@ StepResultPublishStatus publish_step_result_if_owned(
         return StepResultPublishStatus::Published;
     }
     for (const StepResultEvidenceFile& evidence : evidence_files) {
+        std::filesystem::create_directories(evidence.canonical_path.parent_path());
         publish_evidence_file(evidence);
     }
     write_json_atomic_existing_parent(canonical_result_path, result);

@@ -187,10 +187,23 @@ void test_result_fencing(const std::filesystem::path& root) {
         satsuma::vm::acquire_step_claim_transaction(paths.claim, paths.result, proposed);
     expect(acquired.claim.has_value(), "result test did not acquire its claim");
 
-    std::filesystem::create_directories(paths.result.parent_path());
     const std::filesystem::path staged = paths.result.parent_path() / L".jobs" / L"log.part";
-    const std::filesystem::path canonical = paths.result.parent_path() / L"stdout.log";
+    const std::filesystem::path canonical =
+        paths.result.parent_path() / L"files" / L"generated" / L"result.json";
     write_text(staged, "claim output\n");
+
+    satsuma::StepClaimLease stale = *acquired.claim;
+    stale.job_id = "job_stale";
+    expect(
+        satsuma::vm::publish_step_result_if_owned(
+            paths.claim,
+            stale,
+            paths.result,
+            make_result(stale),
+            {{staged, canonical}}) == satsuma::vm::StepResultPublishStatus::OwnershipLost &&
+            !std::filesystem::exists(canonical.parent_path()),
+        "stale owner created canonical evidence directories");
+
     const satsuma::vm::StepResultPublishStatus published =
         satsuma::vm::publish_step_result_if_owned(
             paths.claim,
@@ -205,8 +218,6 @@ void test_result_fencing(const std::filesystem::path& root) {
             !std::filesystem::exists(staged),
         "owning claim did not atomically publish its result evidence");
 
-    satsuma::StepClaimLease stale = *acquired.claim;
-    stale.job_id = "job_stale";
     expect(
         satsuma::vm::publish_step_result_if_owned(
             paths.claim,
