@@ -50,6 +50,15 @@ if ($quoted -cne '"C:\path with space\\"' -or $escaped -cne '"value\"quoted"') {
     [Console]::Error.WriteLine('Windows command-line quoting changed')
     exit 1
 }
+$reader = $functions | Where-Object Name -eq 'Read-SatsumaInstallConfig'
+Set-Item -LiteralPath Function:\Read-SatsumaInstallConfig -Value $reader.Body.GetScriptBlock()
+$missingPath = Join-Path ([IO.Path]::GetTempPath()) ([Guid]::NewGuid().ToString('N') + '.json')
+$automatic = Read-SatsumaInstallConfig $missingPath
+if ($automatic.schema_version -ne 1 -or
+    $automatic.PSObject.Properties.Name -contains 'lab_id' -or
+    $automatic.PSObject.Properties.Name -contains 'vm_id') {
+    throw 'Installation without external JSON must generate an unbound Agent config'
+}
 ]=])
 execute_process(
     COMMAND "${CMAKE_COMMAND}" -E env
