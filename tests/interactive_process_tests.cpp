@@ -67,7 +67,7 @@ struct ProcessTreeProbe {
         "--child-marker",
         satsuma::path_to_utf8(probe.child_marker),
         "--child-delay-ms",
-        "2000",
+        "-1",
         "--sleep-ms",
         "5000",
     };
@@ -122,10 +122,7 @@ void expect_process_tree_stopped(
     if (child_started) {
         expect(process_has_exited(read_process_id(probe.child_pid)),
             "interactive target child survived Job termination");
-        std::this_thread::sleep_for(std::chrono::milliseconds(2200));
     }
-    expect(!std::filesystem::exists(probe.child_marker),
-        "interactive target child wrote after Job termination");
 }
 
 // 清理上次异常中断留下的专用交互测试工作目录。

@@ -257,6 +257,15 @@ RunManifest Controller::create_run(const TaskPlan& plan) const {
     try {
         std::filesystem::create_directories(staging_directory / L"state");
         std::filesystem::create_directories(staging_directory / L"results");
+        // 运行发布后 Host 会立即轮询每个步骤的规范结果路径。预建父目录，
+        // 避免 Windows 将“结果尚未产生”报告为“路径不存在”。
+        for (const TaskStep& step : manifest.steps) {
+            std::filesystem::create_directories(
+                staging_directory / L"state" / path_from_utf8(step.vm));
+            std::filesystem::create_directories(
+                staging_directory / L"results" / path_from_utf8(step.vm) /
+                path_from_utf8(step.id));
+        }
         for (const auto& input : plan.artifacts) {
             validate_artifact_destination(input.destination);
             if (!std::filesystem::is_regular_file(input.source)) {

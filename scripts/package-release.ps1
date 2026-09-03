@@ -101,13 +101,40 @@ try {
     if (Test-Path -LiteralPath $partialPackagePath) {
         Remove-Item -LiteralPath $partialPackagePath -Force
     }
-    Compress-Archive `
-        -LiteralPath $releaseDirectory `
-        -DestinationPath $partialPackagePath `
-        -CompressionLevel Optimal
+    # Compress-Archive 在 Windows PowerShell 5.1 不会保留 LiteralPath 的根目录，
+    # 会产生与发行包布局契约不一致的 ZIP。逐文件写入 .NET ZIP，以固定根目录。
+    Add-Type -AssemblyName System.IO.Compression
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $packageStream = [IO.File]::Open(
+        $partialPackagePath,
+        [IO.FileMode]::CreateNew,
+        [IO.FileAccess]::Write)
+    try {
+        $packageArchive = New-Object IO.Compression.ZipArchive(
+            $packageStream,
+            [IO.Compression.ZipArchiveMode]::Create,
+            $false)
+        try {
+            foreach ($packageFile in Get-ChildItem -LiteralPath $releaseDirectory -File -Recurse) {
+                $relativePath = $packageFile.FullName.Substring($releaseDirectory.Length)
+                if ($relativePath.StartsWith([IO.Path]::DirectorySeparatorChar)) {
+                    $relativePath = $relativePath.Substring(1)
+                }
+                $entryName = "$packageName/$($relativePath.Replace('\', '/'))"
+                [IO.Compression.ZipFileExtensions]::CreateEntryFromFile(
+                    $packageArchive,
+                    $packageFile.FullName,
+                    $entryName,
+                    [IO.Compression.CompressionLevel]::Optimal) | Out-Null
+            }
+        } finally {
+            $packageArchive.Dispose()
+        }
+    } finally {
+        $packageStream.Dispose()
+    }
 
     # 重新读取 ZIP，确认发布工具能按 Unicode 名称识别所有中文文档。
-    Add-Type -AssemblyName System.IO.Compression.FileSystem
     $archive = [IO.Compression.ZipFile]::OpenRead($partialPackagePath)
     try {
         $entryNames = [Collections.Generic.HashSet[string]]::new(

@@ -10,6 +10,8 @@
 #include <thread>
 #include <utility>
 
+#include <windows.h>
+
 #include <nlohmann/json.hpp>
 
 #include "agent.hpp"
@@ -32,6 +34,21 @@ void expect(const bool condition, const std::string& message) {
     }
 }
 
+// 在有限时间内等待异步进程树收敛。
+template <typename Predicate>
+[[nodiscard]] bool wait_for_condition(
+    Predicate predicate,
+    const std::chrono::milliseconds timeout) {
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (predicate()) {
+            return true;
+        }
+        std::this_thread::sleep_for(5ms);
+    }
+    return predicate();
+}
+
 // 读取一份 UTF-8 测试文本。
 [[nodiscard]] std::string read_text(const std::filesystem::path& path) {
     std::ifstream input(path, std::ios::binary);
@@ -39,6 +56,27 @@ void expect(const bool condition, const std::string& message) {
         std::istreambuf_iterator<char>(input),
         std::istreambuf_iterator<char>(),
     };
+}
+
+// 判断测试夹具记录的子进程是否已退出。
+[[nodiscard]] bool process_has_exited(const DWORD process_id) {
+    const HANDLE process = OpenProcess(SYNCHRONIZE, FALSE, process_id);
+    if (process == nullptr) {
+        if (GetLastError() == ERROR_INVALID_PARAMETER) {
+            return true;
+        }
+        throw std::runtime_error(
+            "cannot open fixture child process " + std::to_string(process_id));
+    }
+    const DWORD wait_result = WaitForSingleObject(process, 0);
+    CloseHandle(process);
+    if (wait_result == WAIT_OBJECT_0) {
+        return true;
+    }
+    if (wait_result == WAIT_TIMEOUT) {
+        return false;
+    }
+    throw std::runtime_error("cannot query fixture child process termination state");
 }
 
 // 返回毫秒级 Agent claim 测试策略。
@@ -258,7 +296,7 @@ void test_renewal_failure_and_recovery(
     const std::filesystem::path mirror_root = root / L"mirror";
     const std::filesystem::path local_work_root = root / L"work";
     const std::string run_id = "run_renewal_failure";
-    write_execute_run(mirror_root, fixture, run_id, 6'000, true, 6'000);
+    write_execute_run(mirror_root, fixture, run_id, 6'000, true, -1);
 
     satsuma::vm::AgentRuntimeOptions failing_options;
     failing_options.claim_lease_policy = failure_injection_policy();
@@ -295,8 +333,20 @@ void test_renewal_failure_and_recovery(
                 std::string::npos,
         "stale Agent evidence omitted the renewal failure reason");
 
+    const std::filesystem::path child_pid_path =
+        local_work_root / L"vm_agent_claim_test" / satsuma::path_from_utf8(run_id) /
+        L"vm_01" / L"child.pid";
+    expect(
+        std::filesystem::is_regular_file(child_pid_path),
+        "lease-lost job did not record its child process ID");
+    const DWORD first_child_process_id = static_cast<DWORD>(
+        std::stoul(read_text(child_pid_path)));
+    expect(
+        wait_for_condition([&] { return process_has_exited(first_child_process_id); }, 5s),
+        "lease loss did not terminate the first attempt's child process");
+
     // attempt 2 验证恢复发布，不重复运行故意跨越安全截止的长任务。
-    write_execute_run(mirror_root, fixture, run_id, 400, true);
+    write_execute_run(mirror_root, fixture, run_id, 400, true, -1);
     while (satsuma::unix_time_ms() < first_claim.lease_expires_unix_ms) {
         std::this_thread::sleep_for(5ms);
     }
@@ -322,12 +372,18 @@ void test_renewal_failure_and_recovery(
         std::filesystem::is_regular_file(stale_result),
         "recovered job removed the old job forensic evidence");
 
-    std::this_thread::sleep_for(1100ms);
     expect(
-        !std::filesystem::exists(
-            local_work_root / L"vm_agent_claim_test" / satsuma::path_from_utf8(run_id) /
-                L"vm_01" / L"child-survived.marker"),
-        "renewal cancellation left a child process outside the Job Object kill boundary");
+        std::filesystem::is_regular_file(child_pid_path),
+        "recovered job did not record its child process ID");
+    const DWORD recovered_child_process_id = static_cast<DWORD>(
+        std::stoul(read_text(child_pid_path)));
+    expect(
+        wait_for_condition(
+            [&] {
+                return process_has_exited(recovered_child_process_id);
+            },
+            5s),
+        "normal completion did not terminate the recovered attempt's child process");
 }
 
 // 验证两个 Agent 同时扫描时只有一个 job 能领取和发布结果。
@@ -450,8 +506,7 @@ int main(const int argc, char* argv[]) {
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "SatsumaVmAgentClaimTests failed: " << error.what() << '\n';
-        std::error_code cleanup_error;
-        std::filesystem::remove_all(root, cleanup_error);
+        std::cerr << "Failure evidence retained at: " << satsuma::path_to_utf8(root) << '\n';
         return 1;
     }
 }

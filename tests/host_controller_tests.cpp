@@ -95,6 +95,20 @@ void expect_error(Operation operation, const std::string& message) {
         satsuma::path_from_utf8(step.id) / L"execution.json";
 }
 
+// 新运行必须预建每个步骤的规范结果目录，供 Host 安全轮询和 Agent 原子发布。
+void test_create_run_precreates_step_result_directories(const std::filesystem::path& root) {
+    const satsuma::LabConfig config = make_config(root);
+    const satsuma::host::Controller controller(config);
+    const satsuma::RunManifest manifest = controller.create_run(make_plan("precreated_result_paths"));
+    for (const satsuma::TaskStep& step : manifest.steps) {
+        const std::filesystem::path execution = result_path(config, manifest.run_id, step);
+        expect(
+            std::filesystem::is_directory(execution.parent_path()) &&
+                !std::filesystem::exists(execution),
+            "run creation did not precreate an empty canonical step result directory");
+    }
+}
+
 // 验证收集文件中的同名 JSON 不会伪造步骤完成数量。
 void test_report_uses_canonical_result_paths(const std::filesystem::path& root) {
     const satsuma::LabConfig config = make_config(root);
@@ -574,6 +588,7 @@ int main() {
         std::filesystem::temp_directory_path() /
         satsuma::path_from_utf8(satsuma::make_id("satsuma-host-controller-test"));
     try {
+        test_create_run_precreates_step_result_directories(root / L"precreated-result-paths");
         test_report_uses_canonical_result_paths(root / L"paths");
         test_report_exposes_manual_intervention(root / L"manual");
         test_report_rejects_mismatched_identity(root / L"identity");

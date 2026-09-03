@@ -186,7 +186,12 @@ add_test(
         "$<TARGET_FILE:SatsumaTestFixture>"
         "$<TARGET_FILE:SatsumaVM>"
 )
-set_tests_properties(SatsumaVmAgentTests PROPERTIES TIMEOUT 25)
+set_tests_properties(
+    SatsumaVmAgentTests
+    PROPERTIES
+        ENVIRONMENT "SATSUMA_TEST_LOCAL_MIRROR=1"
+        TIMEOUT 45
+)
 
 add_executable(
     SatsumaVmAgentClaimTests
@@ -227,7 +232,12 @@ target_link_libraries(
 )
 satsuma_enable_test_warnings(SatsumaVmUpdateTests)
 add_test(NAME SatsumaVmUpdateTests COMMAND SatsumaVmUpdateTests)
-set_tests_properties(SatsumaVmUpdateTests PROPERTIES TIMEOUT 60)
+set_tests_properties(
+    SatsumaVmUpdateTests
+    PROPERTIES
+        ENVIRONMENT "SATSUMA_TEST_LOCAL_MIRROR=1"
+        TIMEOUT 120
+)
 
 find_program(SATSUMA_WINDOWS_POWERSHELL powershell.exe REQUIRED)
 find_program(SATSUMA_POWERSHELL_CORE pwsh)

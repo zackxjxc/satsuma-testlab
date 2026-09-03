@@ -245,10 +245,12 @@ void test_invalid_state_signal(const std::filesystem::path& root) {
 // 验证持续 I/O 失败会在持久化租约到期前进入安全取消。
 void test_safety_deadline(const std::filesystem::path& root) {
     satsuma::vm::ClaimLeasePolicy policy = test_policy();
-    policy.lease_duration = 300ms;
-    policy.renewal_interval = 50ms;
-    policy.retry_interval = 20ms;
-    policy.safety_margin = 60ms;
+    // 留出足够的首次调度窗口；Windows CI 可暂停新线程数百毫秒，
+    // 过短租约会让测试在注入首次失败前自然达到安全截止。
+    policy.lease_duration = 3s;
+    policy.renewal_interval = 150ms;
+    policy.retry_interval = 50ms;
+    policy.safety_margin = 300ms;
     const std::filesystem::path claim_path = root / L"state" / L"execute.claim.json";
     const std::filesystem::path result_path = root / L"results" / L"execution.json";
     const satsuma::StepClaimLease owner = acquire_claim(
@@ -269,7 +271,7 @@ void test_safety_deadline(const std::filesystem::path& root) {
     expect(
         wait_for_condition(
             [&] { return session.lease_loss_token().stop_requested(); },
-            5s),
+            10s),
         "persistent claim renewal failure did not reach the safety deadline");
     expect(
         attempts.load(std::memory_order_relaxed) > 0 &&

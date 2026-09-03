@@ -551,12 +551,17 @@ nlohmann::json Diagnostics::run_probe(
             const bool result_available = std::filesystem::is_regular_file(
                 result_path,
                 availability_error);
-            if (availability_error) {
+            if (availability_error &&
+                availability_error != std::errc::no_such_file_or_directory) {
                 validation_errors[vm->id] =
-                    "Cannot inspect Agent diagnostic result: " + availability_error.message();
+                    "Cannot inspect Agent diagnostic result at " +
+                    path_to_utf8(result_path) + ": " + availability_error.message();
                 continue;
             }
             if (!result_available) {
+                // 尚未产生 execution.json 是轮询期间的正常状态；Windows 在
+                // 父目录刚创建或被延迟同步时可能同时返回 ENOENT。
+                validation_errors.erase(vm->id);
                 continue;
             }
 

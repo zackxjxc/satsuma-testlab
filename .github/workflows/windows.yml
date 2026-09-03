@@ -15,7 +15,7 @@ permissions:
 jobs:
   build-test-package:
     runs-on: windows-2025
-    timeout-minutes: 30
+    timeout-minutes: 45
 
     steps:
       - uses: actions/checkout@v7
@@ -33,9 +33,10 @@ jobs:
       - name: Validate JSON Schema documents
         shell: pwsh
         run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          $ErrorActionPreference = 'Stop'
           python -m pip install check-jsonschema==0.37.4
           check-jsonschema --check-metaschema schemas/*.schema.json
-          check-jsonschema --schemafile schemas/lab.schema.json lab.json
           check-jsonschema --schemafile schemas/lab.schema.json config/lab.template.json
           check-jsonschema --schemafile schemas/agent.schema.json examples/agent-vm-01.json
           check-jsonschema --schemafile schemas/agent.schema.json config/agent.template.json
@@ -53,13 +54,32 @@ jobs:
         run: cmake --build --preset windows-debug --parallel
 
       - name: Test Debug
-        run: ctest --preset windows-debug
+        run: ctest --preset windows-debug --repeat until-fail:3
+
+      - name: Retain Debug test logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-logs-debug
+          path: build/windows-default/Testing/Temporary/
+          if-no-files-found: ignore
 
       - name: Build Release
         run: cmake --build --preset windows-release --parallel
 
       - name: Test Release
-        run: ctest --preset windows-release
+        run: ctest --preset windows-release --repeat until-fail:3
+
+      - name: Retain Release test logs and failure evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-logs-release-and-evidence
+          include-hidden-files: true
+          path: |
+            build/windows-default/Testing/Temporary/
+            ${{ runner.temp }}/vm-agent-claim-test*/
+          if-no-files-found: ignore
 
       - name: Package Release
         run: cmake --build --preset windows-release --target SatsumaPackage

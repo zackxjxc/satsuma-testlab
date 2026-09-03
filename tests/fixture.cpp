@@ -336,8 +336,13 @@ int main(const int argc, char* argv[]) {
         }
 
         if (child_mode) {
-            if (child_marker_path.empty() || child_delay_ms <= 0) {
+            if (child_marker_path.empty() || child_delay_ms == 0 || child_delay_ms < -1) {
                 throw std::runtime_error("fixture child mode requires marker and delay");
+            }
+            // -1 创建不会自行退出的探针，直接验证 Job 终止，不依赖延时写文件。
+            if (child_delay_ms == -1) {
+                Sleep(INFINITE);
+                return 0;
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(child_delay_ms));
             write_text_file(child_marker_path, "child-survived\n");
@@ -357,8 +362,9 @@ int main(const int argc, char* argv[]) {
             std::cout << satsuma::load_json(print_json_path).dump(2) << '\n';
             return 0;
         }
-        if (!child_pid_path.empty() || !child_marker_path.empty() || child_delay_ms > 0) {
-            if (child_pid_path.empty() || child_marker_path.empty() || child_delay_ms <= 0) {
+        if (!child_pid_path.empty() || !child_marker_path.empty() || child_delay_ms != 0) {
+            if (child_pid_path.empty() || child_marker_path.empty() ||
+                child_delay_ms == 0 || child_delay_ms < -1) {
                 throw std::runtime_error(
                     "fixture child process requires PID path, marker, and delay");
             }
