@@ -6,13 +6,9 @@
   "additionalProperties": false,
   "required": [
     "schema_version",
-    "protocol_version",
-    "lab_id",
-    "agent_version",
-    "transport",
-    "storage_root",
-    "mirror_root"
+    "storage_root"
   ],
+  "dependentRequired": {"vm_id": ["lab_id"]},
   "properties": {
     "$schema": {"type": "string"},
     "schema_version": {"const": 1},
@@ -24,7 +20,6 @@
     "transport": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["host_cid", "vmci_port"],
       "properties": {
         "host_cid": {"type": "integer", "minimum": 0, "maximum": 4294967294},
         "vmci_port": {"type": "integer", "minimum": 1, "maximum": 4294967294},

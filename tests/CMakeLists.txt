@@ -269,6 +269,19 @@ add_test(
 )
 
 add_executable(SatsumaFakeVmrun fake_vmrun.cpp)
+
+add_executable(SatsumaHostBootstrapTests host_bootstrap_tests.cpp)
+add_executable(SatsumaEnrollmentTests enrollment_tests.cpp)
+target_link_libraries(SatsumaEnrollmentTests PRIVATE SatsumaHostLib SatsumaVmTestLib)
+target_compile_definitions(SatsumaEnrollmentTests PRIVATE SATSUMA_TEST_LOCAL_MIRROR)
+satsuma_enable_test_warnings(SatsumaEnrollmentTests)
+add_test(NAME SatsumaEnrollmentTests COMMAND SatsumaEnrollmentTests)
+set_tests_properties(SatsumaEnrollmentTests PROPERTIES ENVIRONMENT "SATSUMA_TEST_LOCAL_MIRROR=1" TIMEOUT 30 RUN_SERIAL TRUE)
+target_link_libraries(SatsumaHostBootstrapTests PRIVATE SatsumaHostLib)
+satsuma_enable_test_warnings(SatsumaHostBootstrapTests)
+add_dependencies(SatsumaHostBootstrapTests SatsumaFakeVmrun SatsumaVM)
+add_test(NAME SatsumaHostBootstrapTests COMMAND SatsumaHostBootstrapTests
+    "$<TARGET_FILE:SatsumaFakeVmrun>" "$<TARGET_FILE:SatsumaVM>")
 target_compile_features(SatsumaFakeVmrun PRIVATE cxx_std_20)
 set_target_properties(SatsumaFakeVmrun PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"

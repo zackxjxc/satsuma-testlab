@@ -3,6 +3,7 @@
 
 #include <filesystem>
 #include <string>
+#include <nlohmann/json.hpp>
 
 #include "satsuma/core/config.hpp"
 
@@ -19,6 +20,10 @@ void prepare_agent_hardware_identity(
 
 // 检查 Host 是否为未绑定 Agent 发布了新的 VM 标识。
 [[nodiscard]] bool refresh_agent_binding(AgentConfig& config);
+
+// 应用 Host 登记结果并隔离镜像/工作目录；缓存只供自更新定位，不授予离线执行权。
+[[nodiscard]] bool apply_agent_enrollment(
+    AgentConfig& config, const nlohmann::json& enrollment, bool persist = true);
 
 // 返回硬件维度的规范 presence 路径。
 [[nodiscard]] std::filesystem::path hardware_presence_path(const AgentConfig& config);

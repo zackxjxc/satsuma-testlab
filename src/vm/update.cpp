@@ -279,6 +279,9 @@ void wait_for_presence(
         throw Error("Agent update config does not match the manifest source identity");
     }
     if (manifest.next_vm_id.has_value()) {
+        if (config.auto_enroll) {
+            throw Error("Automatically enrolled VM identities must be changed in the Host configuration");
+        }
         const std::filesystem::path target_presence =
             config.mirror_root / L"agents" /
             path_from_utf8(*manifest.next_vm_id + ".json");

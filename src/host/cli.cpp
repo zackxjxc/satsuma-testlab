@@ -16,6 +16,9 @@
 #include <thread>
 #include <vector>
 
+#include <windows.h>
+
+#include "bootstrap.hpp"
 #include "controller.hpp"
 #include "diagnostics.hpp"
 #include "gateway.hpp"
@@ -325,6 +328,10 @@ void print_usage() {
         << "Usage:\n"
         << "  SatsumaHost --help\n"
         << "  SatsumaHost --version [--json]\n"
+        << "  SatsumaHost init --config lab.local.json [--lab-id <id>] "
+           "--vmx <file-or-directory> [--vmx <file-or-directory> ...] "
+           "--base-snapshot <name> [--vmrun <path>] [--vmci-port <port>] "
+           "[--agent-binary <path>]\n"
         << "  SatsumaHost gateway --config lab.local.json\n"
         << "  SatsumaHost check --config lab.local.json [--vm <vm-id>] [--timeout-seconds <1-300>]\n"
         << "  SatsumaHost discover --config lab.local.json\n"
@@ -1046,6 +1053,20 @@ int run_cli(const int argc, wchar_t* argv[]) {
             } else {
                 std::cout << satsuma::kVersion << '\n';
             }
+            return 0;
+        }
+
+        if (command == L"init") {
+            std::vector<wchar_t> module_path(32768);
+            const DWORD length = GetModuleFileNameW(
+                nullptr, module_path.data(), static_cast<DWORD>(module_path.size()));
+            if (length == 0 || length >= module_path.size()) {
+                throw satsuma::Error("Cannot locate the Host executable directory");
+            }
+            const std::filesystem::path directory =
+                std::filesystem::path(std::wstring(module_path.data(), length)).parent_path();
+            std::cout << initialize_lab(
+                std::vector<std::wstring>(argv + 2, argv + argc), directory).dump(2) << '\n';
             return 0;
         }
 

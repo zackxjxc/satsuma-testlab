@@ -26,8 +26,10 @@ public:
     [[nodiscard]] transport::Message handle(const transport::Message& request);
 
 private:
+    [[nodiscard]] transport::Message enroll(const nlohmann::json& request);
     LabConfig config_;
     std::unique_ptr<GatewayStateLock> state_lock_;
+    std::string enrollment_id_;
 };
 
 }  // namespace satsuma::host

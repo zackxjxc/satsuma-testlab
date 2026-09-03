@@ -12,6 +12,7 @@
 #include <vector>
 
 #include <nlohmann/json.hpp>
+#include <windows.h>
 
 #include "satsuma/core/errors.hpp"
 #include "satsuma/core/hardware_identity.hpp"
@@ -404,6 +405,42 @@ nlohmann::json discover_agents(const LabConfig& config) {
         {"collisions", std::move(collisions)},
         {"agents", std::move(agents)},
     };
+}
+
+void publish_initial_agent_binding(
+    const LabConfig& config,
+    const std::string& hardware_id) {
+    const VmConfig* vm = find_vm_by_hardware(config, hardware_id);
+    if (vm == nullptr) {
+        return;
+    }
+    const auto path = resolve_under_root(
+        config.transport.state_root,
+        std::filesystem::path(L"agents") / path_from_utf8(hardware_id + ".binding.json"));
+    if (std::filesystem::exists(path)) {
+        return;
+    }
+    reject_hardware_identity_conflict(config, hardware_id);
+    const auto temporary = path.parent_path() / path_from_utf8(".tmp-" + make_id("binding"));
+    try {
+        write_json_atomic(temporary, {
+            {"schema_version", 1}, {"lab_id", config.lab_id},
+            {"hardware_id", hardware_id}, {"vm_id", vm->id}, {"bound_at", utc_timestamp()},
+        });
+        if (!MoveFileExW(temporary.c_str(), path.c_str(), MOVEFILE_WRITE_THROUGH)) {
+            const DWORD error = GetLastError();
+            if (error != ERROR_ALREADY_EXISTS && error != ERROR_FILE_EXISTS) {
+                throw Error("Cannot publish initial Agent binding; Win32 error " +
+                            std::to_string(error));
+            }
+        }
+    } catch (...) {
+        std::error_code ignored;
+        std::filesystem::remove(temporary, ignored);
+        throw;
+    }
+    std::error_code ignored;
+    std::filesystem::remove(temporary, ignored);
 }
 
 nlohmann::json bind_agent_hardware(

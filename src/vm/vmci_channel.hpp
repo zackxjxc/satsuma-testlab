@@ -17,8 +17,13 @@ namespace satsuma::vm {
 class VmciChannel {
 public:
     VmciChannel(const AgentConfig& config, std::string session_id);
+#ifdef SATSUMA_TEST_LOCAL_MIRROR
+    // 测试专用端点，生产二进制不提供 VMCI 之外的连接入口。
+    VmciChannel(const AgentConfig& config, std::string session_id, const std::string& test_endpoint);
+#endif
 
     void update_config(const AgentConfig& config);
+    [[nodiscard]] bool enroll(AgentConfig& config, const std::string& binary_sha256);
     void synchronize_inbound();
     void synchronize_outbound();
 

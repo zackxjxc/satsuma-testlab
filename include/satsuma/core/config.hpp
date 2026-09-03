@@ -11,6 +11,9 @@
 
 namespace satsuma {
 
+inline constexpr std::uint32_t kDefaultHostCid = 2;
+inline constexpr std::uint32_t kDefaultVmciPort = 42510;
+
 // VMware Workstation Provider 配置。
 struct ProviderConfig {
     std::string type;               // Provider 类型
@@ -63,6 +66,9 @@ struct LabConfig {
 
 // VM Agent 的本机配置。
 struct AgentConfig {
+    bool auto_enroll{false};                // 未配置 lab_id 时先通过 Host 登记，禁止离线执行
+    std::string enrollment_id;             // Host 状态空间标识，隔离冷快照内的旧运行缓存
+    std::filesystem::path bootstrap_mirror_root; // 原始镜像根，运行时按登记身份分区
     int protocol_version{kRunManifestProtocolVersion}; // VMCI 任务协议版本
     std::string lab_id;                     // 实验室稳定 ID
     std::string vm_id;                      // 当前虚拟机的稳定标识，未绑定时暂用硬件 ID

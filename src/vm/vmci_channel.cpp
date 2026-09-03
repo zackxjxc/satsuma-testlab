@@ -9,6 +9,7 @@
 
 #include <windows.h>
 
+#include "hardware_identity.hpp"
 #include "satsuma/core/errors.hpp"
 #include "satsuma/core/id.hpp"
 #include "satsuma/core/path.hpp"
@@ -71,8 +72,16 @@ void VmciChannel::update_config(const AgentConfig& config) {
     config_ = config;
 }
 
+#ifdef SATSUMA_TEST_LOCAL_MIRROR
+VmciChannel::VmciChannel(
+    const AgentConfig& config, std::string session_id, const std::string& test_endpoint)
+    : config_(config), session_id_(std::move(session_id)),
+      client_(test_endpoint, std::chrono::milliseconds(config.transport.request_timeout_ms)),
+      cancellation_client_(test_endpoint, std::chrono::milliseconds(1000)) {}
+#endif
+
 nlohmann::json VmciChannel::request_base(const char* operation) const {
-    return {
+    nlohmann::json request = {
         {"schema_version", 1},
         {"operation", operation},
         {"lab_id", config_.lab_id},
@@ -80,6 +89,28 @@ nlohmann::json VmciChannel::request_base(const char* operation) const {
         {"vm_id", config_.vm_id},
         {"session_id", session_id_},
     };
+    if (config_.auto_enroll) {
+        request["enrollment_id"] = config_.enrollment_id;
+    }
+    return request;
+}
+
+bool VmciChannel::enroll(AgentConfig& config, const std::string& binary_sha256) {
+    if (!config.auto_enroll) {
+        return false;
+    }
+    const auto response = client_.request({
+        {"schema_version", 1}, {"operation", "enroll"}, {"enrollment_version", 1},
+        {"protocol_version", config.protocol_version}, {"hardware_id", config.hardware_id},
+        {"session_id", session_id_}, {"agent_version", config.agent_version},
+        {"binary_sha256", binary_sha256},
+    });
+    if (response.metadata.value("session_id", std::string{}) != session_id_) {
+        throw Error("Host enrollment response belongs to another Agent session");
+    }
+    const bool changed = apply_agent_enrollment(config, response.metadata);
+    update_config(config);
+    return changed;
 }
 
 void VmciChannel::synchronize_inbound() {

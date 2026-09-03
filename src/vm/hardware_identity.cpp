@@ -60,6 +60,46 @@ void write_hardware_cache(const AgentConfig& config) {
 
 }  // namespace
 
+bool apply_agent_enrollment(
+    AgentConfig& config, const nlohmann::json& enrollment, const bool persist) {
+    if (!config.auto_enroll || enrollment.value("status", std::string{}) != "enrolled" ||
+        enrollment.value("enrollment_version", 0) != 1 ||
+        enrollment.value("protocol_version", 0) != config.protocol_version ||
+        enrollment.value("hardware_id", std::string{}) != config.hardware_id) {
+        throw Error("Host enrollment does not match this Agent");
+    }
+    const std::string lab_id = enrollment.at("lab_id").get<std::string>();
+    const std::string vm_id = enrollment.at("vm_id").get<std::string>();
+    const std::string enrollment_id = enrollment.at("enrollment_id").get<std::string>();
+    validate_identifier(lab_id, "enrolled lab_id");
+    validate_identifier(vm_id, "enrolled vm_id");
+    validate_identifier(enrollment_id, "enrollment_id");
+    const bool changed = config.lab_id != lab_id || config.vm_id != vm_id ||
+        config.enrollment_id != enrollment_id;
+    const auto base = config.bootstrap_mirror_root.empty()
+        ? config.mirror_root : config.bootstrap_mirror_root;
+    const auto relative = std::filesystem::path(L"enrolled") / path_from_utf8(enrollment_id);
+    const auto mirror = resolve_under_root(base, relative);
+    const auto work = resolve_under_root(config.storage_root / L"work", relative);
+    if (persist) {
+        const auto path = config.storage_root / L"agent" / L"enrollment-cache.json";
+        // 每轮握手无需重写同一个缓存，也不会将实验室身份写进安装配置。
+        bool current = false;
+        try { current = load_json(path) == enrollment; } catch (...) {}
+        if (!current) {
+            write_json_atomic(path, enrollment);
+        }
+    }
+    config.bootstrap_mirror_root = base;
+    config.lab_id = lab_id;
+    config.vm_id = vm_id;
+    config.enrollment_id = enrollment_id;
+    config.mirror_root = mirror;
+    config.local_work_root = work;
+    config.identity_unbound = false;
+    return changed;
+}
+
 AgentConfig load_runtime_agent_config(const std::filesystem::path& config_path) {
     AgentConfig config = load_agent_config(config_path);
     prepare_agent_hardware_identity(config);
@@ -73,6 +113,24 @@ void prepare_agent_hardware_identity(
         hardware_id.empty() ? read_smbios_hardware_id() : hardware_id);
     config.previous_hardware_id.clear();
     config.previous_vm_id.clear();
+
+    if (config.auto_enroll) {
+        config.identity_unbound = true;
+        config.lab_id.clear();
+        config.enrollment_id.clear();
+        if (!config.bootstrap_mirror_root.empty()) {
+            config.mirror_root = config.bootstrap_mirror_root;
+        }
+        config.local_work_root = config.storage_root / L"work";
+        config.vm_id = config.hardware_id;
+        try {
+            static_cast<void>(apply_agent_enrollment(config, load_json(
+                config.storage_root / L"agent" / L"enrollment-cache.json"), false));
+        } catch (...) {
+            // 新安装、克隆或旧缓存损坏时都重新握手；不使用旧式 vm_id 缓存。
+        }
+        return;
+    }
 
     const std::filesystem::path cache_path = hardware_cache_path(config);
     std::string cached_vm_id; // 同一硬件上次经 Host 确认的逻辑标识
@@ -113,6 +171,9 @@ void prepare_agent_hardware_identity(
 }
 
 bool refresh_agent_binding(AgentConfig& config) {
+    if (config.auto_enroll) {
+        return false;
+    }
     if (config.vm_id_configured || !std::filesystem::is_regular_file(binding_path(config))) {
         return false;
     }

@@ -16,6 +16,7 @@
 #include "satsuma/core/json_contract.hpp"
 #include "satsuma/core/json_io.hpp"
 #include "satsuma/core/path.hpp"
+#include "satsuma/core/version.hpp"
 
 namespace satsuma {
 namespace {
@@ -109,7 +110,7 @@ LabConfig load_lab_config(const std::filesystem::path& path) {
         "Host transport configuration");
     config.transport.state_root = path_from_utf8(required_string(transport, "state_root"));
     require_absolute_path(config.transport.state_root, "transport.state_root");
-    const std::uint64_t vmci_port = transport.at("vmci_port").get<std::uint64_t>();
+    const std::uint64_t vmci_port = transport.value("vmci_port", std::uint64_t{kDefaultVmciPort});
     if (vmci_port == 0 || vmci_port >= std::numeric_limits<std::uint32_t>::max()) {
         throw Error("transport.vmci_port must be between 1 and 4294967294");
     }
@@ -175,22 +176,30 @@ AgentConfig load_agent_config(const std::filesystem::path& path) {
     validate_schema_version(value, "agent.json");
 
     AgentConfig config;
-    config.protocol_version = value.value("protocol_version", 0);
-    config.lab_id = required_string(value, "lab_id");
+    config.protocol_version = value.value("protocol_version", kRunManifestProtocolVersion);
+    config.auto_enroll = !value.contains("lab_id");
+    config.lab_id = config.auto_enroll ? std::string{} : required_string(value, "lab_id");
     config.vm_id_configured = value.contains("vm_id");
     if (config.vm_id_configured) {
         config.vm_id = required_string(value, "vm_id");
     }
-    config.agent_version = required_string(value, "agent_version");
+    config.agent_version = value.contains("agent_version")
+        ? required_string(value, "agent_version") : kVersion;
     config.last_update_id = value.value("last_update_id", std::string{});
-    validate_identifier(config.lab_id, "lab_id");
+    if (!config.auto_enroll) {
+        validate_identifier(config.lab_id, "lab_id");
+    } else if (config.vm_id_configured) {
+        throw Error("vm_id requires lab_id; automatic enrollment assigns both identities");
+    }
     if (config.vm_id_configured) {
         validate_identifier(config.vm_id, "vm_id");
     }
     config.storage_root = path_from_utf8(required_string(value, "storage_root"));
     require_absolute_path(config.storage_root, "storage_root");
     config.local_work_root = config.storage_root / L"work";
-    config.mirror_root = path_from_utf8(required_string(value, "mirror_root"));
+    config.mirror_root = value.contains("mirror_root")
+        ? path_from_utf8(required_string(value, "mirror_root")) : config.storage_root / L"mirror";
+    config.bootstrap_mirror_root = config.mirror_root;
     require_absolute_path(config.mirror_root, "mirror_root");
     const std::filesystem::path storage_drive = config.storage_root.root_path();
     if (storage_drive.empty() || GetDriveTypeW(storage_drive.c_str()) != DRIVE_FIXED) {
@@ -200,13 +209,13 @@ AgentConfig load_agent_config(const std::filesystem::path& path) {
     if (mirror_drive.empty() || GetDriveTypeW(mirror_drive.c_str()) != DRIVE_FIXED) {
         throw Error("mirror_root must be located on a local fixed drive");
     }
-    const auto& transport = value.at("transport");
+    const auto transport = value.value("transport", nlohmann::json::object());
     reject_unknown_fields(
         transport,
         {"host_cid", "vmci_port", "request_timeout_ms"},
         "Agent transport configuration");
-    const std::uint64_t host_cid = transport.at("host_cid").get<std::uint64_t>();
-    const std::uint64_t vmci_port = transport.at("vmci_port").get<std::uint64_t>();
+    const std::uint64_t host_cid = transport.value("host_cid", std::uint64_t{kDefaultHostCid});
+    const std::uint64_t vmci_port = transport.value("vmci_port", std::uint64_t{kDefaultVmciPort});
     if (host_cid >= std::numeric_limits<std::uint32_t>::max()) {
         throw Error("transport.host_cid must be between 0 and 4294967294");
     }

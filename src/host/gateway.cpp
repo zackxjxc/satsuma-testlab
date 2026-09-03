@@ -12,8 +12,10 @@
 
 #include <windows.h>
 
+#include "identity.hpp"
 #include "satsuma/core/claim_store.hpp"
 #include "satsuma/core/errors.hpp"
+#include "satsuma/core/hardware_identity.hpp"
 #include "satsuma/core/id.hpp"
 #include "satsuma/core/json_io.hpp"
 #include "satsuma/core/path.hpp"
@@ -792,6 +794,22 @@ Gateway::Gateway(LabConfig config)
     std::filesystem::create_directories(config_.transport.state_root / L"agents");
     std::filesystem::create_directories(config_.transport.state_root / L"runs");
     std::filesystem::create_directories(config_.transport.state_root / L"updates");
+    const auto identity_path = config_.transport.state_root / L".enrollment.json";
+    if (std::filesystem::exists(identity_path)) {
+        const auto identity = load_json(identity_path);
+        if (identity.value("schema_version", 0) != 1 ||
+            identity.value("lab_id", std::string{}) != config_.lab_id) {
+            throw Error("Host enrollment state belongs to another laboratory");
+        }
+        enrollment_id_ = identity.at("enrollment_id").get<std::string>();
+        validate_identifier(enrollment_id_, "Host enrollment_id");
+    } else {
+        enrollment_id_ = make_id("host");
+        write_json_atomic(identity_path, {
+            {"schema_version", 1}, {"lab_id", config_.lab_id},
+            {"enrollment_id", enrollment_id_},
+        });
+    }
 }
 
 Gateway::~Gateway() = default;
@@ -803,14 +821,58 @@ void Gateway::run(const std::stop_token stop_token) {
     server.run(stop_token);
 }
 
+transport::Message Gateway::enroll(const nlohmann::json& request) {
+    if (request.value("schema_version", 0) != 1 ||
+        request.value("enrollment_version", 0) != 1 ||
+        request.value("protocol_version", 0) != kRunManifestProtocolVersion) {
+        throw Error("Unsupported Agent enrollment protocol");
+    }
+    const std::string hardware_id = normalize_hardware_id(require_string(request, "hardware_id"));
+    const std::string session_id = require_string(request, "session_id");
+    validate_identifier(session_id, "enrollment session_id");
+    const std::string version = require_string(request, "agent_version");
+    const std::string digest = require_string(request, "binary_sha256");
+    if (version.empty() || version.size() > 64 || digest.size() != 64 ||
+        !std::all_of(digest.begin(), digest.end(), [](const char c) {
+            return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+        })) {
+        throw Error("Invalid Agent enrollment version or binary digest");
+    }
+    const auto vm = std::find_if(config_.vms.begin(), config_.vms.end(),
+        [&hardware_id](const VmConfig& item) { return item.hardware_id == hardware_id; });
+    if (vm == config_.vms.end()) {
+        throw Error("Agent hardware UUID is not in this Host's authorized VM configuration");
+    }
+    // 版本/哈希仍由 check 校验；登记通道须允许不匹配的 Agent 接收受控更新。
+    return {{{"status", "enrolled"}, {"enrollment_version", 1},
+             {"protocol_version", kRunManifestProtocolVersion},
+             {"hardware_id", hardware_id}, {"session_id", session_id},
+             {"lab_id", config_.lab_id}, {"vm_id", vm->id},
+             {"enrollment_id", enrollment_id_}}, {}};
+}
+
 transport::Message Gateway::handle(const transport::Message& message) {
     const nlohmann::json& request = message.metadata;
+    if (request.value("operation", std::string{}) == "enroll") {
+        if (!message.payload.empty()) {
+            throw Error("Agent enrollment does not accept a binary payload");
+        }
+        return enroll(request);
+    }
     const PeerIdentity peer = load_peer(request, config_);
+    if (request.contains("enrollment_id")) {
+        const VmConfig* vm = find_vm(config_, peer.vm_id);
+        if (request.at("enrollment_id") != enrollment_id_ || vm == nullptr ||
+            vm->hardware_id != peer.hardware_id) {
+            throw Error("Agent enrollment no longer matches this Host; reconnect to enroll");
+        }
+    }
     const std::string operation = require_string(request, "operation");
     if (operation == "ping") {
         return {{{"status", "ready"}, {"transport", "vmci"}}, {}};
     }
     if (operation == "index") {
+        publish_initial_agent_binding(config_, peer.hardware_id);
         return handle_index(config_, peer, request);
     }
     if (operation == "download") {

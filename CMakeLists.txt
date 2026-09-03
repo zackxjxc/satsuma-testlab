@@ -236,6 +236,7 @@ target_compile_definitions(
 target_link_libraries(SatsumaVmci PUBLIC SatsumaCore cppzmq-static)
 
 add_library(SatsumaHostLib STATIC
+    src/host/bootstrap.cpp
     src/host/cli.cpp
     src/host/controller.cpp
     src/host/diagnostics.cpp
@@ -246,7 +247,7 @@ add_library(SatsumaHostLib STATIC
     src/vmware/vmrun_provider.cpp
 )
 target_include_directories(SatsumaHostLib PUBLIC src/host src/vmware)
-target_link_libraries(SatsumaHostLib PUBLIC SatsumaCore SatsumaVmci)
+target_link_libraries(SatsumaHostLib PUBLIC SatsumaCore SatsumaVmci PRIVATE advapi32 version)
 
 add_executable(SatsumaHost src/host/main.cpp)
 satsuma_add_windows_version_resource(

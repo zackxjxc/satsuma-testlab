@@ -370,7 +370,12 @@ int Agent::run_once(const std::stop_token stop_token) {
         return 0;
     }
     if (vmci_channel_) {
+        if (vmci_channel_->enroll(config_, binary_sha256_)) {
+            inventory_.update_config(config_);
+        }
         vmci_channel_->synchronize_inbound();
+    } else if (config_.auto_enroll) {
+        throw Error("Automatic enrollment requires an online Host VMCI channel");
     }
     if (refresh_agent_binding(config_)) {
         inventory_.update_config(config_);
@@ -547,7 +552,12 @@ void Agent::run_watch(const std::stop_token stop_token) {
         bool vmci_channel_available = false;
         try {
             if (vmci_channel_) {
+                if (vmci_channel_->enroll(config_, binary_sha256_)) {
+                    inventory_.update_config(config_);
+                }
                 vmci_channel_->synchronize_inbound();
+            } else if (config_.auto_enroll) {
+                throw Error("Automatic enrollment requires an online Host VMCI channel");
             }
             if (refresh_agent_binding(config_)) {
                 inventory_.update_config(config_);
