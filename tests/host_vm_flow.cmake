@@ -1278,7 +1278,7 @@ if(version_mismatch_elapsed GREATER_EQUAL 5)
         "Agent version mismatch waited ${version_mismatch_elapsed}s instead of failing early")
 endif()
 
-file(GLOB diagnostic_claims "${state_path}/runs/check-*/state/vm_01/vm_01.claim.json")
+file(GLOB diagnostic_claims "${state_path}/runs/check-*/state/vm_01/diagnostic-*.claim.json")
 list(LENGTH diagnostic_claims diagnostic_claim_count)
 if(diagnostic_claim_count LESS 1)
     message(FATAL_ERROR "SatsumaHost active check did not create a diagnostic claim")

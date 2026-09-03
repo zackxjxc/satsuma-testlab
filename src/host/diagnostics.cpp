@@ -485,15 +485,18 @@ nlohmann::json Diagnostics::run_probe(
     TaskPlan plan;
     plan.name = "satsuma-automation-diagnostic";
     plan.run_id = make_id("check");
+    std::map<std::string, std::string> diagnostic_step_ids;
+    std::size_t diagnostic_index = 0;
     for (const VmConfig* vm : targets) {
         TaskStep step;
-        step.id = vm->id;
+        step.id = "diagnostic-" + std::to_string(++diagnostic_index);
         step.vm = vm->id;
         step.type = "echo";
         step.message = "satsuma-diagnostic:" + *plan.run_id + ":" + vm->id;
         step.run_as = TaskRunAs::System;
         step.timeout_seconds = static_cast<int>(diagnostic_timeout.count());
         step.retry_safe = true;
+        diagnostic_step_ids.emplace(vm->id, step.id);
         plan.steps.push_back(std::move(step));
     }
 
@@ -545,7 +548,7 @@ nlohmann::json Diagnostics::run_probe(
                 run_directory,
                 std::filesystem::path(L"results") /
                     path_from_utf8(vm->id) /
-                    path_from_utf8(vm->id) /
+                    path_from_utf8(diagnostic_step_ids.at(vm->id)) /
                     L"execution.json");
             std::error_code availability_error;
             const bool result_available = std::filesystem::is_regular_file(

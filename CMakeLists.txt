@@ -60,10 +60,12 @@ function(satsuma_add_windows_version_resource target original_filename file_desc
     set(SATSUMA_VERSION_INTERNAL_NAME "${internal_name}")
     set(resource_dir "${CMAKE_CURRENT_BINARY_DIR}/resources")
     set(resource_file "${resource_dir}/${target}-version.rc")
+    file(TO_CMAKE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake/windows-app.manifest" SATSUMA_APPLICATION_MANIFEST)
 
     file(MAKE_DIRECTORY "${resource_dir}")
     configure_file(cmake/windows-version.rc.in "${resource_file}" @ONLY)
     target_sources(${target} PRIVATE "${resource_file}")
+    target_link_options(${target} PRIVATE "/MANIFESTINPUT:${SATSUMA_APPLICATION_MANIFEST}")
 endfunction()
 
 set(SATSUMA_BUILD_NUMBER "local" CACHE STRING "CI build number embedded in binaries")
