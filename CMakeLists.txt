@@ -1,7 +1,7 @@
 # Satsuma TestLab 的顶层构建配置。
 cmake_minimum_required(VERSION 3.25)
 
-project(SatsumaTestLab VERSION 0.3.3 LANGUAGES CXX)
+project(SatsumaTestLab VERSION 0.3.4 LANGUAGES CXX)
 
 include(GNUInstallDirs)
 
