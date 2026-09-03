@@ -370,8 +370,13 @@ if(SATSUMA_BUILD_TESTS)
 endif()
 
 install(
-    TARGETS SatsumaHost SatsumaVM
-    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+    TARGETS SatsumaHost
+    RUNTIME DESTINATION SatsumaHost
+    COMPONENT SatsumaRuntime
+)
+install(
+    TARGETS SatsumaVM
+    RUNTIME DESTINATION SatsumaGuestAgent-Install
     COMPONENT SatsumaRuntime
 )
 install(
@@ -389,7 +394,7 @@ install(
     DESTINATION examples
     COMPONENT SatsumaRuntime
 )
-install(FILES scripts/install-agent.ps1 DESTINATION scripts COMPONENT SatsumaRuntime)
+install(FILES scripts/install-agent.ps1 DESTINATION SatsumaGuestAgent-Install COMPONENT SatsumaRuntime)
 install(
     DIRECTORY schemas/
     DESTINATION schemas

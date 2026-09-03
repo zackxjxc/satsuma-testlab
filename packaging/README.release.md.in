@@ -18,21 +18,21 @@ Skill，也可以把整个目录安装到客户端的 Skill 目录。安装位�
 ## 人工开始使用
 
 1. 阅读 [`docs/首次配置.md`](docs/首次配置.md)，用 `SatsumaHost init` 生成本机配置，或填写模板。
-2. 仅把 `SatsumaVM.exe` 和 `install-agent.ps1` 复制到 Guest 同一目录，执行 PS1 并确认 UAC。
+2. 把 `SatsumaGuestAgent-Install` 整个目录复制到 Guest，执行其中的 `install-agent.ps1` 并确认 UAC；所需的 `SatsumaVM.exe` 已在同一目录。
    无需 AI 提前准备 JSON。安装器生成通用本机配置，Service 等待 Host 登记；安装完成或失败后按 Enter 关闭窗口。
    自动化调用使用脚本参数 `-NonInteractive`。若脚本启动前被策略拦截，见首次配置文档中的单次启动命令。
    初始化不要求额外开启 Guest Account 通道或共享目录。
 3. 在 Host 的独立终端启动 VMCI 网关：
 
 ```powershell
-bin\SatsumaHost.exe gateway --config config\lab.local.json
+SatsumaHost\SatsumaHost.exe gateway --config config\lab.local.json
 ```
 
 4. 在另一个 Host 终端完成发现、绑定和验收：
 
 ```powershell
-bin\SatsumaHost.exe discover --config config\lab.local.json
-bin\SatsumaHost.exe check --config config\lab.local.json --timeout-seconds 180
+SatsumaHost\SatsumaHost.exe discover --config config\lab.local.json
+SatsumaHost\SatsumaHost.exe check --config config\lab.local.json --timeout-seconds 180
 ```
 
 `init` 自动生成实验室 ID 和硬件清单；Agent 接入后取得 Host 下发的身份，不需要预设 `lab_id`。
@@ -41,7 +41,7 @@ bin\SatsumaHost.exe check --config config\lab.local.json --timeout-seconds 180
 5. 使用带生命周期策略的任务执行完整测试：
 
 ```powershell
-bin\SatsumaHost.exe orchestrate --config config\lab.local.json --plan examples\multi-vm-task.json --timeout-seconds 900
+SatsumaHost\SatsumaHost.exe orchestrate --config config\lab.local.json --plan examples\multi-vm-task.json --timeout-seconds 900
 ```
 
 完整操作方法见 [`docs/用户指南.md`](docs/用户指南.md)。

@@ -225,7 +225,7 @@ nlohmann::json initialize_lab(
     }
     const auto binary = std::filesystem::absolute(options.contains(L"--agent-binary")
         ? std::filesystem::path(options.at(L"--agent-binary"))
-        : executable_directory / L"SatsumaVM.exe");
+        : executable_directory.parent_path() / L"SatsumaGuestAgent-Install" / L"SatsumaVM.exe");
     const std::string version = agent_binary_version(binary);
     const std::string digest = sha256_file(binary);
     const auto vmrun = std::filesystem::absolute(options.contains(L"--vmrun")

@@ -9,19 +9,19 @@ metadata:
 
 # Satsuma TestLab
 
-将 Satsuma 作为可信 Windows VMware 虚拟机测试环境的控制平面。所有操作均通过 `bin/SatsumaHost.exe` 完成；不要直接写入协议状态、任务认领、结果或生命周期文件。
+将 Satsuma 作为可信 Windows VMware 虚拟机测试环境的控制平面。所有操作均通过 `SatsumaHost/SatsumaHost.exe` 完成；不要直接写入协议状态、任务认领、结果或生命周期文件。
 
 本流程要求 Windows 10/11、支持 VMCI 的 VMware Workstation、本地终端访问权限，以及版本匹配的 Satsuma TestLab 发行目录。
 
 ## 定位并核对发行包
 
-找到用户提供或批准的发行目录，其中必须包含 `bin/SatsumaHost.exe`、`config/`、`schemas/` 和 `examples/`。发行包通常在 `skills/satsuma-testlab/` 中附带本 Skill，但安装后的 Skill 也可能位于其他位置；不要根据 Skill 的安装路径推断可执行文件的位置。
+找到用户提供或批准的发行目录，其中必须包含 `SatsumaHost/SatsumaHost.exe`、`SatsumaGuestAgent-Install/SatsumaVM.exe`、`config/`、`schemas/` 和 `examples/`。发行包通常在 `skills/satsuma-testlab/` 中附带本 Skill，但安装后的 Skill 也可能位于其他位置；不要根据 Skill 的安装路径推断可执行文件的位置。
 
 操作测试环境前，运行：
 
 ```powershell
-bin\SatsumaHost.exe --version
-bin\SatsumaVM.exe --version
+SatsumaHost\SatsumaHost.exe --version
+SatsumaGuestAgent-Install\SatsumaVM.exe --version
 ```
 
 两个程序都必须报告 `0.3.3`，并与 `metadata.satsuma-version` 一致。如果版本不同，应停止操作，并请用户改用该发行版本附带的 Skill。以发行包内 CLI 的 `--help`、JSON Schema 和模板为权威接口。

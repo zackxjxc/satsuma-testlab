@@ -67,20 +67,20 @@ ctest --preset windows-release
 cmake --build --preset windows-release --target SatsumaPackage
 ```
 
-发布目标会在根目录 `output` 同时生成可直接使用的版本目录和同名 ZIP，不会向系统安装文件。进入版本目录后，将 [`lab.template.json`](config/lab.template.json) 复制为 `config/lab.local.json`，并把通用的 [`agent.template.json`](config/agent.template.json) 填写为 `agent.json`。将 `agent.json`、`bin/SatsumaVM.exe` 和 `scripts/install-agent.ps1` 复制到 Guest 的同一个本机目录（可用只读 ISO、VMware 控制台或其他一次性安装介质），再在管理员 PowerShell 中运行安装脚本。Agent 使用 SMBIOS UUID 自动声明硬件身份，不需要为每台 VM 准备不同配置文件。
+发布目标会在根目录 `output` 同时生成可直接使用的版本目录和同名 ZIP，不会向系统安装文件。Host CLI 位于 `SatsumaHost`；消费者可用 `SatsumaHost\SatsumaHost.exe init` 生成 `config/lab.local.json`。Guest 安装介质集中在 `SatsumaGuestAgent-Install`：将该目录复制到 Guest（可用只读 ISO、VMware 控制台或其他一次性安装介质），再运行其中的 `install-agent.ps1`。安装器自动生成不含实验室身份的本机配置，Agent 使用 SMBIOS UUID 向 Host 登记，不需要为每台 VM 准备不同配置文件。
 
 ```powershell
-bin\SatsumaHost.exe gateway --config config\lab.local.json
+SatsumaHost\SatsumaHost.exe gateway --config config\lab.local.json
 ```
 
 网关保持运行，在另一个终端执行：
 
 ```powershell
-bin\SatsumaHost.exe discover --config config\lab.local.json
-bin\SatsumaHost.exe agent rebind --config config\lab.local.json --vm vm_01 --hardware-id <uuid>
-bin\SatsumaHost.exe check --config config\lab.local.json --timeout-seconds 180
-bin\SatsumaHost.exe lab status --config config\lab.local.json
-bin\SatsumaHost.exe orchestrate --config config\lab.local.json --plan examples\multi-vm-task.json --timeout-seconds 900
+SatsumaHost\SatsumaHost.exe discover --config config\lab.local.json
+SatsumaHost\SatsumaHost.exe agent rebind --config config\lab.local.json --vm vm_01 --hardware-id <uuid>
+SatsumaHost\SatsumaHost.exe check --config config\lab.local.json --timeout-seconds 180
+SatsumaHost\SatsumaHost.exe lab status --config config\lab.local.json
+SatsumaHost\SatsumaHost.exe orchestrate --config config\lab.local.json --plan examples\multi-vm-task.json --timeout-seconds 900
 ```
 
 `gateway` 是常驻的 Host 传输进程，应先在独立终端或服务管理器中启动。自动化默认使用 `orchestrate`，它会在取得实验室独占租约后启动目标 VM、验证 inventory 和内部 echo、归档证据并按策略清理。普通 `run` 仍可用于无生命周期任务，但发布后会保持持久租约，必须在报告终态后执行 `runs finalize`。

@@ -7,13 +7,13 @@
 改变环境前先检查持久化测试状态：
 
 ```powershell
-bin\SatsumaHost.exe lab status --config config\lab.local.json
+SatsumaHost\SatsumaHost.exe lab status --config config\lab.local.json
 ```
 
 必须确认 VMCI 网关可用，并完成一次结果为 `status: ready` 的完整 `check`。优先使用单条有时间上限的编排命令：
 
 ```powershell
-bin\SatsumaHost.exe orchestrate --config config\lab.local.json --plan task.json --timeout-seconds 900 --boot-wait-seconds 120
+SatsumaHost\SatsumaHost.exe orchestrate --config config\lab.local.json --plan task.json --timeout-seconds 900 --boot-wait-seconds 120
 ```
 
 从 Host 的 JSON 输出中读取 `run_id`，绝不能根据目录名推断。不要通过编辑传输状态根目录下的文件改变任务结果。
@@ -36,7 +36,7 @@ bin\SatsumaHost.exe orchestrate --config config\lab.local.json --plan task.json 
 用户要求停止任务时，应使用 CLI，并持续读取报告，直到任务进入终态或需要人工干预的状态：
 
 ```powershell
-bin\SatsumaHost.exe runs cancel --config config\lab.local.json --run <run-id> --reason "user requested stop"
+SatsumaHost\SatsumaHost.exe runs cancel --config config\lab.local.json --run <run-id> --reason "user requested stop"
 ```
 
 取消期间不要删除任务目录。

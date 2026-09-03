@@ -20,7 +20,7 @@
 已明确授权 VM 路径和共同基础快照时，优先调用：
 
 ```powershell
-bin\SatsumaHost.exe init --config config\lab.local.json --vmx <VMX或单VM目录> --vmx <另一VMX或目录> --base-snapshot <已确认快照>
+SatsumaHost\SatsumaHost.exe init --config config\lab.local.json --vmx <VMX或单VM目录> --vmx <另一VMX或目录> --base-snapshot <已确认快照>
 ```
 
 `init` 自动查找 vmrun、读取 VMX 硬件 UUID、生成中性 VM ID，并用发行包内 Agent 二进制生成预期哈希。
@@ -43,7 +43,7 @@ Copy-Item config\lab.template.json config\lab.local.json
 Guest 无需外部 JSON。安装程序自动生成本机配置，默认 CID `2`、端口 `42510`，省略实验室/VM 身份。
 特殊部署才提供可选 `agent.json`；不要把旧实验室配置混入通用安装目录。安装器自动选择本地固定磁盘。
 
-每台 Guest 只需 `bin/SatsumaVM.exe` 和 `scripts/install-agent.ps1`。用户可直接从发行包复制，无需 AI 预处理。
+每台 Guest 只需复制发行包的 `SatsumaGuestAgent-Install` 目录，其中已并列放置 `SatsumaVM.exe` 和 `install-agent.ps1`，无需 AI 预处理。
 确认 UAC 属于管理员操作；AI 无法完成时应给出准确的人工接管步骤，不能声称安装已经完成。
 
 ## 未初始化 Guest 的人工交接
@@ -75,16 +75,16 @@ PS1 无法在尚未执行时解除策略拦截；不要承诺仅靠脚本自身�
 在独立的 Host 进程中启动网关：
 
 ```powershell
-bin\SatsumaHost.exe gateway --config config\lab.local.json
+SatsumaHost\SatsumaHost.exe gateway --config config\lab.local.json
 ```
 
 通用 Agent 先通过 `enroll` 接收实验室及中性 VM ID；Host 未登记的硬件被拒绝。使用 `discover` 和 `check`
 确认在线可用。手工 Host 模板也必须预先填写硬件 UUID。旧式固定实验室 Agent 才使用下面的手动绑定流程：
 
 ```powershell
-bin\SatsumaHost.exe discover --config config\lab.local.json
-bin\SatsumaHost.exe agent rebind --config config\lab.local.json --vm <vm-id> --hardware-id <uuid>
-bin\SatsumaHost.exe check --config config\lab.local.json --vm <vm-id> --timeout-seconds 180
+SatsumaHost\SatsumaHost.exe discover --config config\lab.local.json
+SatsumaHost\SatsumaHost.exe agent rebind --config config\lab.local.json --vm <vm-id> --hardware-id <uuid>
+SatsumaHost\SatsumaHost.exe check --config config\lab.local.json --vm <vm-id> --timeout-seconds 180
 ```
 
 只有 `status: ready` 才表示环境可以承载业务任务。通用冷快照可在 Service 安装及版本检查通过后、Host 尚未启动时

@@ -176,6 +176,18 @@ try {
                 throw "Release archive is missing a configuration template: $template"
             }
         }
+        $expectedGuestInstaller = @(
+            "$packageName/SatsumaGuestAgent-Install/SatsumaVM.exe",
+            "$packageName/SatsumaGuestAgent-Install/install-agent.ps1"
+        )
+        foreach ($installerFile in $expectedGuestInstaller) {
+            if (-not $entryNames.Contains($installerFile)) {
+                throw "Release archive is missing a Guest installer file: $installerFile"
+            }
+        }
+        if (-not $entryNames.Contains("$packageName/SatsumaHost/SatsumaHost.exe")) {
+            throw "Release archive is missing SatsumaHost/SatsumaHost.exe"
+        }
     } finally {
         $archive.Dispose()
     }

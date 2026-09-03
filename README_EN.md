@@ -67,22 +67,22 @@ ctest --preset windows-release
 cmake --build --preset windows-release --target SatsumaPackage
 ```
 
-The package target creates both a portable version directory and a ZIP file under `output`. Inside the version directory, copy `config/lab.template.json` to `config/lab.local.json` and complete it. Fill in `config/agent.template.json` as `agent.json`, then place `agent.json`, `bin/SatsumaVM.exe`, and `scripts/install-agent.ps1` in the same local Guest directory using a read-only ISO, the VMware console, or another one-time installation medium. Run the installation script from an elevated PowerShell session. The Agent claims its SMBIOS UUID automatically, so separate per-VM configuration files are not required.
+The package target creates both a portable version directory and a ZIP file under `output`. The Host CLI is in `SatsumaHost`; use `SatsumaHost/SatsumaHost.exe init` to create `config/lab.local.json`. Copy the complete `SatsumaGuestAgent-Install` directory to a Guest using a read-only ISO, the VMware console, or another one-time installation medium, then run its `install-agent.ps1`. The installer creates an unbound local configuration and the Agent enrolls with the Host using its SMBIOS UUID.
 
 Start the Host gateway in a dedicated terminal:
 
 ```powershell
-bin\SatsumaHost.exe gateway --config config\lab.local.json
+SatsumaHost\SatsumaHost.exe gateway --config config\lab.local.json
 ```
 
 Use another Host terminal for discovery, binding, validation, and orchestration:
 
 ```powershell
-bin\SatsumaHost.exe discover --config config\lab.local.json
-bin\SatsumaHost.exe agent rebind --config config\lab.local.json --vm vm_01 --hardware-id <uuid>
-bin\SatsumaHost.exe check --config config\lab.local.json --timeout-seconds 180
-bin\SatsumaHost.exe lab status --config config\lab.local.json
-bin\SatsumaHost.exe orchestrate --config config\lab.local.json --plan examples\multi-vm-task.json --timeout-seconds 900
+SatsumaHost\SatsumaHost.exe discover --config config\lab.local.json
+SatsumaHost\SatsumaHost.exe agent rebind --config config\lab.local.json --vm vm_01 --hardware-id <uuid>
+SatsumaHost\SatsumaHost.exe check --config config\lab.local.json --timeout-seconds 180
+SatsumaHost\SatsumaHost.exe lab status --config config\lab.local.json
+SatsumaHost\SatsumaHost.exe orchestrate --config config\lab.local.json --plan examples\multi-vm-task.json --timeout-seconds 900
 ```
 
 `gateway` is the long-running Host transport process. Automation should normally use `orchestrate`, which acquires the exclusive lab lease, starts the selected VMs, validates inventory and the internal echo diagnostic, archives evidence, and applies cleanup policies. The lower-level `run` command remains available for tasks without lifecycle policies, but its persistent lease must be finalized with `runs finalize` after the report reaches a terminal state.
