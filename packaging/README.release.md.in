@@ -17,10 +17,11 @@ Skill，也可以把整个目录安装到客户端的 Skill 目录。安装位�
 
 ## 人工开始使用
 
-1. 阅读 [`docs/首次配置.md`](docs/首次配置.md)，填写 Host 和 Agent 配置。
-2. 在 Guest 中安装并启动 `SatsumaVM.exe` Windows Service。
-   如果 Guest 尚未初始化，可让 AI 先准备好二进制、安装脚本和已填写的配置；再按 AI 给出的路径、命令和
-   成功判据，将整套文件手动复制到 VM 中执行。初始化不要求额外开启 Guest Account 通道或共享目录。
+1. 阅读 [`docs/首次配置.md`](docs/首次配置.md)，用 `SatsumaHost init` 生成本机配置，或填写模板。
+2. 仅把 `SatsumaVM.exe` 和 `install-agent.ps1` 复制到 Guest 同一目录，执行 PS1 并确认 UAC。
+   无需 AI 提前准备 JSON。安装器生成通用本机配置，Service 等待 Host 登记；安装完成或失败后按 Enter 关闭窗口。
+   自动化调用使用脚本参数 `-NonInteractive`。若脚本启动前被策略拦截，见首次配置文档中的单次启动命令。
+   初始化不要求额外开启 Guest Account 通道或共享目录。
 3. 在 Host 的独立终端启动 VMCI 网关：
 
 ```powershell
@@ -31,9 +32,11 @@ bin\SatsumaHost.exe gateway --config config\lab.local.json
 
 ```powershell
 bin\SatsumaHost.exe discover --config config\lab.local.json
-bin\SatsumaHost.exe agent rebind --config config\lab.local.json --vm vm_01 --hardware-id <uuid>
-bin\SatsumaHost.exe check --config config\lab.local.json --vm vm_01 --timeout-seconds 180
+bin\SatsumaHost.exe check --config config\lab.local.json --timeout-seconds 180
 ```
+
+`init` 自动生成实验室 ID 和硬件清单；Agent 接入后取得 Host 下发的身份，不需要预设 `lab_id`。
+手工模板必须为通用 Agent 填写硬件 UUID。旧式固定实验室 Agent 仍支持已有 discover/rebind 流程。
 
 5. 使用带生命周期策略的任务执行完整测试：
 
@@ -42,6 +45,9 @@ bin\SatsumaHost.exe orchestrate --config config\lab.local.json --plan examples\m
 ```
 
 完整操作方法见 [`docs/用户指南.md`](docs/用户指南.md)。
+
+向消费者交付已配置环境时，提供本发行包、本机 `lab.local.json` 和已配置的 VM 冷基线。
+交付时 Host 网关不运行，消费者自行启动。新环境不需要附带旧运行的状态目录或租约。
 
 ## 目录说明
 
