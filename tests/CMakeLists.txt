@@ -288,6 +288,8 @@ if(SATSUMA_POWERSHELL_CORE)
         COMMAND "${CMAKE_COMMAND}"
             "-DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/real_vmware_crash_recovery.ps1"
             "-DPOWERSHELL=${SATSUMA_POWERSHELL_CORE}"
+            "-DHOST_EXE=$<TARGET_FILE:SatsumaHost>"
+            "-DFIXTURE_EXE=$<TARGET_FILE:SatsumaTestFixture>"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/real_vmware_crash_recovery_script_test.cmake"
     )
 endif()

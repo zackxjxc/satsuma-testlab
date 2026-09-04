@@ -105,6 +105,22 @@ function Write-TextFile {
     [System.IO.File]::WriteAllText($Path, $Text, $utf8NoBom)
 }
 
+# An unsafe expired claim deliberately stops the VM; online readiness is then inapplicable.
+function Get-FinalCheckStatus {
+    param([object]$Check, [bool]$ExpectedStopped)
+    if (-not $ExpectedStopped) {
+        if ($Check.status -cne 'ready') { throw "Final check did not return ready: $($Check.status)" }
+        return 'ready'
+    }
+    $power = @($Check.checks | Where-Object { $_.name -ceq 'vm_power' -and $_.details.vm_id -ceq $script:VmId })
+    $otherFailures = @($Check.checks | Where-Object { $_.status -ceq 'failed' -and $_.name -cne 'vm_power' })
+    if ($Check.status -cne 'failed' -or $power.Count -ne 1 -or
+        $power[0].details.state -cne 'stopped' -or $otherFailures.Count -ne 0) {
+        throw 'Unsafe crash final check did not confirm the expected stopped VM, or found another failure'
+    }
+    return 'expected_stopped'
+}
+
 # 有限轮询一个可瞬时失败的文件状态探针。
 function Wait-ForCondition {
     param(
@@ -392,10 +408,13 @@ function Wait-ForNewPresence {
         [object]$PreviousPresence,
 
         [Parameter(Mandatory = $true)]
+        [object]$HostHandle,
+
+        [Parameter(Mandatory = $true)]
         [int]$TimeoutSeconds
     )
 
-    return Wait-ForCondition -TimeoutSeconds $TimeoutSeconds -Description 'restarted Agent presence' -Probe {
+    $observed = Wait-ForCondition -TimeoutSeconds $TimeoutSeconds -Description 'restarted Agent presence' -Probe {
         if (Test-Path -LiteralPath $script:presencePath -PathType Leaf) {
             $presence = Read-JsonFile -Path $script:presencePath
             if ($presence.boot_id -cne $PreviousPresence.boot_id -and
@@ -403,8 +422,15 @@ function Wait-ForNewPresence {
                 return $presence
             }
         }
+        if ($HostHandle.Process.HasExited) {
+            return [pscustomobject]@{HostExited = $true}
+        }
         return $false
     }
+    if ($observed.HostExited) {
+        throw "Host exited before Agent restart; see $($HostHandle.StdoutPath) and $($HostHandle.StderrPath)"
+    }
+    return $observed
 }
 
 # 创建具有固定 run_id 和稳定字节的生命周期计划。
@@ -423,7 +449,7 @@ function New-CrashPlan {
     $runTimestamp = [DateTime]::UtcNow.ToString('yyyyMMddHHmmss')
     $runSuffix = [Guid]::NewGuid().ToString('N').Substring(0, 8)
     $runId = "real_$Name`_$runTimestamp`_$runSuffix"
-    $artifactDestination = "artifacts/$($script:VmId)/SatsumaTestFixture.exe"
+    $artifactDestination = 'artifacts/SatsumaTestFixture.exe'
     $fixtureArguments = if ($CrashAgent) {
         @(
             '--message', "$Name completed",
@@ -450,6 +476,7 @@ function New-CrashPlan {
                 id = 'crash_step'
                 vm = $script:VmId
                 type = 'execute'
+                run_as = if ($CrashAgent) { 'system' } else { 'interactive_user' }
                 program = $artifactDestination
                 arguments = $fixtureArguments
                 timeout_seconds = 300
@@ -471,8 +498,6 @@ function New-CrashPlan {
                     vm = $script:VmId
                     type = 'echo'
                     message = "$Name finally completed"
-                    timeout_seconds = 30
-                    retry_safe = $true
                 }
             )
         }
@@ -504,6 +529,9 @@ function Assert-CompletedEvidence {
 # 验证 Host 在 executing 阶段强杀后的同计划续跑。
 function Invoke-HostCrashScenario {
     $plan = New-CrashPlan -Name 'host_crash' -RetrySafe $true -CrashAgent $false
+    [void](Invoke-HostCommand -ProcessArguments @(
+        'plan', 'validate', '--config', $script:resolvedLabConfig, '--plan', $plan.Path
+    ) -ExpectedExitCodes @(0) -Label "$($plan.RunId).validate" -TimeoutSeconds 30)
     $paths = Get-RunPaths -RunId $plan.RunId
     $processArguments = @(
         'orchestrate', '--config', $script:resolvedLabConfig,
@@ -586,6 +614,8 @@ function Invoke-HostCrashScenario {
                 $handle.Process.Kill($true)
                 [void]$handle.Process.WaitForExit(10000)
             }
+            Write-TextFile -Path $handle.StdoutPath -Text $handle.StdoutTask.GetAwaiter().GetResult()
+            Write-TextFile -Path $handle.StderrPath -Text $handle.StderrTask.GetAwaiter().GetResult()
             $handle.Process.Dispose()
         }
     }
@@ -602,6 +632,9 @@ function Invoke-AgentCrashScenario {
     $expectedStatus = if ($RetrySafe) { 'COMPLETED' } else { 'MANUAL_INTERVENTION_REQUIRED' }
     $expectedExitCode = if ($RetrySafe) { 0 } else { 5 }
     $plan = New-CrashPlan -Name $name -RetrySafe $RetrySafe -CrashAgent $true
+    [void](Invoke-HostCommand -ProcessArguments @(
+        'plan', 'validate', '--config', $script:resolvedLabConfig, '--plan', $plan.Path
+    ) -ExpectedExitCodes @(0) -Label "$($plan.RunId).validate" -TimeoutSeconds 30)
     $paths = Get-RunPaths -RunId $plan.RunId
     $presenceBefore = Read-JsonFile -Path $script:presencePath
     $processArguments = @(
@@ -623,6 +656,7 @@ function Invoke-AgentCrashScenario {
             -TimeoutSeconds 120
         $presenceAfter = Wait-ForNewPresence `
             -PreviousPresence $presenceBefore `
+            -HostHandle $handle `
             -TimeoutSeconds 120
         $hostResult = Complete-CapturedHost `
             -Handle $handle `
@@ -708,6 +742,8 @@ function Invoke-AgentCrashScenario {
                 $handle.Process.Kill($true)
                 [void]$handle.Process.WaitForExit(10000)
             }
+            Write-TextFile -Path $handle.StdoutPath -Text $handle.StdoutTask.GetAwaiter().GetResult()
+            Write-TextFile -Path $handle.StderrPath -Text $handle.StderrTask.GetAwaiter().GetResult()
             $handle.Process.Dispose()
         }
     }
@@ -794,21 +830,21 @@ try {
         Write-JsonFile -Path $summaryPath -Value $summary
     }
 
+    $expectedStopped = $Scenario -eq 'All' -or $Scenario -eq 'AgentUnsafe'
+    $finalExitCodes = if ($expectedStopped) { @(1) } else { @(0) }
     $finalResult = Invoke-HostCommand `
         -ProcessArguments @(
             'check', '--config', $resolvedLabConfig,
             '--vm', $VmId,
             '--timeout-seconds', '180'
         ) `
-        -ExpectedExitCodes @(0) `
+        -ExpectedExitCodes $finalExitCodes `
         -Label 'final-check' `
         -TimeoutSeconds 210
     $finalCheck = ConvertFrom-HostOutput -Result $finalResult
-    if ($finalCheck.status -cne 'ready') {
-        throw "Final check did not return ready: $($finalCheck.status)"
-    }
+    $finalCheckStatus = Get-FinalCheckStatus -Check $finalCheck -ExpectedStopped $expectedStopped
     $summary.final_check = [ordered]@{
-        status = $finalCheck.status
+        status = $finalCheckStatus
         run_id = $finalCheck.run_id
         report = $finalResult.StdoutPath
     }
