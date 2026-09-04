@@ -234,6 +234,47 @@ void test_result_fencing(const std::filesystem::path& root) {
         "completed step was offered to another Agent");
 }
 
+// 准备或上传失败时，空证据摘要仍能首次发布；失权者不能创建结果目录。
+void test_summary_only_publication(const std::filesystem::path& root) {
+    const auto summary_for = [](const satsuma::StepClaimLease& owner) {
+        auto result = make_result(owner);
+        result["status"] = "failed";
+        result["exit_code"] = nullptr;
+        result["stdout"] = "";
+        result["stderr"] = "";
+        result["files"] = nlohmann::json::array();
+        result["error"] = "Evidence preparation failed before process launch";
+        return result;
+    };
+    const StepPaths owned_paths = make_paths(root, "summary-owned");
+    const auto owner = make_claim("run_summary", "job_summary");
+    satsuma::write_json_atomic(owned_paths.claim, owner);
+    expect(!std::filesystem::exists(owned_paths.result.parent_path()),
+        "summary test unexpectedly started with a result directory");
+    const auto summary = summary_for(owner);
+    expect(satsuma::vm::publish_step_result_if_owned(
+            owned_paths.claim, owner, owned_paths.result, summary, {}) ==
+                satsuma::vm::StepResultPublishStatus::Published &&
+            satsuma::load_json(owned_paths.result) == summary,
+        "owning empty-evidence summary could not create its first result directory");
+
+    for (const bool expired : {true, false}) {
+        const StepPaths paths = make_paths(root, expired ? "summary-expired" : "summary-outsider");
+        const auto current = expired
+            ? make_claim("run_summary", "job_expired", false, satsuma::unix_time_ms() - 5'000, 1'000)
+            : make_claim("run_summary", "job_current");
+        const auto requester = expired ? current : make_claim("run_summary", "job_outsider");
+        satsuma::write_json_atomic(paths.claim, current);
+        const auto expected = expired ? satsuma::vm::StepResultPublishStatus::LeaseExpired
+            : satsuma::vm::StepResultPublishStatus::OwnershipLost;
+        expect(satsuma::vm::publish_step_result_if_owned(
+                paths.claim, requester, paths.result, summary_for(requester), {}) == expected &&
+                !std::filesystem::exists(paths.result.parent_path()) &&
+                satsuma::load_json(paths.claim) == nlohmann::json(current),
+            "expired or non-owning empty-evidence summary created a directory or changed its claim");
+    }
+}
+
 // 损坏和跨步骤状态会提升为稳定错误，而不是被静默覆盖。
 void test_state_validation(const std::filesystem::path& root) {
     const StepPaths corrupt = make_paths(root, "corrupt");
@@ -313,6 +354,7 @@ int main() {
         test_safe_recovery(root);
         test_unsafe_recovery_gate(root);
         test_result_fencing(root);
+        test_summary_only_publication(root);
         test_state_validation(root);
         test_concurrent_acquisition(root);
         std::filesystem::remove_all(root);

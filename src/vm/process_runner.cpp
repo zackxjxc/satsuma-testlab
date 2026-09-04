@@ -168,7 +168,7 @@ ProcessResult ProcessRunner::run(const ProcessRequest& request) const {
     if (!std::filesystem::is_regular_file(windows_file_path(request.program))) {
         throw Error("Program is not a regular file: " + path_to_utf8(request.program));
     }
-    if (!std::filesystem::is_directory(request.working_directory)) {
+    if (!std::filesystem::is_directory(windows_file_path(request.working_directory))) {
         throw Error("Working directory does not exist: " + path_to_utf8(request.working_directory));
     }
     if (request.timeout.count() <= 0 ||

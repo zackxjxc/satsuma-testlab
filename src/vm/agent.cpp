@@ -25,6 +25,7 @@
 #include "satsuma/core/sha256.hpp"
 #include "satsuma/core/version.hpp"
 #include "interactive_process.hpp"
+#include "install.hpp"
 #include "vmci_channel.hpp"
 #include "update.hpp"
 
@@ -119,16 +120,27 @@ void write_run_error_best_effort(
         }
         const std::filesystem::path state_directory = run_directory / L"state";
         std::filesystem::create_directories(windows_file_path(state_directory));
-        write_json_atomic(
-            state_directory / path_from_utf8(config.vm_id + "-agent-error.json"),
-            {
+        const auto path = state_directory / path_from_utf8(config.vm_id + "-agent-error.json");
+        nlohmann::json report = {
                 {"schema_version", 1},
                 {"lab_id", config.lab_id},
+                {"run_id", path_to_utf8(run_directory.filename())},
                 {"vm_id", config.vm_id},
                 {"status", "invalid_run"},
                 {"error", error},
                 {"observed_at", utc_timestamp()},
-            });
+            };
+        try {
+            const auto previous = load_json(path);
+            if (previous.value("lab_id", std::string{}) == config.lab_id &&
+                previous.value("vm_id", std::string{}) == config.vm_id &&
+                previous.contains("step_errors") && previous.at("step_errors").is_array() &&
+                !previous.at("step_errors").empty()) {
+                report["step_errors"] = previous.at("step_errors");
+                report["status"] = "execution_error";
+            }
+        } catch (...) {}
+        write_json_atomic(path, report);
     } catch (...) {
     }
 }
@@ -305,6 +317,10 @@ struct Agent::ExecutionWorkspace {
     std::filesystem::path stderr_local;
     std::vector<StepResultEvidenceFile> evidence_files;
     ExecutionResult result;
+    std::string process_status{"not_started"};
+    std::string evidence_status{"pending"};
+    bool retain_evidence{false};
+    bool owns_job_directory{false};
 };
 
 Agent::Agent(
@@ -720,6 +736,7 @@ void Agent::execute_step_payload(
         workspace.result.duration_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - start_time).count();
         workspace.result.status = "exited";
+        workspace.process_status = "exited";
         return;
     }
 
@@ -798,12 +815,14 @@ void Agent::execute_step_payload(
     request.timeout = std::chrono::seconds(step.timeout_seconds);
     request.max_output_bytes = kDefaultMaxOutputBytes;
     request.stop_token = stop_token;
+    workspace.process_status = "running";
     const ProcessResult process_result = interactive_session
         ? interactive_session->run(helper_executable_, request)
         : runner_.run(request);
-    throw_if_stop_requested(stop_token);
     workspace.result.exit_code = process_result.exit_code;
     workspace.result.duration_ms = process_result.duration_ms;
+    workspace.process_status = process_result.timed_out ? "timed_out" : "exited";
+    throw_if_stop_requested(stop_token);
     if (process_result.output_limit_exceeded) {
         throw Error("Process output exceeded the 64 MiB limit");
     }
@@ -856,64 +875,134 @@ void Agent::publish_step_execution(
     const std::stop_token lease_loss_token,
     ClaimRenewalSession& renewal_session,
     ExecutionWorkspace& workspace) {
-    stage_local_log(
-        workspace.stdout_local,
-        workspace.stdout_staged,
-        workspace.result);
-    stage_local_log(
-        workspace.stderr_local,
-        workspace.stderr_staged,
-        workspace.result);
-    workspace.evidence_files.insert(
-        workspace.evidence_files.begin(),
-        {
-            {workspace.stdout_staged, workspace.stdout_final},
-            {workspace.stderr_staged, workspace.stderr_final},
-        });
+    const auto record_diagnostic = [&](const std::string& publication_status) {
+        const nlohmann::json diagnostic = {
+            {"step_id", claim.step_id}, {"job_id", claim.job_id}, {"attempt", claim.attempt},
+            {"process_status", workspace.process_status},
+            {"evidence_status", workspace.evidence_status},
+            {"exit_code", workspace.result.exit_code ? nlohmann::json(*workspace.result.exit_code) : nlohmann::json(nullptr)},
+            {"error", workspace.result.error}, {"publication_status", publication_status},
+            {"local_evidence_root", path_to_utf8(workspace.job_directory)},
+            {"local_work_directory", path_to_utf8(workspace.local_run_directory)},
+            {"local_stdout", path_to_utf8(workspace.stdout_local)},
+            {"local_stderr", path_to_utf8(workspace.stderr_local)},
+            {"observed_at", utc_timestamp()},
+        };
+        // 先保留机器本地证据，诊断仍通过原有 agent-error 通道同步，不扩展结果协议。
+        try {
+            if (workspace.owns_job_directory) {
+                write_json_atomic_existing_parent(workspace.job_directory / L"diagnostic.json", diagnostic);
+                write_json_atomic_existing_parent(workspace.job_directory / L"execution.json", workspace.result);
+            }
+        } catch (...) {}
+        try {
+            const auto path = run_directory / L"state" / path_from_utf8(config_.vm_id + "-agent-error.json");
+            nlohmann::json report = {
+                {"schema_version", 1}, {"lab_id", config_.lab_id}, {"run_id", claim.run_id},
+                {"vm_id", config_.vm_id}, {"status", "execution_error"},
+                {"step_errors", nlohmann::json::array()},
+            };
+            if (std::filesystem::is_regular_file(windows_file_path(path))) {
+                const auto previous = load_json(path);
+                if (previous.value("run_id", std::string{}) == claim.run_id &&
+                    previous.value("vm_id", std::string{}) == config_.vm_id &&
+                    previous.contains("step_errors") && previous.at("step_errors").is_array()) {
+                    for (const auto& item : previous.at("step_errors")) {
+                        if (item.value("job_id", std::string{}) != claim.job_id)
+                            report["step_errors"].push_back(item);
+                    }
+                }
+            }
+            report["step_errors"].push_back(diagnostic);
+            report["observed_at"] = utc_timestamp();
+            write_json_atomic(path, report);
+        } catch (...) {}
+    };
+    const auto publish = [&](const ExecutionResult& result,
+                             const std::vector<StepResultEvidenceFile>& evidence) {
+        return runtime_options_.result_publish_operation
+            ? runtime_options_.result_publish_operation(claim_path, claim,
+                workspace.result_directory / L"execution.json", result, evidence)
+            : publish_step_result_if_owned(claim_path, claim,
+                workspace.result_directory / L"execution.json", result, evidence);
+    };
     workspace.result.finished_at = utc_timestamp();
-
     if (lease_loss_token.stop_requested()) {
         renewal_session.finish();
-        write_stale_result_best_effort(
-            workspace.job_directory,
-            workspace.result,
-            "ownership_lost",
-            renewal_session.loss_reason());
+        if (workspace.owns_job_directory)
+            write_stale_result_best_effort(workspace.job_directory, workspace.result,
+                "ownership_lost", renewal_session.loss_reason());
+        record_diagnostic("ownership_lost");
         return;
     }
-
-    const StepResultPublishStatus publish_status = runtime_options_.result_publish_operation
-        ? runtime_options_.result_publish_operation(
-            claim_path,
-            claim,
-            workspace.result_directory / L"execution.json",
-            workspace.result,
-            workspace.evidence_files)
-        : publish_step_result_if_owned(
-            claim_path,
-            claim,
-            workspace.result_directory / L"execution.json",
-            workspace.result,
-            workspace.evidence_files);
+    StepResultPublishStatus publish_status = StepResultPublishStatus::OwnershipLost;
+    try {
+        if (workspace.evidence_status == "preparation_failed") {
+            workspace.result.stdout_path.clear();
+            workspace.result.stderr_path.clear();
+            workspace.result.files.clear();
+            record_diagnostic("pending");
+            publish_status = publish(workspace.result, {});
+        } else {
+            const auto error_before_staging = workspace.result.error;
+            stage_local_log(workspace.stdout_local, workspace.stdout_staged, workspace.result);
+            stage_local_log(workspace.stderr_local, workspace.stderr_staged, workspace.result);
+            if (workspace.result.error != error_before_staging) {
+                workspace.retain_evidence = true;
+                workspace.evidence_status = "collection_failed";
+            }
+            workspace.evidence_files.insert(workspace.evidence_files.begin(), {
+                {workspace.stdout_staged, workspace.stdout_final},
+                {workspace.stderr_staged, workspace.stderr_final},
+            });
+            if (workspace.retain_evidence) record_diagnostic("pending");
+            publish_status = publish(workspace.result, workspace.evidence_files);
+        }
+    } catch (const std::exception& error) {
+        workspace.retain_evidence = true;
+        workspace.evidence_status = "publication_failed";
+        append_result_error(workspace.result, "Evidence publication failed: " + std::string(error.what()));
+        record_diagnostic("pending");
+        // 只补发摘要，不重新执行步骤。仍由原 claim 的 fencing 决定是否能发布。
+        ExecutionResult summary = workspace.result;
+        summary.stdout_path.clear();
+        summary.stderr_path.clear();
+        summary.files.clear();
+        try {
+            publish_status = publish(summary, {});
+        } catch (const std::exception& summary_error) {
+            append_result_error(workspace.result,
+                "Failure summary could not be published: " + std::string(summary_error.what()));
+            renewal_session.finish();
+            record_diagnostic("unreported");
+            write_state(run_directory, "result_publication_failed", claim.job_id);
+            return;
+        }
+    }
     renewal_session.finish();
     if (publish_status != StepResultPublishStatus::Published) {
         const std::string claim_status = publish_status == StepResultPublishStatus::LeaseExpired
             ? "lease_expired"
             : "ownership_lost";
-        write_stale_result_best_effort(
-            workspace.job_directory,
-            workspace.result,
-            claim_status,
-            renewal_session.loss_reason());
+        if (workspace.owns_job_directory)
+            write_stale_result_best_effort(workspace.job_directory, workspace.result,
+                claim_status, renewal_session.loss_reason());
+        workspace.retain_evidence = true;
+        record_diagnostic(claim_status);
         return;
     }
     if (vmci_channel_) {
         write_text(workspace.result_directory / L".vmci-complete", "completed\n");
     }
 
-    std::error_code cleanup_error;
-    std::filesystem::remove_all(windows_file_path(workspace.job_directory), cleanup_error);
-    std::filesystem::remove_all(windows_file_path(workspace.local_job_directory), cleanup_error);
+    if (workspace.retain_evidence) {
+        record_diagnostic("published");
+    } else {
+        std::error_code cleanup_error;
+        std::filesystem::remove_all(windows_file_path(workspace.job_directory), cleanup_error);
+        if (workspace.local_job_directory != workspace.job_directory)
+            std::filesystem::remove_all(windows_file_path(workspace.local_job_directory), cleanup_error);
+    }
     write_state(run_directory, "idle", "");
 }
 
@@ -966,40 +1055,54 @@ void Agent::execute_step(
         });
 
     ExecutionWorkspace workspace;
-    workspace.result_directory = resolve_under_root(
-        run_directory,
-        std::filesystem::path(L"results") / path_from_utf8(config_.vm_id) / path_from_utf8(step.id));
-    std::filesystem::create_directories(windows_file_path(workspace.result_directory));
-
-    workspace.job_directory = resolve_under_root(
-        workspace.result_directory,
-        std::filesystem::path(L".jobs") / path_from_utf8(claim.job_id));
-    std::filesystem::create_directories(windows_file_path(workspace.job_directory));
-
-    workspace.stdout_staged = workspace.job_directory / L"stdout.log";
-    workspace.stderr_staged = workspace.job_directory / L"stderr.log";
-    workspace.stdout_final = workspace.result_directory / L"stdout.log";
-    workspace.stderr_final = workspace.result_directory / L"stderr.log";
-    workspace.local_run_directory = resolve_local_run_directory(config_, manifest.run_id);
-    workspace.local_job_directory = resolve_under_root(
-        workspace.local_run_directory,
-        std::filesystem::path(L".satsuma") / L"jobs" / path_from_utf8(claim.job_id));
-    workspace.stdout_local = workspace.local_job_directory / L"stdout.log.partial";
-    workspace.stderr_local = workspace.local_job_directory / L"stderr.log.partial";
-
     workspace.result.run_id = manifest.run_id;
     workspace.result.vm_id = config_.vm_id;
     workspace.result.job_id = claim.job_id;
     workspace.result.step_id = step.id;
     workspace.result.run_as = step.run_as;
     workspace.result.started_at = utc_timestamp();
-    workspace.result.stdout_path = path_to_utf8(
-        std::filesystem::relative(workspace.stdout_final, run_directory));
-    workspace.result.stderr_path = path_to_utf8(
-        std::filesystem::relative(workspace.stderr_final, run_directory));
-    write_state(run_directory, "running", claim.job_id);
-
+    workspace.result_directory = resolve_under_root(
+        run_directory,
+        std::filesystem::path(L"results") / path_from_utf8(config_.vm_id) / path_from_utf8(step.id));
+    bool prepared = false;
     try {
+        std::filesystem::create_directories(windows_file_path(workspace.result_directory));
+
+        const auto staging_root = config_.storage_root.empty() || use_test_local_mirror()
+            ? (config_.storage_root.empty() ? config_.local_work_root : config_.storage_root) / L"staging"
+            : prepare_agent_staging_root(config_.storage_root);
+        std::filesystem::create_directories(windows_file_path(staging_root));
+        workspace.job_directory = resolve_under_root(staging_root, path_from_utf8(claim.job_id));
+        if (!config_.storage_root.empty() && !use_test_local_mirror()) {
+            create_agent_attempt_directory(workspace.job_directory);
+        } else if (!CreateDirectoryW(windows_file_path(workspace.job_directory).c_str(), nullptr)) {
+            const DWORD error = GetLastError();
+            throw Error("Cannot exclusively create Agent attempt directory; existing data was not changed: " +
+                path_to_utf8(workspace.job_directory) + "; Win32 error " + std::to_string(error));
+        }
+        workspace.owns_job_directory = true;
+        write_json_atomic_existing_parent(workspace.job_directory / L"attempt.json", {
+            {"schema_version", 1}, {"layout_version", 1}, {"lab_id", config_.lab_id},
+            {"enrollment_id", config_.enrollment_id}, {"hardware_id", config_.hardware_id},
+            {"run_id", claim.run_id}, {"vm_id", claim.vm_id}, {"step_id", claim.step_id},
+            {"job_id", claim.job_id}, {"attempt", claim.attempt}, {"created_at", utc_timestamp()},
+        });
+
+        workspace.stdout_staged = workspace.job_directory / L"stdout.log";
+        workspace.stderr_staged = workspace.job_directory / L"stderr.log";
+        workspace.stdout_final = workspace.result_directory / L"stdout.log";
+        workspace.stderr_final = workspace.result_directory / L"stderr.log";
+        workspace.local_run_directory = resolve_local_run_directory(config_, manifest.run_id);
+        workspace.local_job_directory = workspace.job_directory;
+        workspace.stdout_local = workspace.local_job_directory / L"stdout.log.partial";
+        workspace.stderr_local = workspace.local_job_directory / L"stderr.log.partial";
+
+        workspace.result.stdout_path = path_to_utf8(
+            std::filesystem::relative(workspace.stdout_final, run_directory));
+        workspace.result.stderr_path = path_to_utf8(
+            std::filesystem::relative(workspace.stderr_final, run_directory));
+        write_state(run_directory, "running", claim.job_id);
+        prepared = true;
         execute_step_payload(
             run_directory,
             manifest,
@@ -1008,6 +1111,15 @@ void Agent::execute_step(
             execution_stop_token,
             workspace);
     } catch (const std::exception& error) {
+        if (!prepared) {
+            workspace.evidence_status = "preparation_failed";
+            workspace.retain_evidence = true;
+        } else if (workspace.process_status == "exited" || workspace.process_status == "timed_out") {
+            workspace.evidence_status = "collection_failed";
+            workspace.retain_evidence = true;
+        } else {
+            workspace.process_status = "failed";
+        }
         if (std::filesystem::is_regular_file(windows_file_path(cancellation_path))) {
             workspace.result.status = "failed";
             workspace.result.error = "Run cancellation requested";

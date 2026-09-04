@@ -274,22 +274,36 @@ void validate_managed_snapshot(
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     } while (std::chrono::steady_clock::now() < deadline);
+    std::string agent_diagnostics;
+    if (report.contains("agent_errors") && !report.at("agent_errors").empty()) {
+        agent_diagnostics = report.at("agent_errors").dump(-1, ' ', true);
+        constexpr std::size_t summary_limit = 8'192;
+        if (agent_diagnostics.size() > summary_limit) {
+            agent_diagnostics.resize(summary_limit);
+            agent_diagnostics += "... (truncated; inspect report.agent_errors)";
+        }
+    }
     throw Error(
         "Run did not complete before orchestration timeout: " + run_id +
-        (last_io_error.empty() ? "" : "; last JSON I/O error: " + last_io_error));
+        (last_io_error.empty() ? "" : "; last JSON I/O error: " + last_io_error) +
+        (agent_diagnostics.empty() ? "" : "; Agent diagnostics: " + agent_diagnostics));
 }
 
 // 复制目录时拒绝任何重解析点，避免归档越过运行根目录。
 void copy_tree_without_reparse_points(
     const std::filesystem::path& source,
     const std::filesystem::path& destination) {
-    std::filesystem::create_directories(destination);
-    std::filesystem::recursive_directory_iterator iterator(source);
+    std::filesystem::create_directories(windows_file_path(destination));
+    const std::filesystem::path native_source = windows_file_path(source);
+    std::filesystem::recursive_directory_iterator iterator(native_source);
     const std::filesystem::recursive_directory_iterator end;
     for (; iterator != end; ++iterator) {
-        const DWORD attributes = GetFileAttributesW(iterator->path().c_str());
+        const DWORD attributes = GetFileAttributesW(windows_file_path(iterator->path()).c_str());
         if (attributes == INVALID_FILE_ATTRIBUTES) {
-            throw Error("Cannot inspect run evidence path");
+            const DWORD error = GetLastError();
+            throw Error("GetFileAttributesW(run evidence) failed with Win32 error " + std::to_string(error) +
+                "; path_length_utf16=" + std::to_string(iterator->path().native().size()) +
+                "; path=" + path_to_utf8(iterator->path()));
         }
         if ((attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
             iterator.disable_recursion_pending();
@@ -298,13 +312,14 @@ void copy_tree_without_reparse_points(
         if (!iterator->is_directory() && is_json_atomic_temporary_file(iterator->path())) {
             continue;
         }
-        const std::filesystem::path relative = iterator->path().lexically_relative(source);
+        const std::filesystem::path relative = iterator->path().lexically_relative(native_source);
         const std::filesystem::path target = resolve_under_root(destination, relative);
         if (iterator->is_directory()) {
-            std::filesystem::create_directories(target);
+            std::filesystem::create_directories(windows_file_path(target));
         } else if (iterator->is_regular_file()) {
-            std::filesystem::create_directories(target.parent_path());
-            std::filesystem::copy_file(iterator->path(), target, std::filesystem::copy_options::none);
+            std::filesystem::create_directories(windows_file_path(target.parent_path()));
+            std::filesystem::copy_file(windows_file_path(iterator->path()), windows_file_path(target),
+                std::filesystem::copy_options::none);
         } else {
             throw Error("Run evidence contains an unsupported file type");
         }
@@ -320,12 +335,16 @@ void copy_tree_without_reparse_points(
         std::string sha256;
     };
     std::vector<EvidenceFile> files;
-    std::filesystem::recursive_directory_iterator iterator(root);
+    const std::filesystem::path native_root = windows_file_path(root);
+    std::filesystem::recursive_directory_iterator iterator(native_root);
     const std::filesystem::recursive_directory_iterator end;
     for (; iterator != end; ++iterator) {
-        const DWORD attributes = GetFileAttributesW(iterator->path().c_str());
+        const DWORD attributes = GetFileAttributesW(windows_file_path(iterator->path()).c_str());
         if (attributes == INVALID_FILE_ATTRIBUTES) {
-            throw Error("Cannot inspect archived evidence path");
+            const DWORD error = GetLastError();
+            throw Error("GetFileAttributesW(archived evidence) failed with Win32 error " + std::to_string(error) +
+                "; path_length_utf16=" + std::to_string(iterator->path().native().size()) +
+                "; path=" + path_to_utf8(iterator->path()));
         }
         if ((attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
             iterator.disable_recursion_pending();
@@ -340,13 +359,13 @@ void copy_tree_without_reparse_points(
         if (is_json_atomic_temporary_file(iterator->path())) {
             continue;
         }
-        const std::filesystem::path relative = iterator->path().lexically_relative(root);
+        const std::filesystem::path relative = iterator->path().lexically_relative(native_root);
         if (relative == L".archive-complete.json") {
             continue;
         }
         files.push_back({
             path_to_utf8(relative),
-            std::filesystem::file_size(iterator->path()),
+            std::filesystem::file_size(windows_file_path(iterator->path())),
             sha256_file(iterator->path()),
         });
     }
@@ -388,7 +407,7 @@ void archive_run_evidence(
         config.host.archive_root,
         std::filesystem::path(L"runs") / path_from_utf8(lifecycle_run_id) / L"evidence");
     const std::filesystem::path destination = resolve_under_root(archive_root, path_from_utf8(label));
-    if (std::filesystem::exists(destination)) {
+    if (std::filesystem::exists(windows_file_path(destination))) {
         validate_archived_evidence(destination);
         return;
     }
@@ -418,7 +437,7 @@ void archive_run_evidence(
             }
 
             std::error_code cleanup_error;
-            std::filesystem::remove_all(staging, cleanup_error);
+            std::filesystem::remove_all(windows_file_path(staging), cleanup_error);
             if (cleanup_error || std::chrono::steady_clock::now() >= deadline) {
                 throw Error(
                     "Run evidence did not become stable before the archive deadline" +
@@ -437,7 +456,7 @@ void archive_run_evidence(
         validate_archived_evidence(destination);
     } catch (...) {
         std::error_code cleanup_error;
-        std::filesystem::remove_all(staging, cleanup_error);
+        std::filesystem::remove_all(windows_file_path(staging), cleanup_error);
         throw;
     }
 }

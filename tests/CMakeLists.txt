@@ -63,6 +63,13 @@ add_test(
         "$<TARGET_FILE:SatsumaVM>"
 )
 
+add_executable(SatsumaVmciFileTests vmci_file_tests.cpp)
+target_link_libraries(SatsumaVmciFileTests PRIVATE SatsumaVmTestLib)
+target_compile_definitions(SatsumaVmciFileTests PRIVATE SATSUMA_TEST_LOCAL_MIRROR)
+satsuma_enable_test_warnings(SatsumaVmciFileTests)
+add_test(NAME SatsumaVmciFileTests COMMAND SatsumaVmciFileTests)
+set_tests_properties(SatsumaVmciFileTests PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE)
+
 add_executable(SatsumaVmciTransportTests vmci_transport_tests.cpp)
 target_link_libraries(SatsumaVmciTransportTests PRIVATE SatsumaHostLib)
 satsuma_enable_strict_warnings(SatsumaVmciTransportTests)

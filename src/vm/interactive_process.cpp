@@ -581,7 +581,7 @@ void remove_helper_file_group(const std::filesystem::path& path) noexcept {
     std::filesystem::remove(windows_file_path(path), error);
     error.clear();
     const std::wstring temporary_prefix = path.filename().native() + L".tmp-";
-    std::filesystem::directory_iterator iterator(path.parent_path(), error);
+    std::filesystem::directory_iterator iterator(windows_file_path(path.parent_path()), error);
     const std::filesystem::directory_iterator end;
     while (!error && iterator != end) {
         if (iterator->path().filename().native().starts_with(temporary_prefix)) {
@@ -703,7 +703,7 @@ ProcessResult InteractiveUserSession::run(
     if (!std::filesystem::is_regular_file(windows_file_path(request.program))) {
         throw Error("Program is not a regular file: " + path_to_utf8(request.program));
     }
-    if (!std::filesystem::is_directory(request.working_directory)) {
+    if (!std::filesystem::is_directory(windows_file_path(request.working_directory))) {
         throw Error(
             "Working directory does not exist: " +
             path_to_utf8(request.working_directory));

@@ -22,6 +22,73 @@ template<class Action> void rejected(Action action, const char* message) {
     try { action(); } catch (const std::exception&) { failed = true; }
     expect(failed, message);
 }
+
+void test_attempt_directory_acl(const std::filesystem::path& root) {
+    SID_IDENTIFIER_AUTHORITY authority = SECURITY_NT_AUTHORITY;
+    PSID administrators{};
+    expect(AllocateAndInitializeSid(&authority, 2, SECURITY_BUILTIN_DOMAIN_RID,
+        DOMAIN_ALIAS_RID_ADMINS, 0, 0, 0, 0, 0, 0, &administrators) != FALSE,
+        "cannot create Administrators SID");
+    BOOL elevated{};
+    const BOOL membership_ok = CheckTokenMembership(nullptr, administrators, &elevated);
+    FreeSid(administrators);
+    expect(membership_ok != FALSE, "cannot inspect test token membership");
+    if (!elevated) {
+        rejected([&] { satsuma::vm::create_agent_attempt_directory(root / L"denied-attempt"); },
+            "non-administrator created a private Agent attempt in an untrusted directory");
+        std::cout << "Private attempt inherited-ACL test requires an elevated test token\n";
+        return;
+    }
+
+    const auto staging = root / L"staging";
+    std::filesystem::create_directory(staging);
+    PSECURITY_DESCRIPTOR descriptor{};
+    expect(ConvertStringSecurityDescriptorToSecurityDescriptorW(
+        L"O:BAG:BAD:P(A;;FA;;;SY)(A;;FA;;;BA)(A;OICIIO;FA;;;WD)",
+        SDDL_REVISION_1, &descriptor, nullptr) != FALSE,
+        "cannot prepare inherited-write ACL fixture");
+    PACL acl{};
+    PSID owner{};
+    BOOL present{}, defaulted{};
+    expect(GetSecurityDescriptorOwner(descriptor, &owner, &defaulted) != FALSE &&
+        GetSecurityDescriptorDacl(descriptor, &present, &acl, &defaulted) != FALSE && present,
+        "cannot read inherited-write ACL fixture");
+    auto staging_name = satsuma::windows_file_path(staging);
+    const DWORD set_result = SetNamedSecurityInfoW(staging_name.data(), SE_FILE_OBJECT,
+        OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+        owner, nullptr, acl, nullptr);
+    LocalFree(descriptor);
+    expect(set_result == ERROR_SUCCESS, "cannot set inherited-write ACL fixture");
+
+    const auto attempt = staging / L"job-private";
+    satsuma::vm::create_agent_attempt_directory(attempt);
+    satsuma::vm::validate_install_tree(attempt);
+    const auto log = attempt / L"stdout.log";
+    { std::ofstream output(log); output << "preserve existing evidence"; }
+    // 子文件也不能继承到普通用户写权限。
+    auto log_name = satsuma::windows_file_path(log);
+    descriptor = nullptr;
+    expect(GetNamedSecurityInfoW(log_name.data(), SE_FILE_OBJECT, DACL_SECURITY_INFORMATION,
+        nullptr, nullptr, &acl, nullptr, &descriptor) == ERROR_SUCCESS && acl,
+        "cannot inspect private attempt file ACL");
+    bool inherited_user_access = false;
+    for (DWORD index = 0; index < acl->AceCount; ++index) {
+        void* raw{};
+        expect(GetAce(acl, index, &raw) != FALSE, "cannot inspect private file ACE");
+        const auto* header = static_cast<ACE_HEADER*>(raw);
+        if (header->AceType != ACCESS_ALLOWED_ACE_TYPE) continue;
+        const auto* ace = static_cast<ACCESS_ALLOWED_ACE*>(raw);
+        const auto sid = const_cast<DWORD*>(&ace->SidStart);
+        if (!IsWellKnownSid(sid, WinLocalSystemSid) &&
+            !IsWellKnownSid(sid, WinBuiltinAdministratorsSid)) inherited_user_access = true;
+    }
+    LocalFree(descriptor);
+    expect(!inherited_user_access, "attempt file inherited a non-administrator allow ACE");
+    const auto original_hash = satsuma::sha256_file(log);
+    rejected([&] { satsuma::vm::create_agent_attempt_directory(attempt); },
+        "existing attempt directory was reused");
+    expect(satsuma::sha256_file(log) == original_hash, "existing attempt evidence was changed");
+}
 }
 
 int wmain(int argc, wchar_t* argv[]) {
@@ -68,6 +135,7 @@ int wmain(int argc, wchar_t* argv[]) {
             expect(blocked, "concurrent installer acquired machine lock");
         }
         { const satsuma::vm::AgentInstallLock released; }
+        test_attempt_directory_acl(root);
         // 当前用户创建的目录不能被悄悄接管为 SYSTEM 的可执行目录。
         auto root_name = root.native();
         PSECURITY_DESCRIPTOR descriptor{};

@@ -71,7 +71,10 @@ nlohmann::json load_json(const std::filesystem::path& path) {
         FILE_FLAG_SEQUENTIAL_SCAN,
         nullptr);
     if (file == INVALID_HANDLE_VALUE) {
-        throw JsonIoError("Cannot open JSON file: " + path_to_utf8(path));
+        const DWORD error = GetLastError();
+        throw JsonIoError(win32_error("CreateFileW(JSON read)", error) +
+            "; path_length_utf16=" + std::to_string(std::filesystem::absolute(path).native().size()) +
+            "; path=" + path_to_utf8(path));
     }
 
     std::string payload; // 完整读取后关闭句柄，再解析 JSON
@@ -118,7 +121,7 @@ static void write_json_atomic_impl(
     if (!parent.empty()) {
         if (create_parent) {
             std::filesystem::create_directories(windows_file_path(parent));
-        } else if (!std::filesystem::is_directory(parent)) {
+        } else if (!std::filesystem::is_directory(windows_file_path(parent))) {
             throw Error("JSON parent directory does not exist: " + path_to_utf8(parent));
         }
     }

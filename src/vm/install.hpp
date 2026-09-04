@@ -20,6 +20,10 @@ private:
 // 只读验证，不执行候选文件。供安装入口及回归测试共用。
 [[nodiscard]] std::string verify_agent_image(const std::filesystem::path& path, bool checksum);
 void validate_install_tree(const std::filesystem::path& root);
+// 创建或只读验证 SYSTEM/管理员专用的证据暂存根，不修复或接管未知目录。
+[[nodiscard]] std::filesystem::path prepare_agent_staging_root(const std::filesystem::path& root);
+// 独占创建证据尝试目录并设置显式私有 DACL，拒绝覆盖已有目录。
+void create_agent_attempt_directory(const std::filesystem::path& path);
 // 数字版本比较：返回 -1/0/1；不认识的版本格式拒绝自动更新。
 [[nodiscard]] int compare_agent_versions(const std::string& left, const std::string& right);
 

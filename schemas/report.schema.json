@@ -12,6 +12,7 @@
   "properties": {
     "schema_version": {"const": 1},
     "run_id": {"type": "string", "minLength": 1},
+    "source": {"enum": ["active", "archive"]},
     "name": {"type": "string", "minLength": 1},
     "status": {"enum": ["pending", "succeeded", "failed", "manual_intervention_required"]},
     "expected_steps": {"type": "integer", "minimum": 0},
@@ -21,8 +22,48 @@
     "complete": {"type": "boolean"},
     "manual_intervention_required": {"type": "boolean"},
     "blocked_steps": {"type": "array"},
+    "agent_errors": {"type": "array", "items": {"$ref": "#/$defs/agentError"}},
     "executions": {"type": "array", "items": {"$ref": "result.schema.json"}},
-    "wait_status": {"enum": ["completed", "timeout", "manual_intervention_required"]},
+    "wait_status": {"enum": ["completed", "timeout", "manual_intervention_required", "agent_error"]},
     "waited_ms": {"type": "integer", "minimum": 0}
+  },
+  "$defs": {
+    "agentError": {
+      "type": "object",
+      "required": ["schema_version", "lab_id", "run_id", "vm_id", "status", "diagnostic_path"],
+      "properties": {
+        "schema_version": {"const": 1},
+        "lab_id": {"type": "string", "minLength": 1},
+        "run_id": {"type": "string", "minLength": 1},
+        "vm_id": {"type": "string", "minLength": 1},
+        "status": {"enum": ["invalid_run", "execution_error", "invalid_diagnostic"]},
+        "diagnostic_path": {"type": "string", "minLength": 1},
+        "run_id_inferred": {"type": "boolean"},
+        "error": {"type": "string"},
+        "observed_at": {"type": "string"},
+        "step_errors": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/stepError"}}
+      },
+      "if": {"properties": {"status": {"const": "execution_error"}}},
+      "then": {"required": ["step_errors"]},
+      "else": {"required": ["error"]}
+    },
+    "stepError": {
+      "type": "object",
+      "required": [
+        "step_id", "job_id", "attempt", "process_status", "evidence_status", "error",
+        "exit_code", "local_evidence_root", "publication_status"
+      ],
+      "properties": {
+        "step_id": {"type": "string", "minLength": 1},
+        "job_id": {"type": "string", "minLength": 1},
+        "attempt": {"type": "integer", "minimum": 1},
+        "process_status": {"type": "string"},
+        "evidence_status": {"type": "string"},
+        "error": {"type": "string"},
+        "exit_code": {"type": ["integer", "null"], "minimum": 0},
+        "local_evidence_root": {"type": "string"},
+        "publication_status": {"type": "string"}
+      }
+    }
   }
 }

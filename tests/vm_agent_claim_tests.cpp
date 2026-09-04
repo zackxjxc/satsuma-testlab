@@ -226,8 +226,7 @@ void test_long_execution_renews_claim(
         const satsuma::StepClaimLease& claim,
         const std::int64_t renewed_unix_ms) {
         const std::filesystem::path local_log =
-            local_work_root / L"vm_agent_claim_test" / satsuma::path_from_utf8(run_id) /
-            L"vm_01" / L".satsuma" / L"jobs" / satsuma::path_from_utf8(claim.job_id) /
+            local_work_root / L"staging" / satsuma::path_from_utf8(claim.job_id) /
             L"stdout.log.partial";
         const std::filesystem::path mirrored_log =
             mirror_root / L"runs" / satsuma::path_from_utf8(run_id) / L"results" /
@@ -280,7 +279,7 @@ void test_long_execution_renews_claim(
         "canonical stdout did not contain the completed job output");
     expect(
         !std::filesystem::exists(
-            result_directory / L".jobs" / satsuma::path_from_utf8(result.job_id)),
+            local_work_root / L"staging" / satsuma::path_from_utf8(result.job_id)),
         "successful job staging directory was not cleaned up");
     expect(
         !std::filesystem::exists(
@@ -320,7 +319,7 @@ void test_renewal_failure_and_recovery(
     const std::filesystem::path result_directory =
         run_directory / L"results" / L"vm_01" / L"execute";
     const std::filesystem::path stale_result =
-        result_directory / L".jobs" / satsuma::path_from_utf8(first_claim.job_id) /
+        local_work_root / L"staging" / satsuma::path_from_utf8(first_claim.job_id) /
         L"stale-execution.json";
     expect(
         !std::filesystem::exists(result_directory / L"execution.json") &&
@@ -484,6 +483,131 @@ void test_invalid_claim_enters_manual_gate(const std::filesystem::path& root) {
         "invalid claim did not preserve the manual recovery gate");
 }
 
+// 上传失败只补发摘要，保留退出码和本地证据；彻底断线仍禁止重跑不安全步骤。
+void test_evidence_failure_reporting(
+    const std::filesystem::path& root,
+    const std::filesystem::path& fixture,
+    const bool offline) {
+    const auto mirror = root / L"mirror";
+    const auto work = root / L"work";
+    const std::string run_id = offline ? "run_offline_evidence" : "run_failed_evidence";
+    write_execute_run(mirror, fixture, run_id, 10, false);
+    const auto run = step_root(mirror, run_id);
+    auto manifest = satsuma::load_run_manifest(run / L"task.json");
+    manifest.steps.front().retry_safe = false;
+    if (!offline) {
+        auto later = manifest.steps.front();
+        later.id = "later_claim_error";
+        manifest.steps.push_back(later);
+    }
+    satsuma::write_json_atomic(run / L"task.json", manifest);
+    satsuma::vm::AgentRuntimeOptions options;
+    options.claim_lease_policy = stable_execution_policy();
+    int publish_calls = 0;
+    options.claim_acquire_operation = [](const auto& claim_path, const auto& result_path, const auto& claim) {
+        if (claim.step_id == "later_claim_error") throw satsuma::Error("injected later claim error");
+        return satsuma::vm::acquire_step_claim_transaction(claim_path, result_path, claim);
+    };
+    options.result_publish_operation = [&](const auto& claim_path, const auto& claim,
+        const auto& result_path, const nlohmann::json& result, const auto& evidence) {
+        ++publish_calls;
+        const auto staging = work / L"staging" / satsuma::path_from_utf8(claim.job_id);
+        const auto attempt = satsuma::load_json(staging / L"attempt.json");
+        expect(attempt.at("run_id") == run_id && attempt.at("job_id") == claim.job_id &&
+            attempt.at("attempt") == claim.attempt, "flat staging lost attempt identity");
+        if (publish_calls == 1) {
+            expect(evidence.size() == 2 && evidence.front().staged_path.parent_path() == staging,
+                "evidence staging retained redundant run/VM/step layers");
+            throw satsuma::Error("injected upload failure for stdout.log");
+        }
+        expect(evidence.empty() && result.at("stdout") == "" && result.at("files").empty(),
+            "summary-only publication claimed unavailable evidence");
+        if (offline) throw satsuma::Error("injected disconnected Host");
+        return satsuma::vm::publish_step_result_if_owned(claim_path, claim, result_path, result, evidence);
+    };
+    satsuma::vm::Agent agent(make_config(mirror, work), {}, options);
+    expect(agent.run_once() == 1 && publish_calls == 2, "publication fallback did not execute exactly once");
+    const auto claim_path = run / L"state" / L"vm_01" / L"execute.claim.json";
+    auto claim = satsuma::load_step_claim_lease(claim_path);
+    const auto staging = work / L"staging" / satsuma::path_from_utf8(claim.job_id);
+    const auto diagnostic = satsuma::load_json(run / L"state" / L"vm_01-agent-error.json");
+    const auto& step_error = diagnostic.at("step_errors").at(0);
+    expect(diagnostic.at("status") == "execution_error", "later run error invalidated prior step diagnostics");
+    expect(step_error.at("process_status") == "exited" && step_error.at("exit_code") == 0 &&
+        step_error.at("evidence_status") == "publication_failed" &&
+        step_error.at("publication_status") == (offline ? "unreported" : "published"),
+        "upload failure lost the independent process/evidence outcome");
+    expect(std::filesystem::is_regular_file(staging / L"stdout.log") &&
+        std::filesystem::is_regular_file(staging / L"execution.json"), "failed upload deleted forensic evidence");
+    const auto canonical = run / L"results" / L"vm_01" / L"execute" / L"execution.json";
+    if (offline) {
+        expect(!std::filesystem::exists(canonical), "disconnected publication fabricated a canonical result");
+        claim.lease_expires_unix_ms = satsuma::unix_time_ms() - 1;
+        claim.last_renewed_unix_ms = claim.lease_expires_unix_ms - 1;
+        satsuma::write_json_atomic(claim_path, claim);
+        expect(agent.run_once() == 0 && publish_calls == 2, "unsafe offline step was executed again");
+        expect(satsuma::load_json(run / L"state" / L"vm_01" / L"execute.claim-recovery.json").at("status") ==
+            "manual_intervention_required", "offline unsafe claim did not retain its recovery gate");
+    } else {
+        const auto result = satsuma::load_json(canonical).get<satsuma::ExecutionResult>();
+        expect(result.status == "failed" && result.exit_code == 0 && result.stdout_path.empty(),
+            "failure summary lost process exit status or claimed uploaded stdout");
+        expect(agent.run_once() == 0 && publish_calls == 2, "published failed step was executed again");
+    }
+}
+
+// 收集缺失文件仍发布执行摘要，已产生的日志保留在短暂存目录。
+void test_collection_failure_reporting(const std::filesystem::path& root, const std::filesystem::path& fixture) {
+    const auto mirror = root / L"mirror";
+    const auto work = root / L"work";
+    const std::string run_id = "run_missing_collection";
+    write_execute_run(mirror, fixture, run_id, 10, false);
+    const auto run = step_root(mirror, run_id);
+    auto manifest = satsuma::load_run_manifest(run / L"task.json");
+    manifest.steps.front().collect_files.push_back(L"missing.json");
+    satsuma::write_json_atomic(run / L"task.json", manifest);
+    satsuma::vm::Agent agent(make_config(mirror, work));
+    expect(agent.run_once() == 1, "collection failure prevented completion reporting");
+    const auto result = satsuma::load_json(run / L"results" / L"vm_01" / L"execute" / L"execution.json")
+        .get<satsuma::ExecutionResult>();
+    const auto diagnostic = satsuma::load_json(run / L"state" / L"vm_01-agent-error.json").at("step_errors").at(0);
+    expect(result.status == "failed" && result.exit_code == 0 &&
+        diagnostic.at("process_status") == "exited" && diagnostic.at("evidence_status") == "collection_failed",
+        "collection failure was confused with process failure");
+    expect(std::filesystem::is_regular_file(work / L"staging" / satsuma::path_from_utf8(result.job_id) /
+        L"stdout.log.partial"), "collection failure deleted original logs");
+}
+
+// 预置同名目录不能被接管；准备失败也给出未启动的规范失败摘要。
+void test_attempt_collision(const std::filesystem::path& root) {
+    const auto mirror = root / L"mirror";
+    const auto work = root / L"work";
+    const std::string run_id = "run_attempt_collision";
+    write_echo_run(mirror, run_id);
+    satsuma::vm::AgentRuntimeOptions options;
+    options.claim_lease_policy = stable_execution_policy();
+    std::filesystem::path occupied;
+    options.claim_acquire_operation = [&](const auto& claim_path, const auto& result_path, const auto& claim) {
+        auto acquired = satsuma::vm::acquire_step_claim_transaction(claim_path, result_path, claim);
+        if (acquired.claim) {
+            occupied = work / L"staging" / satsuma::path_from_utf8(acquired.claim->job_id);
+            satsuma::write_json_atomic(occupied / L"unrelated.json", {{"preserved", true}});
+        }
+        return acquired;
+    };
+    satsuma::vm::Agent agent(make_config(mirror, work), {}, options);
+    expect(agent.run_once() == 1, "attempt collision did not publish its failure summary");
+    const auto run = step_root(mirror, run_id);
+    const auto result = satsuma::load_json(run / L"results" / L"vm_01" / L"echo" / L"execution.json");
+    const auto diagnostic = satsuma::load_json(run / L"state" / L"vm_01-agent-error.json").at("step_errors").at(0);
+    expect(result.at("status") == "failed" && result.at("exit_code").is_null() &&
+        diagnostic.at("process_status") == "not_started" &&
+        diagnostic.at("evidence_status") == "preparation_failed", "preparation error lost its step identity");
+    expect(satsuma::load_json(occupied / L"unrelated.json").at("preserved") == true &&
+        std::distance(std::filesystem::directory_iterator(occupied), std::filesystem::directory_iterator{}) == 1,
+        "attempt collision modified unrelated files");
+}
+
 }  // namespace
 
 // 运行 Agent claim 集成测试并清理专用临时目录。
@@ -501,6 +625,10 @@ int main(const int argc, char* argv[]) {
         test_renewal_failure_and_recovery(root / L"failure-recovery", fixture);
         test_concurrent_agents_execute_once(root / L"concurrent-agents");
         test_invalid_claim_enters_manual_gate(root / L"invalid-claim");
+        test_evidence_failure_reporting(root / L"publication-failed", fixture, false);
+        test_evidence_failure_reporting(root / L"publication-offline", fixture, true);
+        test_collection_failure_reporting(root / L"collection-failed", fixture);
+        test_attempt_collision(root / L"attempt-collision");
         std::filesystem::remove_all(root);
         std::cout << "SatsumaVmAgentClaimTests passed\n";
         return 0;

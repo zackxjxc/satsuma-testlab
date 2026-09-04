@@ -72,16 +72,21 @@ std::string sha256_file(const std::filesystem::path& path) {
             FILE_FLAG_SEQUENTIAL_SCAN,
             nullptr);
         if (file == INVALID_HANDLE_VALUE) {
+            const DWORD error = GetLastError();
             throw Error(
-                "Cannot open file for hashing: " + path_to_utf8(path) +
-                " (Win32 error " + std::to_string(GetLastError()) + ")");
+                "CreateFileW(SHA-256) failed with Win32 error " + std::to_string(error) +
+                "; path_length_utf16=" + std::to_string(std::filesystem::absolute(path).native().size()) +
+                "; path=" + path_to_utf8(path));
         }
 
         std::array<unsigned char, 64 * 1024> buffer{};
         for (;;) {
             DWORD bytes_read = 0;
             if (!ReadFile(file, buffer.data(), static_cast<DWORD>(buffer.size()), &bytes_read, nullptr)) {
-                throw Error("ReadFile failed while hashing: " + std::to_string(GetLastError()));
+                const DWORD error = GetLastError();
+                throw Error("ReadFile(SHA-256) failed with Win32 error " + std::to_string(error) +
+                    "; path_length_utf16=" + std::to_string(std::filesystem::absolute(path).native().size()) +
+                    "; path=" + path_to_utf8(path));
             }
             if (bytes_read == 0) {
                 break;

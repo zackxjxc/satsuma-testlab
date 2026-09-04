@@ -176,6 +176,91 @@ void prepare_agent_update_queue(
     }
 }
 
+// Supplemental Agent diagnostics explain incomplete evidence without replacing
+// canonical execution results or relaxing the unsafe-step recovery gate.
+[[nodiscard]] nlohmann::json read_agent_errors(
+    const std::filesystem::path& run_directory, const RunManifest& manifest) {
+    nlohmann::json errors = nlohmann::json::array();
+    std::set<std::string> vm_ids;
+    for (const auto& step : manifest.steps) vm_ids.insert(step.vm);
+    for (const auto& vm_id : vm_ids) {
+        const auto relative = std::filesystem::path(L"state") / path_from_utf8(vm_id + "-agent-error.json");
+        const auto path = run_directory / relative;
+        try {
+            static_cast<void>(resolve_under_root(run_directory, relative));
+            const DWORD attributes = GetFileAttributesW(windows_file_path(path).c_str());
+            if (attributes == INVALID_FILE_ATTRIBUTES) {
+                const DWORD error = GetLastError();
+                if (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND) continue;
+                throw Error("Cannot inspect Agent diagnostic: Win32 error " + std::to_string(error));
+            }
+            if ((attributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
+                throw Error("Agent diagnostic path is not a regular file");
+            }
+            nlohmann::json diagnostic = load_json(path);
+            const std::string status = diagnostic.at("status").get<std::string>();
+            if (diagnostic.at("schema_version") != 1 ||
+                diagnostic.at("lab_id").get<std::string>() != manifest.lab_id ||
+                diagnostic.at("vm_id").get<std::string>() != vm_id ||
+                (diagnostic.contains("run_id") && diagnostic.at("run_id").get<std::string>() != manifest.run_id)) {
+                throw Error("Agent diagnostic identity does not match its run directory and manifest VM");
+            }
+            diagnostic.erase("run_id_inferred");
+            if ((diagnostic.contains("observed_at") && !diagnostic.at("observed_at").is_string()) ||
+                (diagnostic.contains("error") && !diagnostic.at("error").is_string())) {
+                throw Error("Agent diagnostic has an invalid observed_at or error field");
+            }
+            if (status == "invalid_run") {
+                if (diagnostic.at("error").get<std::string>().empty()) {
+                    throw Error("Agent invalid_run diagnostic omitted its error");
+                }
+                if (diagnostic.contains("step_errors")) {
+                    throw Error("Agent invalid_run diagnostic unexpectedly contains step_errors");
+                }
+                if (!diagnostic.contains("run_id")) diagnostic["run_id_inferred"] = true;
+            } else if (status == "execution_error") {
+                if (!diagnostic.contains("run_id") || !diagnostic.at("step_errors").is_array() ||
+                    diagnostic.at("step_errors").empty()) {
+                    throw Error("Agent execution_error diagnostic omitted run_id or step_errors");
+                }
+                for (const auto& step_error : diagnostic.at("step_errors")) {
+                    const std::string step_id = step_error.at("step_id").get<std::string>();
+                    if (!std::any_of(manifest.steps.begin(), manifest.steps.end(), [&](const auto& step) {
+                            return step.vm == vm_id && step.id == step_id;
+                        }) || step_error.at("job_id").get<std::string>().empty() ||
+                        !step_error.at("attempt").is_number_integer() || step_error.at("attempt").get<std::int64_t>() < 1) {
+                        throw Error("Agent step diagnostic has an unknown step, job or attempt");
+                    }
+                    for (const char* field : {"process_status", "evidence_status", "error",
+                             "local_evidence_root", "publication_status"}) {
+                        if (!step_error.at(field).is_string()) {
+                            throw Error(std::string("Agent step diagnostic has an invalid ") + field);
+                        }
+                    }
+                    if (!step_error.at("exit_code").is_null() &&
+                        (!step_error.at("exit_code").is_number_integer() ||
+                            step_error.at("exit_code").get<std::int64_t>() < 0)) {
+                        throw Error("Agent step diagnostic has an invalid exit_code");
+                    }
+                }
+            } else {
+                throw Error("Unrecognized Agent diagnostic status: " + status);
+            }
+            diagnostic["run_id"] = manifest.run_id;
+            diagnostic["diagnostic_path"] = path_to_utf8(path);
+            errors.push_back(std::move(diagnostic));
+        } catch (const std::exception& error) {
+            errors.push_back({
+                {"schema_version", 1}, {"lab_id", manifest.lab_id},
+                {"run_id", manifest.run_id}, {"vm_id", vm_id},
+                {"status", "invalid_diagnostic"}, {"error", error.what()},
+                {"diagnostic_path", path_to_utf8(path)},
+            });
+        }
+    }
+    return errors;
+}
+
 struct ReportRunLocation {
     std::filesystem::path directory;
     std::string source;
@@ -218,6 +303,10 @@ Controller::Controller(LabConfig config) : config_(std::move(config)) {}
 void Controller::validate_plan(
     const TaskPlan& plan,
     const bool require_agent_inventory) const {
+    validate_artifact_destinations(plan.artifacts);
+    for (const ArtifactInput& artifact : plan.artifacts) {
+        validate_artifact_destination(artifact.destination);
+    }
     validate_vm_references(config_, plan, require_agent_inventory);
 }
 
@@ -256,6 +345,7 @@ RunManifest Controller::create_run(const TaskPlan& plan) const {
         config_.transport.state_root,
         std::filesystem::path(L"runs") / path_from_utf8(staging_name));
     try {
+        std::filesystem::create_directories(staging_directory / L".artifacts");
         std::filesystem::create_directories(staging_directory / L"state");
         std::filesystem::create_directories(staging_directory / L"results");
         // 运行发布后 Host 会立即轮询每个步骤的规范结果路径。预建父目录，
@@ -305,10 +395,6 @@ AgentUpdateManifest Controller::publish_agent_update(
     const std::string& version,
     const std::optional<std::string> next_vm_id) const {
     validate_identifier(vm_id, "update VM id");
-    validate_artifact_destinations(plan.artifacts);
-    for (const ArtifactInput& artifact : plan.artifacts) {
-        validate_artifact_destination(artifact.destination);
-    }
     if (find_vm(config_, vm_id) == nullptr) {
         throw Error("Agent update references an unknown VM: " + vm_id);
     }
@@ -347,7 +433,6 @@ AgentUpdateManifest Controller::publish_agent_update(
     const std::filesystem::path updates_root = resolve_under_root(
         config_.transport.state_root,
         std::filesystem::path(L"updates") / path_from_utf8(vm_id));
-        std::filesystem::create_directories(staging_directory / L".artifacts");
     std::filesystem::create_directories(updates_root);
     prepare_agent_update_queue(updates_root, config_.lab_id, vm_id);
     const std::filesystem::path final_directory = resolve_under_root(
@@ -451,6 +536,7 @@ nlohmann::json Controller::build_report(const std::string& run_id) const {
     const std::filesystem::path& run_directory = location.directory;
 
     const RunManifest manifest = load_run_manifest(run_directory / L"task.json");
+    nlohmann::json agent_errors = read_agent_errors(run_directory, manifest);
     nlohmann::json executions = nlohmann::json::array();
     std::size_t completed = 0;
     std::size_t failed = 0;
@@ -506,7 +592,7 @@ nlohmann::json Controller::build_report(const std::string& run_id) const {
     if (manual_intervention_required) {
         status = "manual_intervention_required";
     } else if (!complete) {
-        status = "pending";
+        status = agent_errors.empty() ? "pending" : "failed";
     } else if (failed != 0) {
         status = "failed";
     } else {
@@ -525,6 +611,7 @@ nlohmann::json Controller::build_report(const std::string& run_id) const {
         {"complete", complete},
         {"manual_intervention_required", manual_intervention_required},
         {"blocked_steps", std::move(blocked_steps)},
+        {"agent_errors", std::move(agent_errors)},
         {"executions", std::move(executions)},
     };
 }

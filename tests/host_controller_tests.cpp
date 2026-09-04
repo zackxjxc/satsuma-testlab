@@ -1,12 +1,13 @@
 // Host 任务报告规范路径和执行身份校验测试。
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <stdexcept>
 #include <string>
 
 #include "controller.hpp"
-#include "identity.hpp"
 #include "artifact_store.hpp"
+#include "identity.hpp"
 #include "lab_lease.hpp"
 #include "satsuma/core/config.hpp"
 #include "satsuma/core/errors.hpp"
@@ -110,7 +111,6 @@ void test_create_run_precreates_step_result_directories(const std::filesystem::p
     }
 }
 
-// 验证收集文件中的同名 JSON 不会伪造步骤完成数量。
 // Guest 目标按 VM 独立；Host 物化不再把两个目标复制到同一个路径。
 void test_artifact_destinations_are_scoped_to_vm(const std::filesystem::path& root) {
     satsuma::LabConfig config = make_config(root);
@@ -188,6 +188,7 @@ void test_artifact_destinations_are_scoped_to_vm(const std::filesystem::path& ro
         "plan loading did not reject a Windows-equivalent Artifact destination");
 }
 
+// 验证收集文件中的同名 JSON 不会伪造步骤完成数量。
 void test_report_uses_canonical_result_paths(const std::filesystem::path& root) {
     const satsuma::LabConfig config = make_config(root);
     const satsuma::host::Controller controller(config);
@@ -273,6 +274,103 @@ void test_report_exposes_manual_intervention(const std::filesystem::path& root) 
             report.at("manual_intervention_required").get<bool>() &&
             !report.at("complete").get<bool>(),
         "manual intervention gate did not become the report status");
+}
+
+// Upload diagnostics surface immediately but never count as a canonical result or bypass a claim gate.
+void test_report_exposes_agent_errors(const std::filesystem::path& root) {
+    auto config = make_config(root);
+    satsuma::VmConfig other;
+    other.id = "vm_02";
+    config.vms.push_back(other);
+    const satsuma::host::Controller controller(config);
+    auto plan = make_plan("report_agent_errors");
+    plan.steps[1].vm = "vm_02";
+    plan.steps[1].retry_safe = false;
+    const auto manifest = controller.create_run(plan);
+    const auto state = config.transport.state_root / L"runs" /
+        satsuma::path_from_utf8(manifest.run_id) / L"state";
+    const auto first_path = state / L"vm_01-agent-error.json";
+    const auto second_path = state / L"vm_02-agent-error.json";
+    const nlohmann::json legacy = {
+        {"schema_version", 1}, {"lab_id", config.lab_id}, {"vm_id", "vm_01"},
+        {"status", "invalid_run"}, {"error", "Cannot open VMCI upload file: long path"},
+        {"observed_at", "2026-09-04T03:20:10.000Z"},
+    };
+    const nlohmann::json step_error = {
+        {"step_id", "second"}, {"job_id", "job_evidence"}, {"attempt", 1},
+        {"process_status", "exited"}, {"evidence_status", "failed"},
+        {"error", "CreateFileW(VMCI transfer) failed with Win32 error 32; path_length_utf16=266"},
+        {"exit_code", 0}, {"local_evidence_root", "C:\\ProgramData\\SatsumaTestLab\\staging\\job_evidence"},
+        {"publication_status", "pending"},
+    };
+    const nlohmann::json structured = {
+        {"schema_version", 1}, {"lab_id", config.lab_id}, {"run_id", manifest.run_id},
+        {"vm_id", "vm_02"}, {"status", "execution_error"},
+        {"step_errors", nlohmann::json::array({step_error})},
+    };
+    expect(controller.build_report(manifest.run_id).at("agent_errors").empty(),
+           "empty run unexpectedly reported Agent errors");
+    satsuma::write_json_atomic(first_path, legacy);
+    satsuma::write_json_atomic(second_path, structured);
+    satsuma::write_json_atomic(state / L"unrelated_vm-agent-error.json", legacy);
+    const auto first_hash = satsuma::sha256_file(first_path);
+    auto report = controller.build_report(manifest.run_id);
+    expect(report.at("status") == "failed" && !report.at("complete").get<bool>() &&
+               report.at("reported_steps") == 0 && report.at("failed_steps") == 0 &&
+               report.at("agent_errors").size() == 2,
+           "Agent upload error remained pending or was counted as an execution result");
+    expect(report.at("agent_errors")[0].at("run_id") == manifest.run_id &&
+               report.at("agent_errors")[0].at("run_id_inferred") == true &&
+               report.at("agent_errors")[0].at("diagnostic_path") == satsuma::path_to_utf8(first_path) &&
+               satsuma::sha256_file(first_path) == first_hash,
+           "legacy Agent diagnosis was not scoped to its directory without rewriting it");
+    expect(report.at("agent_errors")[1].at("step_errors")[0] == step_error,
+           "report merged process success and evidence failure or omitted recovery details");
+
+    for (const char* identity : {"lab_id", "run_id", "vm_id"}) {
+        auto wrong = legacy;
+        wrong[identity] = "another_identity";
+        satsuma::write_json_atomic(first_path, wrong);
+        report = controller.build_report(manifest.run_id);
+        expect(report.at("agent_errors")[0].at("status") == "invalid_diagnostic" &&
+                   report.at("agent_errors")[0].at("vm_id") == "vm_01" &&
+                   report.at("agent_errors")[0].at("error").get<std::string>().find("identity") != std::string::npos,
+               "cross-run or cross-VM Agent diagnosis was accepted as current execution evidence");
+    }
+    {
+        std::ofstream malformed(first_path, std::ios::binary | std::ios::trunc);
+        malformed << "{\"status\":";
+    }
+    report = controller.build_report(manifest.run_id);
+    expect(report.at("status") == "failed" &&
+               report.at("agent_errors")[0].at("status") == "invalid_diagnostic" &&
+               !report.at("agent_errors")[0].at("error").get<std::string>().empty(),
+           "malformed diagnostic escaped build_report or lost its readable error");
+    for (const bool missing_run : {true, false}) {
+        auto invalid = structured;
+        if (missing_run) invalid.erase("run_id");
+        else invalid["step_errors"][0]["step_id"] = "another_step";
+        satsuma::write_json_atomic(second_path, invalid);
+        expect(controller.build_report(manifest.run_id).at("agent_errors")[1].at("status") == "invalid_diagnostic",
+               "invalid structured step diagnosis was accepted");
+    }
+    satsuma::write_json_atomic(second_path, structured);
+    satsuma::write_json_atomic(state / L"vm_02" / L"second.claim-recovery.json", {
+        {"status", "manual_intervention_required"}, {"error", "expired unsafe claim"},
+    });
+    report = controller.build_report(manifest.run_id);
+    expect(report.at("status") == "manual_intervention_required" &&
+               report.at("manual_intervention_required").get<bool>() &&
+               !report.at("complete").get<bool>() && report.at("agent_errors").size() == 2,
+           "Agent diagnosis bypassed or concealed the unsafe claim recovery gate");
+    for (const auto& step : manifest.steps) {
+        satsuma::write_json_atomic(result_path(config, manifest.run_id, step),
+            make_execution(manifest, step, "job_" + step.id));
+    }
+    report = controller.build_report(manifest.run_id);
+    expect(report.at("status") == "succeeded" && report.at("complete").get<bool>() &&
+               report.at("successful_steps") == 2 && report.at("agent_errors").size() == 2,
+           "historical diagnostics overrode complete canonical success or were discarded");
 }
 
 // 验证规范路径中的串属结果会阻止报告完成。
@@ -667,8 +765,10 @@ int main() {
         satsuma::path_from_utf8(satsuma::make_id("satsuma-host-controller-test"));
     try {
         test_create_run_precreates_step_result_directories(root / L"precreated-result-paths");
+        test_artifact_destinations_are_scoped_to_vm(root / L"artifact-isolation");
         test_report_uses_canonical_result_paths(root / L"paths");
         test_report_exposes_manual_intervention(root / L"manual");
+        test_report_exposes_agent_errors(root / L"agent-errors");
         test_report_rejects_mismatched_identity(root / L"identity");
         test_plan_preflight_validation(root / L"plan-preflight");
         test_run_management(root / L"run-management");
@@ -686,4 +786,3 @@ int main() {
         return 1;
     }
 }
-        test_artifact_destinations_are_scoped_to_vm(root / L"artifact-isolation");

@@ -2,7 +2,6 @@
 #include "vmci_channel.hpp"
 
 #include <algorithm>
-#include <fstream>
 #include <set>
 #include <string>
 #include <utility>
@@ -18,6 +17,74 @@
 namespace satsuma::vm {
 namespace {
 
+[[nodiscard]] std::string file_error(
+    const char* operation, const std::filesystem::path& path, const DWORD error) {
+    return std::string(operation) + " failed with Win32 error " + std::to_string(error) +
+        "; path_length_utf16=" + std::to_string(std::filesystem::absolute(path).native().size()) +
+        "; path=" + path_to_utf8(path);
+}
+
+// Use the same extended Windows path at every transfer I/O boundary. A read handle
+// excludes writers and renames so the size, digest and transmitted bytes agree.
+class TransferFile {
+public:
+    TransferFile(const std::filesystem::path& path, const DWORD access, const DWORD disposition)
+        : path_(path), handle_(CreateFileW(windows_file_path(path).c_str(), access,
+              FILE_SHARE_READ, nullptr, disposition, FILE_FLAG_SEQUENTIAL_SCAN, nullptr)) {
+        if (handle_ == INVALID_HANDLE_VALUE) {
+            const DWORD error = GetLastError();
+            throw Error(file_error("CreateFileW(VMCI transfer)", path_, error));
+        }
+    }
+    ~TransferFile() { close(); }
+    TransferFile(const TransferFile&) = delete;
+    TransferFile& operator=(const TransferFile&) = delete;
+
+    [[nodiscard]] std::uint64_t size() const {
+        LARGE_INTEGER value{};
+        if (!GetFileSizeEx(handle_, &value)) {
+            const DWORD error = GetLastError();
+            throw Error(file_error("GetFileSizeEx(VMCI upload)", path_, error));
+        }
+        return static_cast<std::uint64_t>(value.QuadPart);
+    }
+    void read(std::vector<std::byte>& payload) const {
+        DWORD received = 0;
+        if (!ReadFile(handle_, payload.data(), static_cast<DWORD>(payload.size()), &received, nullptr)) {
+            const DWORD error = GetLastError();
+            throw Error(file_error("ReadFile(VMCI upload)", path_, error));
+        }
+        if (received != payload.size()) {
+            throw Error(file_error("ReadFile(VMCI upload; unexpected EOF)", path_, ERROR_HANDLE_EOF));
+        }
+    }
+    void write(const std::vector<std::byte>& payload) const {
+        DWORD written = 0;
+        if (!WriteFile(handle_, payload.data(), static_cast<DWORD>(payload.size()), &written, nullptr)) {
+            const DWORD error = GetLastError();
+            throw Error(file_error("WriteFile(VMCI download)", path_, error));
+        }
+        if (written != payload.size()) {
+            throw Error(file_error("WriteFile(VMCI download; short write)", path_, ERROR_WRITE_FAULT));
+        }
+    }
+    void flush() const {
+        if (!FlushFileBuffers(handle_)) {
+            const DWORD error = GetLastError();
+            throw Error(file_error("FlushFileBuffers(VMCI download)", path_, error));
+        }
+    }
+    void close() noexcept {
+        if (handle_ != INVALID_HANDLE_VALUE) {
+            CloseHandle(handle_);
+            handle_ = INVALID_HANDLE_VALUE;
+        }
+    }
+private:
+    std::filesystem::path path_;
+    HANDLE handle_{INVALID_HANDLE_VALUE};
+};
+
 [[nodiscard]] std::filesystem::path staged_download_path(
     const std::filesystem::path& target) {
     std::filesystem::path staged = target;
@@ -32,16 +99,18 @@ void replace_file(
             windows_file_path(source).c_str(),
             windows_file_path(destination).c_str(),
             MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
-        throw Error(
-            "MoveFileExW(VMCI file publish) failed with Win32 error " +
-            std::to_string(GetLastError()));
+        const DWORD error = GetLastError();
+        throw Error(file_error("MoveFileExW(VMCI file publish)", destination, error));
     }
 }
 
 [[nodiscard]] std::filesystem::path protocol_relative(
     const AgentConfig& config,
     const std::filesystem::path& path) {
-    return std::filesystem::relative(path, config.mirror_root);
+    const auto relative = std::filesystem::absolute(path).lexically_normal().lexically_relative(
+        std::filesystem::absolute(config.mirror_root).lexically_normal());
+    validate_relative_path(relative);
+    return relative;
 }
 
 // VMCI 元数据固定使用正斜杠，不暴露 Windows 本机分隔符。
@@ -156,10 +225,7 @@ void VmciChannel::download_file(const nlohmann::json& descriptor) {
     std::filesystem::create_directories(windows_file_path(target.parent_path()));
     const std::filesystem::path staged = staged_download_path(target);
     try {
-        std::ofstream output(staged, std::ios::binary | std::ios::trunc);
-        if (!output) {
-            throw Error("Cannot create VMCI staged download: " + relative_text);
-        }
+        TransferFile output(staged, GENERIC_WRITE, CREATE_NEW);
         std::uint64_t offset = 0;
         do {
             nlohmann::json request = request_base("download");
@@ -172,9 +238,7 @@ void VmciChannel::download_file(const nlohmann::json& descriptor) {
                 throw Error("VMCI download metadata changed during transfer");
             }
             if (!response.payload.empty()) {
-                output.write(
-                    reinterpret_cast<const char*>(response.payload.data()),
-                    static_cast<std::streamsize>(response.payload.size()));
+                output.write(response.payload);
             }
             offset += response.payload.size();
             if (response.metadata.value("eof", false)) {
@@ -188,9 +252,6 @@ void VmciChannel::download_file(const nlohmann::json& descriptor) {
             }
         } while (offset < expected_size);
         output.flush();
-        if (!output) {
-            throw Error("Cannot finish VMCI staged download");
-        }
         output.close();
         if (sha256_file(staged) != expected_hash) {
             throw Error("VMCI downloaded file SHA-256 mismatch");
@@ -257,13 +318,10 @@ void VmciChannel::upload_file(
         return;
     }
     validate_relative_path(relative);
-    const std::uint64_t total = std::filesystem::file_size(windows_file_path(local_path));
+    TransferFile input(local_path, GENERIC_READ, OPEN_EXISTING);
+    const std::uint64_t total = input.size();
     const std::string digest = sha256_file(local_path);
     const std::string transfer_id = make_id("transfer");
-    std::ifstream input(local_path, std::ios::binary);
-    if (!input) {
-        throw Error("Cannot open VMCI upload file: " + path_to_utf8(local_path));
-    }
     std::uint64_t offset = 0;
     bool first_chunk = true;
     do {
@@ -271,10 +329,7 @@ void VmciChannel::upload_file(
             std::min<std::uint64_t>(total - offset, transport::kVmciChunkBytes));
         std::vector<std::byte> payload(count);
         if (count != 0) {
-            input.read(reinterpret_cast<char*>(payload.data()), static_cast<std::streamsize>(count));
-            if (!input) {
-                throw Error("Cannot read VMCI upload file");
-            }
+            input.read(payload);
         }
         nlohmann::json request = request_base("upload");
         request["path"] = protocol_text(relative);
@@ -382,9 +437,22 @@ StepResultPublishStatus VmciChannel::publish_result(
     const nlohmann::json& result,
     const std::vector<StepResultEvidenceFile>& evidence) {
     nlohmann::json mappings = nlohmann::json::array();
+    validate_identifier(owner.run_id, "result publication run_id");
+    validate_identifier(owner.vm_id, "result publication vm_id");
+    validate_identifier(owner.step_id, "result publication step_id");
+    const auto result_root = std::filesystem::path(L"runs") / path_from_utf8(owner.run_id) /
+        L"results" / path_from_utf8(owner.vm_id) / path_from_utf8(owner.step_id);
+    validate_identifier(owner.job_id, "result publication job_id");
     for (const StepResultEvidenceFile& file : evidence) {
-        const std::filesystem::path staged = protocol_relative(config_, file.staged_path);
         const std::filesystem::path canonical = protocol_relative(config_, file.canonical_path);
+        const auto tail = canonical.lexically_relative(result_root);
+        validate_relative_path(tail);
+        if (*tail.begin() != L"stdout.log" && *tail.begin() != L"stderr.log" &&
+            *tail.begin() != L"files") {
+            throw Error("Result evidence is outside the owning step's canonical directory");
+        }
+        // 本机可使用短暂存路径；线上 .jobs 命名及 Host 授权/fencing 边界保持不变。
+        const auto staged = result_root / L".jobs" / path_from_utf8(owner.job_id) / tail;
         upload_file(file.staged_path, staged);
         mappings.push_back({
             {"staged_path", protocol_text(staged)},

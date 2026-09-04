@@ -995,6 +995,12 @@ using Options = std::map<std::wstring, std::wstring>;
             }
             break;
         }
+        if (report.contains("agent_errors") && !report.at("agent_errors").empty()) {
+            if (wait.has_value()) {
+                wait_status = "agent_error";
+            }
+            break;
+        }
         if (!wait.has_value()) {
             break;
         }

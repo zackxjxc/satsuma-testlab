@@ -719,6 +719,19 @@ if(NOT collecting_agent_result EQUAL 0)
         "${collecting_agent_error}\n${collecting_agent_output}")
 endif()
 
+# Existing result evidence can exceed MAX_PATH independently of the new flat
+# Guest staging layout. Exercise archive copy, metadata, hash and revalidation.
+string(REPEAT "nested" 16 archive_long_component)
+set(archive_long_relative
+    "results/vm_01/resume_echo/files/${archive_long_component}/${archive_long_component}/${archive_long_component}/evidence.json")
+set(archive_long_source "${state_path}/runs/orchestration_collecting_resume/${archive_long_relative}")
+string(LENGTH "${archive_long_source}" archive_long_length)
+if(archive_long_length LESS_EQUAL 400)
+    message(FATAL_ERROR "Archive long-path regression fixture is not sufficiently long")
+endif()
+file(WRITE "${archive_long_source}" "{\"status\":\"preserved\",\"source\":\"long evidence path\"}\n")
+file(SHA256 "${archive_long_source}" archive_long_sha256)
+
 set(collecting_archive "${archive_path}/runs/orchestration_collecting_resume")
 set(collecting_state "${collecting_archive}/lifecycle.json")
 file(MAKE_DIRECTORY "${collecting_archive}")
@@ -779,6 +792,29 @@ if(collecting_resumed_position EQUAL -1 OR collecting_status_position EQUAL -1 O
    NOT EXISTS "${collecting_archive}/evidence/main/task.json")
     message(FATAL_ERROR
         "Persisted collecting_evidence resume omitted evidence: ${collecting_resume_output}")
+endif()
+set(archive_long_target "${collecting_archive}/evidence/main/${archive_long_relative}")
+file(SHA256 "${archive_long_target}" archive_long_target_sha256)
+if(NOT archive_long_target_sha256 STREQUAL archive_long_sha256)
+    message(FATAL_ERROR "Long-path archive changed the evidence content")
+endif()
+file(READ "${collecting_archive}/evidence/main/.archive-complete.json" archive_long_marker)
+string(JSON archive_long_file_count LENGTH "${archive_long_marker}" files)
+math(EXPR archive_long_file_last "${archive_long_file_count} - 1")
+set(archive_long_found FALSE)
+foreach(file_index RANGE 0 ${archive_long_file_last})
+    string(JSON archive_entry_path GET "${archive_long_marker}" files ${file_index} path)
+    file(TO_CMAKE_PATH "${archive_entry_path}" archive_entry_path)
+    if(archive_entry_path STREQUAL archive_long_relative)
+        string(JSON archive_entry_hash GET "${archive_long_marker}" files ${file_index} sha256)
+        if(NOT archive_entry_hash STREQUAL archive_long_sha256)
+            message(FATAL_ERROR "Long-path evidence manifest recorded an incorrect digest")
+        endif()
+        set(archive_long_found TRUE)
+    endif()
+endforeach()
+if(NOT archive_long_found)
+    message(FATAL_ERROR "Archive manifest omitted long-path evidence or leaked extended-path prefixes")
 endif()
 
 # starting_vm 可能已经产生外部副作用，Host 重启后必须保持人工门禁。
@@ -1207,6 +1243,89 @@ endif()
 string(FIND "${pending_wait_output}" "\"wait_status\": \"timeout\"" pending_wait_status_position)
 if(pending_wait_status_position EQUAL -1)
     message(FATAL_ERROR "Report wait omitted timeout status: ${pending_wait_output}")
+endif()
+
+# A known upload failure must end a read-only report wait promptly, retaining the
+# unsafe claim and active lab lease. Keep this fixture outside the Agent's mirror.
+set(error_wait_run "claim_agent_error_wait")
+set(error_wait_state "${TEST_ROOT}/report-error-state")
+set(error_wait_archive "${TEST_ROOT}/report-error-archive")
+set(error_wait_config "${TEST_ROOT}/report-agent-error-lab.json")
+string(REPLACE "${state_path}" "${error_wait_state}" error_wait_lab "${lab_json}")
+string(REPLACE "${archive_path}" "${error_wait_archive}" error_wait_lab "${error_wait_lab}")
+file(WRITE "${error_wait_config}" "${error_wait_lab}")
+string(REPLACE "@RUN_ID@" "${error_wait_run}" error_wait_task "${claim_task_template}")
+string(REPLACE "@RETRY_SAFE@" "false" error_wait_task "${error_wait_task}")
+string(REPLACE "@RUN_ID@" "${error_wait_run}" error_wait_claim "${claim_template}")
+string(REPLACE "@RETRY_SAFE@" "false" error_wait_claim "${error_wait_claim}")
+set(error_wait_root "${error_wait_state}/runs/${error_wait_run}")
+set(error_wait_claim_path "${error_wait_root}/state/vm_01/echo.claim.json")
+set(error_wait_lease_path "${error_wait_archive}/coordination/lab-lease.json")
+file(MAKE_DIRECTORY "${error_wait_root}/state/vm_01" "${error_wait_archive}/coordination")
+file(WRITE "${error_wait_root}/task.json" "${error_wait_task}")
+file(WRITE "${error_wait_claim_path}" "${error_wait_claim}")
+file(WRITE "${error_wait_lease_path}" "{\"schema_version\":1,\"lab_id\":\"integration_lab\",\"lease_id\":\"lease_error_wait\",\"run_id\":\"${error_wait_run}\",\"host_process_id\":0,\"command\":\"run\",\"state\":\"active\",\"acquired_at\":\"2026-09-04T00:00:00.000Z\",\"renewed_at\":\"2026-09-04T00:00:00.000Z\"}\n")
+file(WRITE "${error_wait_root}/state/vm_01-agent-error.json" [=[
+{"schema_version":1,"lab_id":"integration_lab","vm_id":"vm_01","status":"invalid_run","error":"Cannot open VMCI upload file: 266 character path"}
+]=])
+file(SHA256 "${error_wait_claim_path}" error_wait_claim_hash)
+file(SHA256 "${error_wait_lease_path}" error_wait_lease_hash)
+execute_process(
+    COMMAND "${HOST_EXE}" report --config "${error_wait_config}"
+        --run "${error_wait_run}" --wait-seconds 30
+    RESULT_VARIABLE error_wait_result
+    OUTPUT_VARIABLE error_wait_output
+    ERROR_VARIABLE error_wait_error
+    TIMEOUT 5
+)
+if(NOT error_wait_result STREQUAL "1")
+    message(FATAL_ERROR "Known Agent error did not stop report wait: ${error_wait_result}; ${error_wait_error}\n${error_wait_output}")
+endif()
+string(JSON error_wait_status GET "${error_wait_output}" wait_status)
+string(JSON error_wait_complete GET "${error_wait_output}" complete)
+string(JSON error_wait_count LENGTH "${error_wait_output}" agent_errors)
+string(JSON error_wait_reported GET "${error_wait_output}" reported_steps)
+if(NOT error_wait_status STREQUAL "agent_error" OR error_wait_complete OR
+   NOT error_wait_count EQUAL 1 OR NOT error_wait_reported EQUAL 0)
+    message(FATAL_ERROR "Agent error wait incorrectly reported completion: ${error_wait_output}")
+endif()
+file(WRITE "${error_wait_root}/state/vm_01/echo.claim-recovery.json"
+    "{\"status\":\"manual_intervention_required\",\"error\":\"expired unsafe claim\"}\n")
+execute_process(
+    COMMAND "${HOST_EXE}" report --config "${error_wait_config}"
+        --run "${error_wait_run}" --wait-seconds 30
+    RESULT_VARIABLE error_gate_result
+    OUTPUT_VARIABLE error_gate_output
+    ERROR_VARIABLE error_gate_error
+    TIMEOUT 5
+)
+string(JSON error_gate_status GET "${error_gate_output}" wait_status)
+if(NOT error_gate_result STREQUAL "5" OR NOT error_gate_status STREQUAL "manual_intervention_required")
+    message(FATAL_ERROR "Agent error wait bypassed the manual gate: ${error_gate_error}\n${error_gate_output}")
+endif()
+file(READ "${safe_execution}" error_wait_execution)
+string(REPLACE "${safe_claim_run}" "${error_wait_run}" error_wait_execution "${error_wait_execution}")
+file(MAKE_DIRECTORY "${error_wait_root}/results/vm_01/echo")
+file(WRITE "${error_wait_root}/results/vm_01/echo/execution.json" "${error_wait_execution}")
+execute_process(
+    COMMAND "${HOST_EXE}" report --config "${error_wait_config}"
+        --run "${error_wait_run}" --wait-seconds 30
+    RESULT_VARIABLE error_complete_result
+    OUTPUT_VARIABLE error_complete_output
+    ERROR_VARIABLE error_complete_error
+    TIMEOUT 5
+)
+string(JSON error_complete_status GET "${error_complete_output}" wait_status)
+string(JSON error_complete_count LENGTH "${error_complete_output}" agent_errors)
+if(NOT error_complete_result STREQUAL "0" OR NOT error_complete_status STREQUAL "completed" OR
+   NOT error_complete_count EQUAL 1)
+    message(FATAL_ERROR "Historical Agent error overrode complete canonical results: ${error_complete_error}\n${error_complete_output}")
+endif()
+file(SHA256 "${error_wait_claim_path}" error_wait_claim_after)
+file(SHA256 "${error_wait_lease_path}" error_wait_lease_after)
+if(NOT error_wait_claim_after STREQUAL error_wait_claim_hash OR
+   NOT error_wait_lease_after STREQUAL error_wait_lease_hash)
+    message(FATAL_ERROR "Read-only report wait modified the claim or lab lease")
 endif()
 
 set(ENV{SATSUMA_FAKE_VMRUN_RUNNING_VMX} "${vmx_path}")

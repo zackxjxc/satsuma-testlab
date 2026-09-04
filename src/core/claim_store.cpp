@@ -85,7 +85,7 @@ void archive_claim_attempt(
     const std::filesystem::path& claim_path,
     const StepClaimLease& claim) {
     const std::filesystem::path archived = claim_attempt_path(claim_path, claim.attempt);
-    if (std::filesystem::exists(archived)) {
+    if (std::filesystem::exists(windows_file_path(archived))) {
         if (!std::filesystem::is_regular_file(windows_file_path(archived)) ||
             nlohmann::json(load_claim_record(archived, "archived step claim")) !=
                 nlohmann::json(claim)) {
@@ -120,7 +120,7 @@ void validate_completed_result(
             result.value("step_id", std::string{}) != proposed_claim.step_id) {
             throw StepClaimStateError("Canonical step result does not match the requested step");
         }
-        if (std::filesystem::exists(claim_path)) {
+        if (std::filesystem::exists(windows_file_path(claim_path))) {
             if (!std::filesystem::is_regular_file(windows_file_path(claim_path))) {
                 throw StepClaimStateError("Step claim path is not a regular file");
             }
@@ -176,7 +176,7 @@ StepClaimAcquireResult acquire_step_claim_transaction(
     validate_proposed_claim(proposed_claim);
     std::lock_guard lock(claim_store_mutex);
 
-    if (std::filesystem::exists(canonical_result_path)) {
+    if (std::filesystem::exists(windows_file_path(canonical_result_path))) {
         if (!std::filesystem::is_regular_file(windows_file_path(canonical_result_path))) {
             throw StepClaimStateError("Canonical step result path is not a regular file");
         }
@@ -186,7 +186,7 @@ StepClaimAcquireResult acquire_step_claim_transaction(
 
     std::filesystem::create_directories(windows_file_path(claim_path.parent_path()));
     const std::int64_t now_unix_ms = unix_time_ms();
-    if (!std::filesystem::exists(claim_path)) {
+    if (!std::filesystem::exists(windows_file_path(claim_path))) {
         const StepClaimLease acquired = make_acquired_claim(proposed_claim, now_unix_ms, 1);
         write_json_atomic_existing_parent(claim_path, acquired);
         return {StepClaimAcquireStatus::Acquired, acquired};
@@ -278,6 +278,7 @@ StepResultPublishStatus publish_step_result_if_owned(
         }
         return StepResultPublishStatus::Published;
     }
+    std::filesystem::create_directories(windows_file_path(canonical_result_path.parent_path()));
     for (const StepResultEvidenceFile& evidence : evidence_files) {
         std::filesystem::create_directories(windows_file_path(evidence.canonical_path.parent_path()));
         publish_evidence_file(evidence);

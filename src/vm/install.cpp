@@ -77,7 +77,7 @@ void reject_reparse(const Path& path) {
     for (const auto& component : absolute) {
         part /= component;
         if (part == absolute.root_name()) continue;
-        const DWORD attributes = GetFileAttributesW(part.c_str());
+        const DWORD attributes = GetFileAttributesW(windows_file_path(part).c_str());
         check(attributes != INVALID_FILE_ATTRIBUTES, "无法检查路径 " + path_to_utf8(part));
         if (attributes & FILE_ATTRIBUTE_REPARSE_POINT)
             throw Error("拒绝符号链接或重解析点：" + path_to_utf8(part));
@@ -91,7 +91,7 @@ bool validate_acl(const Path& path, bool allow_legacy_root = false) {
     PSID owner{};
     PACL acl{};
     LocalMemory descriptor;
-    const DWORD result = GetNamedSecurityInfoW(path.c_str(), SE_FILE_OBJECT,
+    const DWORD result = GetNamedSecurityInfoW(windows_file_path(path).c_str(), SE_FILE_OBJECT,
         OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION, &owner, nullptr,
         &acl, nullptr, reinterpret_cast<PSECURITY_DESCRIPTOR*>(&descriptor.value));
     if (result != ERROR_SUCCESS || !trusted_sid(owner) || !acl)
@@ -126,7 +126,7 @@ void create_private_directory(const Path& path) {
         reinterpret_cast<PSECURITY_DESCRIPTOR*>(&descriptor.value), nullptr) != FALSE,
         "创建安全描述符失败");
     SECURITY_ATTRIBUTES attributes{sizeof(attributes), descriptor.value, FALSE};
-    check(CreateDirectoryW(path.c_str(), &attributes) != FALSE,
+    check(CreateDirectoryW(windows_file_path(path).c_str(), &attributes) != FALSE,
         "无法创建专属安装目录（已有目录不会被接管） " + path_to_utf8(path));
 }
 void protect_copied_file(const Path& path) {
@@ -699,7 +699,7 @@ bool validate_install_permissions(const Path& root, bool allow_legacy_roots) {
     reject_reparse(root);
     bool repair = validate_acl(root, allow_legacy_roots);
     // 任务引擎可给交互用户授权单个 job；安装器只验证全局工作根，不接管 job 数据。
-    for (const auto* directory : {L"agent", L"work", L"mirror"}) {
+    for (const auto* directory : {L"agent", L"work", L"mirror", L"staging"}) {
         const auto path = root / directory;
         if (!std::filesystem::exists(path)) continue;
         reject_reparse(path);
@@ -718,6 +718,26 @@ bool validate_install_permissions(const Path& root, bool allow_legacy_roots) {
 }
 }  // namespace
 void validate_install_tree(const Path& root) { (void)validate_install_permissions(root, false); }
+
+Path prepare_agent_staging_root(const Path& root) {
+    reject_reparse(root);
+    validate_acl(root);
+    const auto staging = root / L"staging";
+    if (!std::filesystem::exists(windows_file_path(staging))) {
+        create_private_directory(staging);
+    }
+    reject_reparse(staging);
+    validate_acl(staging);
+    return staging;
+}
+
+void create_agent_attempt_directory(const Path& path) {
+    reject_reparse(path.parent_path());
+    validate_acl(path.parent_path());
+    // 不继承历史 staging 的 INHERIT_ONLY ACE；每次尝试都显式只授权 SYSTEM/管理员。
+    create_private_directory(path);
+    validate_acl(path);
+}
 
 int run_agent_installer(bool elevated_child) {
     SetConsoleOutputCP(CP_UTF8);
