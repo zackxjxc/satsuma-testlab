@@ -72,9 +72,9 @@ void throw_if_stop_requested(const std::stop_token stop_token) {
 
 // 使用 Win32 写穿方式创建 UTF-8 日志。
 void write_text(const std::filesystem::path& path, const std::string& content) {
-    std::filesystem::create_directories(path.parent_path());
+    std::filesystem::create_directories(windows_file_path(path.parent_path()));
     HANDLE file = CreateFileW(
-        path.c_str(),
+        windows_file_path(path).c_str(),
         GENERIC_WRITE,
         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
         nullptr,
@@ -114,11 +114,11 @@ void write_run_error_best_effort(
     const AgentConfig& config,
     const std::string& error) noexcept {
     try {
-        if (!std::filesystem::is_regular_file(run_directory / L"task.json")) {
+        if (!std::filesystem::is_regular_file(windows_file_path(run_directory / L"task.json"))) {
             return;
         }
         const std::filesystem::path state_directory = run_directory / L"state";
-        std::filesystem::create_directories(state_directory);
+        std::filesystem::create_directories(windows_file_path(state_directory));
         write_json_atomic(
             state_directory / path_from_utf8(config.vm_id + "-agent-error.json"),
             {
@@ -139,17 +139,17 @@ void stage_local_log(
     const std::filesystem::path& staged,
     ExecutionResult& result) {
     try {
-        if (!std::filesystem::is_regular_file(local)) {
+        if (!std::filesystem::is_regular_file(windows_file_path(local))) {
             write_text(local, "");
         }
-        std::filesystem::create_directories(staged.parent_path());
+        std::filesystem::create_directories(windows_file_path(staged.parent_path()));
         std::filesystem::copy_file(
-            local,
-            staged,
+            windows_file_path(local),
+            windows_file_path(staged),
             std::filesystem::copy_options::overwrite_existing);
     } catch (const std::exception& error) {
         append_result_error(result, error.what());
-        if (!std::filesystem::is_regular_file(staged)) {
+        if (!std::filesystem::is_regular_file(windows_file_path(staged))) {
             write_text(staged, "");
         }
     }
@@ -243,13 +243,13 @@ void process_guest_cleanup_request(
     const std::filesystem::path state_directory = run_directory / L"state";
     const std::filesystem::path request_path =
         state_directory / path_from_utf8(config.vm_id + "-cleanup-request.json");
-    if (!std::filesystem::is_regular_file(request_path)) {
+    if (!std::filesystem::is_regular_file(windows_file_path(request_path))) {
         return;
     }
 
     const std::filesystem::path result_path =
         state_directory / path_from_utf8(config.vm_id + "-cleanup.json");
-    if (std::filesystem::is_regular_file(result_path)) {
+    if (std::filesystem::is_regular_file(windows_file_path(result_path))) {
         return;
     }
 
@@ -268,7 +268,7 @@ void process_guest_cleanup_request(
         resolve_local_run_directory(config, manifest.run_id);
     std::error_code cleanup_error;
     const std::uintmax_t deleted_paths =
-        std::filesystem::remove_all(local_run_directory, cleanup_error);
+        std::filesystem::remove_all(windows_file_path(local_run_directory), cleanup_error);
     nlohmann::json result = {
         {"schema_version", 1},
         {"lab_id", config.lab_id},
@@ -400,19 +400,19 @@ int Agent::execute_pending_runs(const std::stop_token stop_token) {
         return 0;
     }
     const std::filesystem::path runs_root = config_.mirror_root / L"runs";
-    std::filesystem::create_directories(runs_root);
+    std::filesystem::create_directories(windows_file_path(runs_root));
 
     std::vector<std::filesystem::path> run_directories;
     for (const auto& entry : std::filesystem::directory_iterator(runs_root)) {
         if (!entry.is_directory() || entry.path().filename().native().starts_with(L".")) {
             continue;
         }
-        const DWORD attributes = GetFileAttributesW(entry.path().c_str());
+        const DWORD attributes = GetFileAttributesW(windows_file_path(entry.path()).c_str());
         if (attributes == INVALID_FILE_ATTRIBUTES ||
             (attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
             continue;
         }
-        if (std::filesystem::is_regular_file(entry.path() / L"task.json")) {
+        if (std::filesystem::is_regular_file(windows_file_path(entry.path() / L"task.json"))) {
             run_directories.push_back(entry.path());
         }
     }
@@ -491,7 +491,7 @@ int Agent::execute_pending_runs(const std::stop_token stop_token) {
                     acquisition.status == StepClaimAcquireStatus::Wait) {
                     if (acquisition.status == StepClaimAcquireStatus::Completed &&
                         vmci_channel_) {
-                        std::filesystem::create_directories(result_directory);
+                        std::filesystem::create_directories(windows_file_path(result_directory));
                         write_text(result_directory / L".vmci-complete", "completed\n");
                     }
                     continue;
@@ -515,7 +515,7 @@ int Agent::execute_pending_runs(const std::stop_token stop_token) {
                     throw Error("Claim acquisition transaction returned an invalid state");
                 }
                 std::error_code marker_error;
-                std::filesystem::remove(recovery_path, marker_error);
+                std::filesystem::remove(windows_file_path(recovery_path), marker_error);
 
                 execute_step(
                     run_directory,
@@ -534,8 +534,8 @@ int Agent::execute_pending_runs(const std::stop_token stop_token) {
                         run_directory / L"results" / path_from_utf8(config_.vm_id) /
                         path_from_utf8(step.id);
                     return step.vm != config_.vm_id ||
-                        std::filesystem::is_regular_file(result_directory / L"execution.json") ||
-                        std::filesystem::is_regular_file(result_directory / L".vmci-complete");
+                        std::filesystem::is_regular_file(windows_file_path(result_directory / L"execution.json")) ||
+                        std::filesystem::is_regular_file(windows_file_path(result_directory / L".vmci-complete"));
                 });
             if (current_vm_complete) {
                 process_guest_cleanup_request(run_directory, manifest, config_);
@@ -674,8 +674,8 @@ void Agent::deploy_artifacts(
         }
 
         const std::filesystem::path artifact_file = resolve_under_root(run_directory, artifact.path);
-        if (!std::filesystem::is_regular_file(artifact_file) ||
-            std::filesystem::file_size(artifact_file) > kMaxArtifactBytes ||
+        if (!std::filesystem::is_regular_file(windows_file_path(artifact_file)) ||
+            std::filesystem::file_size(windows_file_path(artifact_file)) > kMaxArtifactBytes ||
             sha256_file(artifact_file) != artifact.sha256) {
             throw Error("Artifact is missing or has an invalid hash: " + path_to_utf8(artifact.path));
         }
@@ -684,10 +684,10 @@ void Agent::deploy_artifacts(
             ? interactive_session->deploy_file(artifact_file, artifact.path)
             : resolve_under_root(local_run_directory, artifact.path);
         if (interactive_session == nullptr) {
-            std::filesystem::create_directories(local_file.parent_path());
+            std::filesystem::create_directories(windows_file_path(local_file.parent_path()));
             std::filesystem::copy_file(
-                artifact_file,
-                local_file,
+                windows_file_path(artifact_file),
+                windows_file_path(local_file),
                 std::filesystem::copy_options::overwrite_existing);
         }
         if (sha256_file(local_file) != artifact.sha256) {
@@ -705,7 +705,7 @@ void Agent::execute_step_payload(
     ExecutionWorkspace& workspace) {
     throw_if_stop_requested(stop_token);
     const auto start_time = std::chrono::steady_clock::now();
-    std::filesystem::create_directories(workspace.local_job_directory);
+    std::filesystem::create_directories(windows_file_path(workspace.local_job_directory));
     if (step.type == "echo") {
         write_text(workspace.stdout_local, step.message + "\n");
         write_text(workspace.stderr_local, "");
@@ -736,12 +736,12 @@ void Agent::execute_step_payload(
         workspace.local_job_directory = resolve_under_root(
             workspace.local_run_directory,
             std::filesystem::path(L".satsuma") / L"jobs" / path_from_utf8(claim.job_id));
-        std::filesystem::create_directories(workspace.local_job_directory);
+        std::filesystem::create_directories(windows_file_path(workspace.local_job_directory));
         workspace.stdout_local = workspace.local_job_directory / L"stdout.log.partial";
         workspace.stderr_local = workspace.local_job_directory / L"stderr.log.partial";
         workspace.result.interactive_session_id = interactive_session->session_id();
     } else {
-        std::filesystem::create_directories(workspace.local_run_directory);
+        std::filesystem::create_directories(windows_file_path(workspace.local_run_directory));
     }
     deploy_artifacts(
         run_directory,
@@ -813,10 +813,10 @@ void Agent::execute_step_payload(
         const std::filesystem::path source = resolve_under_root(
             workspace.local_run_directory,
             collect_file);
-        if (!std::filesystem::is_regular_file(source)) {
+        if (!std::filesystem::is_regular_file(windows_file_path(source))) {
             throw Error("Declared result file does not exist: " + path_to_utf8(collect_file));
         }
-        const std::uintmax_t collected_size = std::filesystem::file_size(source);
+        const std::uintmax_t collected_size = std::filesystem::file_size(windows_file_path(source));
         if (collected_size > kMaxCollectedFileBytes ||
             collected_total_bytes > kMaxCollectedTotalBytes - collected_size) {
             throw Error("Declared result files exceed the collection size limit");
@@ -828,11 +828,11 @@ void Agent::execute_step_payload(
         const std::filesystem::path canonical_destination = resolve_under_root(
             workspace.result_directory,
             std::filesystem::path(L"files") / collect_file);
-        std::filesystem::create_directories(staged_destination.parent_path());
-        std::filesystem::create_directories(canonical_destination.parent_path());
+        std::filesystem::create_directories(windows_file_path(staged_destination.parent_path()));
+        std::filesystem::create_directories(windows_file_path(canonical_destination.parent_path()));
         std::filesystem::copy_file(
-            source,
-            staged_destination,
+            windows_file_path(source),
+            windows_file_path(staged_destination),
             std::filesystem::copy_options::overwrite_existing);
         workspace.result.files.push_back({
             path_to_utf8(std::filesystem::relative(canonical_destination, run_directory)),
@@ -905,8 +905,8 @@ void Agent::publish_step_execution(
     }
 
     std::error_code cleanup_error;
-    std::filesystem::remove_all(workspace.job_directory, cleanup_error);
-    std::filesystem::remove_all(workspace.local_job_directory, cleanup_error);
+    std::filesystem::remove_all(windows_file_path(workspace.job_directory), cleanup_error);
+    std::filesystem::remove_all(windows_file_path(workspace.local_job_directory), cleanup_error);
     write_state(run_directory, "idle", "");
 }
 
@@ -944,7 +944,7 @@ void Agent::execute_step(
                         return;
                     }
                     if (!cancellation_check &&
-                        std::filesystem::is_regular_file(cancellation_path)) {
+                        std::filesystem::is_regular_file(windows_file_path(cancellation_path))) {
                         const nlohmann::json cancellation = load_json(cancellation_path);
                         if (cancellation.value("schema_version", 0) == 1 &&
                             cancellation.value("run_id", std::string{}) == run_id) {
@@ -962,12 +962,12 @@ void Agent::execute_step(
     workspace.result_directory = resolve_under_root(
         run_directory,
         std::filesystem::path(L"results") / path_from_utf8(config_.vm_id) / path_from_utf8(step.id));
-    std::filesystem::create_directories(workspace.result_directory);
+    std::filesystem::create_directories(windows_file_path(workspace.result_directory));
 
     workspace.job_directory = resolve_under_root(
         workspace.result_directory,
         std::filesystem::path(L".jobs") / path_from_utf8(claim.job_id));
-    std::filesystem::create_directories(workspace.job_directory);
+    std::filesystem::create_directories(windows_file_path(workspace.job_directory));
 
     workspace.stdout_staged = workspace.job_directory / L"stdout.log";
     workspace.stderr_staged = workspace.job_directory / L"stderr.log";
@@ -1001,7 +1001,7 @@ void Agent::execute_step(
             execution_stop_token,
             workspace);
     } catch (const std::exception& error) {
-        if (std::filesystem::is_regular_file(cancellation_path)) {
+        if (std::filesystem::is_regular_file(windows_file_path(cancellation_path))) {
             workspace.result.status = "failed";
             workspace.result.error = "Run cancellation requested";
         } else if (workspace.result.status == "timed_out") {

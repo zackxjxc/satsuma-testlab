@@ -7,6 +7,9 @@
 
 namespace satsuma {
 
+// 仅供 Win32 文件 API 使用；不把扩展路径前缀写入配置或协议。
+[[nodiscard]] std::wstring windows_file_path(const std::filesystem::path& path);
+
 // 将 UTF-8 字符串转换为 Windows 文件系统路径。
 [[nodiscard]] std::filesystem::path path_from_utf8(std::string_view value);
 

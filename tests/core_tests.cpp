@@ -67,6 +67,15 @@ void test_file_primitives(const std::filesystem::path& root) {
     satsuma::write_json_atomic(json_path, {{"message", "hello"}, {"value", 7}});
     const nlohmann::json value = satsuma::load_json(json_path);
     expect(value.at("message") == "hello" && value.at("value") == 7, "atomic JSON round trip failed");
+    // ProgramData + 自动登记身份 + job 路径可超过 MAX_PATH，不能依赖 Guest 注册表开关。
+    const auto long_root = root / std::wstring(100, L'a') / std::wstring(100, L'b') /
+        std::wstring(80, L'c');
+    const auto long_json = long_root / L"state.json";
+    satsuma::write_json_atomic(long_json, value);
+    expect(satsuma::load_json(long_json) == value, "long path JSON round trip failed");
+    expect(satsuma::sha256_file(long_json).size() == 64, "long path SHA-256 failed");
+    satsuma::rename_path_with_retry(long_json, long_root / L"renamed.json");
+    expect(satsuma::load_json(long_root / L"renamed.json") == value, "long path rename failed");
     HANDLE delete_capable_reader = CreateFileW( // 模拟原子替换需要兼容的删除权限
         json_path.c_str(),
         GENERIC_READ | DELETE,
@@ -1077,13 +1086,13 @@ int main() {
         test_claim_recovery_decision(root);
         test_agent_update_protocol(root);
         test_windows_command_line();
-        std::filesystem::remove_all(root);
+        std::filesystem::remove_all(satsuma::windows_file_path(root));
         std::cout << "SatsumaCoreTests passed\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "SatsumaCoreTests failed: " << error.what() << '\n';
         std::error_code cleanup_error;
-        std::filesystem::remove_all(root, cleanup_error);
+        std::filesystem::remove_all(satsuma::windows_file_path(root), cleanup_error);
         return 1;
     }
 }

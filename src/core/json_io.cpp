@@ -40,8 +40,8 @@ void replace_json_file(
     DWORD move_error = ERROR_SUCCESS; // 最后一次 MoveFileExW 错误
     for (;;) {
         if (MoveFileExW(
-                temporary.c_str(),
-                destination.c_str(),
+                windows_file_path(temporary).c_str(),
+                windows_file_path(destination).c_str(),
                 move_flags)) {
             return;
         }
@@ -53,7 +53,7 @@ void replace_json_file(
         std::this_thread::sleep_for(kAtomicReplaceRetryDelay);
     }
 
-    DeleteFileW(temporary.c_str());
+    DeleteFileW(windows_file_path(temporary).c_str());
     throw Error(win32_error(
         "MoveFileExW for " + path_to_utf8(destination),
         move_error));
@@ -63,7 +63,7 @@ void replace_json_file(
 
 nlohmann::json load_json(const std::filesystem::path& path) {
     HANDLE file = CreateFileW(
-        path.c_str(),
+        windows_file_path(path).c_str(),
         GENERIC_READ,
         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
         nullptr,
@@ -117,7 +117,7 @@ static void write_json_atomic_impl(
     const std::filesystem::path parent = path.parent_path();
     if (!parent.empty()) {
         if (create_parent) {
-            std::filesystem::create_directories(parent);
+            std::filesystem::create_directories(windows_file_path(parent));
         } else if (!std::filesystem::is_directory(parent)) {
             throw Error("JSON parent directory does not exist: " + path_to_utf8(parent));
         }
@@ -130,7 +130,7 @@ static void write_json_atomic_impl(
     constexpr DWORD file_flags = FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH;
 
     HANDLE file = CreateFileW(
-        temporary.c_str(),
+        windows_file_path(temporary).c_str(),
         GENERIC_WRITE,
         0,
         nullptr,
@@ -156,11 +156,11 @@ static void write_json_atomic_impl(
     CloseHandle(file);
 
     if (!write_ok || bytes_written != payload.size()) {
-        DeleteFileW(temporary.c_str());
+        DeleteFileW(windows_file_path(temporary).c_str());
         throw Error(win32_error("WriteFile", write_error));
     }
     if (!flush_ok) {
-        DeleteFileW(temporary.c_str());
+        DeleteFileW(windows_file_path(temporary).c_str());
         throw Error(win32_error("FlushFileBuffers", flush_error));
     }
 

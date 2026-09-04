@@ -29,8 +29,8 @@ void replace_file(
     const std::filesystem::path& source,
     const std::filesystem::path& destination) {
     if (!MoveFileExW(
-            source.c_str(),
-            destination.c_str(),
+            windows_file_path(source).c_str(),
+            windows_file_path(destination).c_str(),
             MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
         throw Error(
             "MoveFileExW(VMCI file publish) failed with Win32 error " +
@@ -65,7 +65,7 @@ VmciChannel::VmciChannel(const AgentConfig& config, std::string session_id)
           config.transport.vmci_port,
           std::chrono::milliseconds(
               std::min(config.transport.request_timeout_ms, 1'000))) {
-    std::filesystem::create_directories(config_.mirror_root);
+    std::filesystem::create_directories(windows_file_path(config_.mirror_root));
 }
 
 void VmciChannel::update_config(const AgentConfig& config) {
@@ -147,13 +147,13 @@ void VmciChannel::download_file(const nlohmann::json& descriptor) {
     const std::filesystem::path relative = path_from_utf8(relative_text);
     validate_relative_path(relative);
     const std::filesystem::path target = resolve_under_root(config_.mirror_root, relative);
-    if (std::filesystem::is_regular_file(target) &&
-        std::filesystem::file_size(target) == expected_size &&
+    if (std::filesystem::is_regular_file(windows_file_path(target)) &&
+        std::filesystem::file_size(windows_file_path(target)) == expected_size &&
         sha256_file(target) == expected_hash) {
         return;
     }
 
-    std::filesystem::create_directories(target.parent_path());
+    std::filesystem::create_directories(windows_file_path(target.parent_path()));
     const std::filesystem::path staged = staged_download_path(target);
     try {
         std::ofstream output(staged, std::ios::binary | std::ios::trunc);
@@ -198,7 +198,7 @@ void VmciChannel::download_file(const nlohmann::json& descriptor) {
         replace_file(staged, target);
     } catch (...) {
         std::error_code cleanup_error;
-        std::filesystem::remove(staged, cleanup_error);
+        std::filesystem::remove(windows_file_path(staged), cleanup_error);
         throw;
     }
 }
@@ -234,7 +234,7 @@ void VmciChannel::remove_stale_inbound(
         for (const auto& entry : std::filesystem::directory_iterator(runs)) {
             if (entry.is_directory() && !active_runs.contains(entry.path().filename().native())) {
                 std::error_code cleanup_error;
-                std::filesystem::remove_all(entry.path(), cleanup_error);
+                std::filesystem::remove_all(windows_file_path(entry.path()), cleanup_error);
             }
         }
     }
@@ -244,7 +244,7 @@ void VmciChannel::remove_stale_inbound(
         for (const auto& entry : std::filesystem::directory_iterator(updates)) {
             if (entry.is_directory() && !active_updates.contains(entry.path().filename().native())) {
                 std::error_code cleanup_error;
-                std::filesystem::remove_all(entry.path(), cleanup_error);
+                std::filesystem::remove_all(windows_file_path(entry.path()), cleanup_error);
             }
         }
     }
@@ -253,11 +253,11 @@ void VmciChannel::remove_stale_inbound(
 void VmciChannel::upload_file(
     const std::filesystem::path& local_path,
     const std::filesystem::path& relative) {
-    if (!std::filesystem::is_regular_file(local_path)) {
+    if (!std::filesystem::is_regular_file(windows_file_path(local_path))) {
         return;
     }
     validate_relative_path(relative);
-    const std::uint64_t total = std::filesystem::file_size(local_path);
+    const std::uint64_t total = std::filesystem::file_size(windows_file_path(local_path));
     const std::string digest = sha256_file(local_path);
     const std::string transfer_id = make_id("transfer");
     std::ifstream input(local_path, std::ios::binary);
@@ -321,7 +321,7 @@ void VmciChannel::synchronize_outbound() {
         }
     }
     for (const std::filesystem::path& file : files) {
-        if (std::filesystem::is_regular_file(file)) {
+        if (std::filesystem::is_regular_file(windows_file_path(file))) {
             upload_file(file, protocol_relative(config_, file));
         }
     }

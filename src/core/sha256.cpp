@@ -64,7 +64,7 @@ std::string sha256_file(const std::filesystem::path& path) {
             "BCryptCreateHash");
 
         file = CreateFileW(
-            path.c_str(),
+            windows_file_path(path).c_str(),
             GENERIC_READ,
             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
             nullptr,

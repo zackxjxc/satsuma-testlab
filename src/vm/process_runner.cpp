@@ -72,12 +72,12 @@ private:
 
 // 打开允许 Host 实时读取的共享日志文件。
 [[nodiscard]] UniqueHandle open_log(const std::filesystem::path& path) {
-    std::filesystem::create_directories(path.parent_path());
+    std::filesystem::create_directories(windows_file_path(path.parent_path()));
     SECURITY_ATTRIBUTES security{};
     security.nLength = sizeof(security);
     security.bInheritHandle = TRUE;
     UniqueHandle handle(CreateFileW(
-        path.c_str(),
+        windows_file_path(path).c_str(),
         GENERIC_WRITE,
         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
         &security,
@@ -165,7 +165,7 @@ void terminate_job_tree(const HANDLE job, const DWORD exit_code) {
 }  // namespace
 
 ProcessResult ProcessRunner::run(const ProcessRequest& request) const {
-    if (!std::filesystem::is_regular_file(request.program)) {
+    if (!std::filesystem::is_regular_file(windows_file_path(request.program))) {
         throw Error("Program is not a regular file: " + path_to_utf8(request.program));
     }
     if (!std::filesystem::is_directory(request.working_directory)) {

@@ -86,7 +86,7 @@ void archive_claim_attempt(
     const StepClaimLease& claim) {
     const std::filesystem::path archived = claim_attempt_path(claim_path, claim.attempt);
     if (std::filesystem::exists(archived)) {
-        if (!std::filesystem::is_regular_file(archived) ||
+        if (!std::filesystem::is_regular_file(windows_file_path(archived)) ||
             nlohmann::json(load_claim_record(archived, "archived step claim")) !=
                 nlohmann::json(claim)) {
             throw StepClaimStateError("Archived step claim attempt conflicts with current state");
@@ -121,7 +121,7 @@ void validate_completed_result(
             throw StepClaimStateError("Canonical step result does not match the requested step");
         }
         if (std::filesystem::exists(claim_path)) {
-            if (!std::filesystem::is_regular_file(claim_path)) {
+            if (!std::filesystem::is_regular_file(windows_file_path(claim_path))) {
                 throw StepClaimStateError("Step claim path is not a regular file");
             }
             const StepClaimLease owner = load_claim_record(claim_path, "step claim");
@@ -146,7 +146,7 @@ void validate_evidence_files(const std::vector<StepResultEvidenceFile>& evidence
             evidence.staged_path == evidence.canonical_path) {
             throw Error("Step result evidence contains an invalid path mapping");
         }
-        if (!std::filesystem::is_regular_file(evidence.staged_path)) {
+        if (!std::filesystem::is_regular_file(windows_file_path(evidence.staged_path))) {
             throw Error("Staged step result evidence is not a regular file");
         }
         if (!canonical_paths.insert(evidence.canonical_path).second) {
@@ -158,8 +158,8 @@ void validate_evidence_files(const std::vector<StepResultEvidenceFile>& evidence
 // 将一个完整暂存文件原子发布到 canonical 路径。
 void publish_evidence_file(const StepResultEvidenceFile& evidence) {
     if (!MoveFileExW(
-            evidence.staged_path.c_str(),
-            evidence.canonical_path.c_str(),
+            windows_file_path(evidence.staged_path).c_str(),
+            windows_file_path(evidence.canonical_path).c_str(),
             MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
         throw Error(
             "MoveFileExW(publish step result evidence) failed with Win32 error " +
@@ -177,21 +177,21 @@ StepClaimAcquireResult acquire_step_claim_transaction(
     std::lock_guard lock(claim_store_mutex);
 
     if (std::filesystem::exists(canonical_result_path)) {
-        if (!std::filesystem::is_regular_file(canonical_result_path)) {
+        if (!std::filesystem::is_regular_file(windows_file_path(canonical_result_path))) {
             throw StepClaimStateError("Canonical step result path is not a regular file");
         }
         validate_completed_result(canonical_result_path, claim_path, proposed_claim);
         return {StepClaimAcquireStatus::Completed, std::nullopt};
     }
 
-    std::filesystem::create_directories(claim_path.parent_path());
+    std::filesystem::create_directories(windows_file_path(claim_path.parent_path()));
     const std::int64_t now_unix_ms = unix_time_ms();
     if (!std::filesystem::exists(claim_path)) {
         const StepClaimLease acquired = make_acquired_claim(proposed_claim, now_unix_ms, 1);
         write_json_atomic_existing_parent(claim_path, acquired);
         return {StepClaimAcquireStatus::Acquired, acquired};
     }
-    if (!std::filesystem::is_regular_file(claim_path)) {
+    if (!std::filesystem::is_regular_file(windows_file_path(claim_path))) {
         throw StepClaimStateError("Step claim path is not a regular file");
     }
 
@@ -222,7 +222,7 @@ StepClaimRenewResult renew_step_claim_transaction(
     const StepClaimLease& expected_owner,
     const std::int64_t lease_duration_ms) {
     std::lock_guard lock(claim_store_mutex);
-    if (!std::filesystem::is_regular_file(claim_path)) {
+    if (!std::filesystem::is_regular_file(windows_file_path(claim_path))) {
         return {StepClaimRenewStatus::OwnershipLost, std::nullopt};
     }
 
@@ -259,7 +259,7 @@ StepResultPublishStatus publish_step_result_if_owned(
     validate_result_owner(result, expected_owner);
     validate_evidence_files(evidence_files);
     std::lock_guard lock(claim_store_mutex);
-    if (!std::filesystem::is_regular_file(claim_path)) {
+    if (!std::filesystem::is_regular_file(windows_file_path(claim_path))) {
         return StepResultPublishStatus::OwnershipLost;
     }
 
@@ -271,7 +271,7 @@ StepResultPublishStatus publish_step_result_if_owned(
         return StepResultPublishStatus::LeaseExpired;
     }
 
-    if (std::filesystem::is_regular_file(canonical_result_path)) {
+    if (std::filesystem::is_regular_file(windows_file_path(canonical_result_path))) {
         const nlohmann::json existing_result = load_json(canonical_result_path);
         if (existing_result.value("job_id", std::string{}) != expected_owner.job_id) {
             throw Error("Canonical step result is already owned by another job");
@@ -279,7 +279,7 @@ StepResultPublishStatus publish_step_result_if_owned(
         return StepResultPublishStatus::Published;
     }
     for (const StepResultEvidenceFile& evidence : evidence_files) {
-        std::filesystem::create_directories(evidence.canonical_path.parent_path());
+        std::filesystem::create_directories(windows_file_path(evidence.canonical_path.parent_path()));
         publish_evidence_file(evidence);
     }
     write_json_atomic_existing_parent(canonical_result_path, result);

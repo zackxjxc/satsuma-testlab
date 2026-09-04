@@ -418,7 +418,7 @@ void grant_run_directory_access(
     PACL current_acl = nullptr;
     PSECURITY_DESCRIPTOR descriptor = nullptr;
     const DWORD read_status = GetNamedSecurityInfoW(
-        const_cast<wchar_t*>(directory.c_str()),
+        windows_file_path(directory).data(),
         SE_FILE_OBJECT,
         DACL_SECURITY_INFORMATION,
         nullptr,
@@ -442,7 +442,7 @@ void grant_run_directory_access(
         throw Error("SetEntriesInAclW failed with Win32 error " + std::to_string(merge_status));
     }
     const DWORD write_status = SetNamedSecurityInfoW(
-        const_cast<wchar_t*>(directory.c_str()),
+        windows_file_path(directory).data(),
         SE_FILE_OBJECT,
         DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
         nullptr,
@@ -458,12 +458,12 @@ void grant_run_directory_access(
 
 // 打开可由 Host 实时读取的继承型日志句柄。
 [[nodiscard]] UniqueHandle open_log(const std::filesystem::path& path) {
-    std::filesystem::create_directories(path.parent_path());
+    std::filesystem::create_directories(windows_file_path(path.parent_path()));
     SECURITY_ATTRIBUTES security{};
     security.nLength = sizeof(security);
     security.bInheritHandle = TRUE;
     UniqueHandle handle(CreateFileW(
-        path.c_str(),
+        windows_file_path(path).c_str(),
         GENERIC_WRITE,
         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
         &security,
@@ -578,7 +578,7 @@ struct HelperTermination {
 // 尽力删除一次 helper 文件及其同名原子写临时文件。
 void remove_helper_file_group(const std::filesystem::path& path) noexcept {
     std::error_code error;
-    std::filesystem::remove(path, error);
+    std::filesystem::remove(windows_file_path(path), error);
     error.clear();
     const std::wstring temporary_prefix = path.filename().native() + L".tmp-";
     std::filesystem::directory_iterator iterator(path.parent_path(), error);
@@ -586,7 +586,7 @@ void remove_helper_file_group(const std::filesystem::path& path) noexcept {
     while (!error && iterator != end) {
         if (iterator->path().filename().native().starts_with(temporary_prefix)) {
             std::error_code remove_error;
-            std::filesystem::remove(iterator->path(), remove_error);
+            std::filesystem::remove(windows_file_path(iterator->path()), remove_error);
         }
         iterator.increment(error);
     }
@@ -656,7 +656,7 @@ InteractiveUserSession InteractiveUserSession::acquire(
             L"SatsumaTestLab" / path_from_utf8(lab_id) / L"runs" / path_from_utf8(run_id)
         : local_work_root / path_from_utf8(lab_id) / path_from_utf8(run_id) /
             path_from_utf8(vm_id);
-    std::filesystem::create_directories(state->working_directory);
+    std::filesystem::create_directories(windows_file_path(state->working_directory));
     grant_run_directory_access(state->working_directory, state->selected_user.token.get());
     return InteractiveUserSession(std::move(state));
 }
@@ -676,17 +676,17 @@ const std::string& InteractiveUserSession::user_sid() const noexcept {
 std::filesystem::path InteractiveUserSession::deploy_file(
     const std::filesystem::path& source,
     const std::filesystem::path& relative_destination) const {
-    if (!std::filesystem::is_regular_file(source)) {
+    if (!std::filesystem::is_regular_file(windows_file_path(source))) {
         throw Error("Artifact source is not a regular file: " + path_to_utf8(source));
     }
     const std::filesystem::path destination = resolve_under_root(
         state_->working_directory,
         relative_destination);
     run_impersonated(state_->selected_user.token.get(), [&source, &destination] {
-        std::filesystem::create_directories(destination.parent_path());
+        std::filesystem::create_directories(windows_file_path(destination.parent_path()));
         std::filesystem::copy_file(
-            source,
-            destination,
+            windows_file_path(source),
+            windows_file_path(destination),
             std::filesystem::copy_options::overwrite_existing);
     });
     return destination;
@@ -695,12 +695,12 @@ std::filesystem::path InteractiveUserSession::deploy_file(
 ProcessResult InteractiveUserSession::run(
     const std::filesystem::path& helper_executable,
     const ProcessRequest& request) const {
-    if (!std::filesystem::is_regular_file(helper_executable)) {
+    if (!std::filesystem::is_regular_file(windows_file_path(helper_executable))) {
         throw Error(
             "Interactive process helper is not a regular file: " +
             path_to_utf8(helper_executable));
     }
-    if (!std::filesystem::is_regular_file(request.program)) {
+    if (!std::filesystem::is_regular_file(windows_file_path(request.program))) {
         throw Error("Program is not a regular file: " + path_to_utf8(request.program));
     }
     if (!std::filesystem::is_directory(request.working_directory)) {
@@ -958,7 +958,7 @@ ProcessResult InteractiveUserSession::run(
         }
 
         if (!result.timed_out && !result.output_limit_exceeded) {
-            if (!std::filesystem::is_regular_file(helper_result)) {
+            if (!std::filesystem::is_regular_file(windows_file_path(helper_result))) {
                 throw Error("Interactive process helper exited without a result");
             }
             const nlohmann::json helper_response = load_json(helper_result);

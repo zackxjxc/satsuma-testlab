@@ -44,6 +44,13 @@ void ensure_under_root(const std::filesystem::path& root, const std::filesystem:
 
 }  // namespace
 
+std::wstring windows_file_path(const std::filesystem::path& path) {
+    const auto value = std::filesystem::absolute(path).lexically_normal().native();
+    if (value.starts_with(L"\\\\?\\")) return value;
+    if (value.starts_with(L"\\\\")) return L"\\\\?\\UNC\\" + value.substr(2);
+    return L"\\\\?\\" + value;
+}
+
 std::filesystem::path path_from_utf8(const std::string_view value) {
     if (value.empty()) {
         return {};
@@ -113,7 +120,7 @@ void rename_path_with_retry(
     const auto deadline = std::chrono::steady_clock::now() + kPathRenameTimeout;
     DWORD rename_error = ERROR_SUCCESS; // 最后一次 MoveFileExW 错误
     for (;;) {
-        if (MoveFileExW(source.c_str(), destination.c_str(), MOVEFILE_WRITE_THROUGH)) {
+        if (MoveFileExW(windows_file_path(source).c_str(), windows_file_path(destination).c_str(), MOVEFILE_WRITE_THROUGH)) {
             return;
         }
         rename_error = GetLastError();
@@ -152,7 +159,7 @@ std::filesystem::path resolve_under_root(
     std::filesystem::path current = absolute_root;
     for (const auto& component : relative) {
         current /= component;
-        const DWORD attributes = GetFileAttributesW(current.c_str());
+        const DWORD attributes = GetFileAttributesW(windows_file_path(current).c_str());
         if (attributes == INVALID_FILE_ATTRIBUTES) {
             break;
         }
