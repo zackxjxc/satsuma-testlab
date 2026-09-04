@@ -435,6 +435,7 @@ install(
         docs/协议.md
         docs/开发指南.md
         docs/短路径存储设计.md
+        docs/验收与测试边界.md
     DESTINATION docs
     COMPONENT SatsumaRuntime
 )
