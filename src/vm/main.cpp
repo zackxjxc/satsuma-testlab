@@ -10,6 +10,7 @@
 #include "agent.hpp"
 #include "hardware_identity.hpp"
 #include "interactive_process.hpp"
+#include "install.hpp"
 #include "service.hpp"
 #include "update.hpp"
 #include "satsuma/core/config.hpp"
@@ -25,11 +26,12 @@ void print_usage() {
     std::cout
         << "SatsumaVM " << satsuma::kVersion << '\n'
         << "Usage:\n"
+        << "  SatsumaVM (double-click: install, update or show installed status)\n"
         << "  SatsumaVM --help\n"
         << "  SatsumaVM --version [--json]\n"
         << "  SatsumaVM --config agent.json --once\n"
         << "  SatsumaVM --config agent.json --watch\n"
-        << "  SatsumaVM --config agent.json --service\n"
+        << "  SatsumaVM --config agent.json --service (SCM only)\n"
         << "  SatsumaVM --config agent.json --validate-config\n"
         << "  SatsumaVM --config agent.json --install-service\n"
         << "  SatsumaVM --config agent.json --remove-service\n"
@@ -72,6 +74,9 @@ void append_startup_error(
 
 // 运行 VM Agent CLI 并把业务错误转换为稳定退出码。
 int wmain(const int argc, wchar_t* argv[]) {
+    if (argc == 1 || (argc == 2 && std::wstring_view(argv[1]) == L"--install-elevated")) {
+        return satsuma::vm::run_agent_installer(argc == 2);
+    }
     std::filesystem::path config_path;
     std::wstring mode;
     try {
@@ -130,6 +135,7 @@ int wmain(const int argc, wchar_t* argv[]) {
             return service_result;
         }
         if (mode == L"--remove-service") {
+            const satsuma::vm::AgentInstallLock lock;
             const bool removed = satsuma::vm::remove_agent_service(config_path);
             std::cout << nlohmann::json({
                 {"status", removed ? "removed" : "absent"},
@@ -151,6 +157,7 @@ int wmain(const int argc, wchar_t* argv[]) {
             return 0;
         }
         if (mode == L"--install-service") {
+            const satsuma::vm::AgentInstallLock lock;
             const satsuma::vm::AgentServiceResult result =
                 satsuma::vm::ensure_agent_service(config_path, config.local_work_root, true);
             std::cout << nlohmann::json({

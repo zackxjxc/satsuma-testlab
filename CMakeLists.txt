@@ -265,6 +265,7 @@ set(SATSUMA_VM_LIBRARY_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/src/vm/claim_renewal.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/vm/hardware_identity.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/vm/inventory.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/vm/install.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/vm/interactive_process.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/vm/process_runner.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/vm/process_environment.cpp"
@@ -284,6 +285,10 @@ target_link_libraries(
         userenv
         version
         wtsapi32
+        imagehlp
+        taskschd
+        ole32
+        oleaut32
 )
 
 add_executable(SatsumaVM src/vm/main.cpp)
@@ -294,6 +299,7 @@ satsuma_add_windows_version_resource(
     "SatsumaVM"
 )
 target_link_libraries(SatsumaVM PRIVATE SatsumaVmLib)
+target_link_options(SatsumaVM PRIVATE /RELEASE /INCREMENTAL:NO)
 
 set_target_properties(SatsumaHost SatsumaVM PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"

@@ -1,11 +1,13 @@
 // SatsumaVM 独立更新通道和助手模式实现。
 #include "update.hpp"
+#include "install.hpp"
 
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <memory>
 #include <stop_token>
 #include <string>
 #include <thread>
@@ -761,6 +763,12 @@ void cleanup_finished_update(const UpdatePaths& paths) noexcept {
 bool process_pending_agent_update(
     const AgentConfig& config,
     const std::stop_token stop_token) {
+    // 暂存、恢复和清理也必须排斥双击安装；锁忙时留待下一轮，不中断 Agent。
+    std::unique_ptr<AgentInstallLock> install_lock;
+    try { install_lock = std::make_unique<AgentInstallLock>(); }
+    catch (const std::exception&) { return false; }
+    if (std::filesystem::exists(config.storage_root / L"agent" / L"install-pending.json"))
+        return false;
     if (recover_rebound_update_success(config)) {
         return false;
     }
@@ -840,6 +848,8 @@ bool process_pending_agent_update(
 
         try {
             stage_update_candidate(paths, manifest);
+            // staged 状态已落盘，其他安装器会拒绝进入；助手自己获取同一把锁。
+            install_lock.reset();
             const UniqueHandle helper = launch_update_helper(paths);
             for (;;) {
                 if (stop_token.stop_requested()) {
@@ -847,6 +857,8 @@ bool process_pending_agent_update(
                 }
                 const DWORD wait_result = WaitForSingleObject(helper.get(), 100);
                 if (wait_result == WAIT_OBJECT_0) {
+                    try { install_lock = std::make_unique<AgentInstallLock>(); }
+                    catch (const std::exception&) { return false; }
                     if (std::filesystem::is_regular_file(paths.result)) {
                         const AgentUpdateResult result =
                             load_agent_update_result(paths.result);
@@ -863,6 +875,10 @@ bool process_pending_agent_update(
                 }
             }
         } catch (const std::exception& error) {
+            if (!install_lock) {
+                try { install_lock = std::make_unique<AgentInstallLock>(); }
+                catch (const std::exception&) { return false; }
+            }
             cleanup_finished_update(paths);
             write_update_result(
                 paths.result,
@@ -877,6 +893,7 @@ int apply_agent_update_helper(
     const std::filesystem::path& config_path,
     const std::filesystem::path& manifest_path) {
     try {
+        const AgentInstallLock install_lock;
         const AgentConfig config = load_runtime_agent_config(config_path);
         const AgentUpdateManifest manifest =
             load_agent_update_manifest(manifest_path);

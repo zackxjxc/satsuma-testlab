@@ -16,11 +16,12 @@ target_compile_definitions(
         SATSUMA_INTERACTIVE_TESTS
         SATSUMA_SERVICE_TESTS
         SATSUMA_UPDATE_TESTS
+        SATSUMA_INSTALL_TESTS
         SATSUMA_TEST_LOCAL_MIRROR
 )
 target_link_libraries(
     SatsumaVmTestLib
-    PUBLIC SatsumaCore SatsumaVmci advapi32 shell32 userenv version wtsapi32
+    PUBLIC SatsumaCore SatsumaVmci advapi32 shell32 userenv version wtsapi32 imagehlp taskschd ole32 oleaut32
 )
 satsuma_enable_strict_warnings(SatsumaVmTestLib)
 satsuma_treat_angle_headers_as_external(SatsumaVmTestLib)
@@ -241,13 +242,17 @@ set_tests_properties(
 
 find_program(SATSUMA_WINDOWS_POWERSHELL powershell.exe REQUIRED)
 find_program(SATSUMA_POWERSHELL_CORE pwsh)
-add_test(
-    NAME SatsumaInstallAgentScriptTest
-    COMMAND "${CMAKE_COMMAND}"
-        "-DSCRIPT=${CMAKE_SOURCE_DIR}/scripts/install-agent.ps1"
-        "-DPOWERSHELL=${SATSUMA_WINDOWS_POWERSHELL}"
-        -P "${CMAKE_CURRENT_SOURCE_DIR}/install_agent_script_test.cmake"
-)
+add_executable(SatsumaVmInstallTests install_tests.cpp)
+add_executable(SatsumaVmInstallRollbackProbe install_rollback_probe.cpp)
+target_compile_definitions(SatsumaVmInstallRollbackProbe PRIVATE SATSUMA_INSTALL_TESTS)
+target_link_libraries(SatsumaVmInstallRollbackProbe PRIVATE SatsumaVmTestLib)
+satsuma_enable_test_warnings(SatsumaVmInstallRollbackProbe)
+target_link_libraries(SatsumaVmInstallTests PRIVATE SatsumaVmTestLib)
+satsuma_enable_test_warnings(SatsumaVmInstallTests)
+add_dependencies(SatsumaVmInstallTests SatsumaVM SatsumaHost)
+add_test(NAME SatsumaVmInstallTests COMMAND SatsumaVmInstallTests
+    "$<TARGET_FILE:SatsumaVM>" "$<TARGET_FILE:SatsumaHost>")
+set_tests_properties(SatsumaVmInstallTests PROPERTIES TIMEOUT 30)
 
 if(SATSUMA_POWERSHELL_CORE)
     add_test(

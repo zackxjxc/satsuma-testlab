@@ -60,6 +60,17 @@ struct AgentServiceStopResult {
     const std::filesystem::path& local_work_root,
     bool start_now);
 
+// 安装器从介质注册已验证的目标文件，不运行子进程。
+[[nodiscard]] AgentServiceResult ensure_agent_service_at(
+    const std::filesystem::path& executable,
+    const std::filesystem::path& config,
+    const std::filesystem::path& local_work_root,
+    bool start_now);
+
+[[nodiscard]] bool remove_agent_service_at(
+    const std::filesystem::path& executable,
+    const std::filesystem::path& config);
+
 // 确认固定命令后处理 pending 状态并停止 Agent Service。
 [[nodiscard]] AgentServiceStopResult stop_owned_agent_service(
     const std::filesystem::path& executable,

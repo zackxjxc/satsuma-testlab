@@ -801,8 +801,16 @@ AgentServiceResult ensure_agent_service(
     const std::filesystem::path& config,
     const std::filesystem::path& local_work_root,
     const bool start_now) {
+    return ensure_agent_service_at(current_executable_path(), config, local_work_root, start_now);
+}
+
+AgentServiceResult ensure_agent_service_at(
+    const std::filesystem::path& executable,
+    const std::filesystem::path& config,
+    const std::filesystem::path& local_work_root,
+    const bool start_now) {
     const AgentServiceSpec spec = make_agent_service_spec(
-        current_executable_path(),
+        executable,
         config);
     validate_local_work_root(spec, local_work_root);
     const UniqueServiceHandle manager = open_service_manager(
@@ -963,8 +971,14 @@ std::uint32_t start_owned_agent_service(
 }
 
 bool remove_agent_service(const std::filesystem::path& config) {
+    return remove_agent_service_at(current_executable_path(), config);
+}
+
+bool remove_agent_service_at(
+    const std::filesystem::path& executable,
+    const std::filesystem::path& config) {
     const AgentServiceSpec spec = make_agent_service_removal_spec(
-        current_executable_path(),
+        executable,
         config);
     const UniqueServiceHandle manager = open_service_manager(SC_MANAGER_CONNECT);
     constexpr DWORD access =
