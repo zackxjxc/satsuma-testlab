@@ -157,6 +157,9 @@ struct ExecutionResult {
 // 读取并验证用户任务计划。
 [[nodiscard]] TaskPlan load_task_plan(const std::filesystem::path& path);
 
+// 验证每台 VM 的 Artifact 目标独立且不存在 Windows 路径别名。
+void validate_artifact_destinations(const std::vector<ArtifactInput>& artifacts);
+
 // 读取并验证 VM 可见运行清单。
 [[nodiscard]] RunManifest load_run_manifest(const std::filesystem::path& path);
 

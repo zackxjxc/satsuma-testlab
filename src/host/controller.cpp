@@ -1,5 +1,6 @@
 // Host 任务物化和报告汇总实现。
 #include "controller.hpp"
+#include "artifact_store.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -30,10 +31,10 @@ void validate_vm_references(
         if (find_vm(config, artifact.vm) == nullptr) {
             throw Error("Artifact references an unknown VM: " + artifact.vm);
         }
-        if (!std::filesystem::is_regular_file(artifact.source)) {
+        if (!std::filesystem::is_regular_file(windows_file_path(artifact.source))) {
             throw Error("Artifact source is not a regular file: " + path_to_utf8(artifact.source));
         }
-        if (std::filesystem::file_size(artifact.source) > kMaxArtifactBytes) {
+        if (std::filesystem::file_size(windows_file_path(artifact.source)) > kMaxArtifactBytes) {
             throw Error("Artifact exceeds the 2 GiB size limit: " + path_to_utf8(artifact.source));
         }
     }
@@ -268,16 +269,18 @@ RunManifest Controller::create_run(const TaskPlan& plan) const {
         }
         for (const auto& input : plan.artifacts) {
             validate_artifact_destination(input.destination);
-            if (!std::filesystem::is_regular_file(input.source)) {
+            if (!std::filesystem::is_regular_file(windows_file_path(input.source))) {
                 throw Error("Artifact source is not a regular file: " + path_to_utf8(input.source));
             }
-            if (std::filesystem::file_size(input.source) > kMaxArtifactBytes) {
+            if (std::filesystem::file_size(windows_file_path(input.source)) > kMaxArtifactBytes) {
                 throw Error("Artifact exceeds the 2 GiB size limit: " + path_to_utf8(input.source));
             }
 
-            const std::filesystem::path target = resolve_under_root(staging_directory, input.destination);
-            std::filesystem::create_directories(target.parent_path());
-            std::filesystem::copy_file(input.source, target, std::filesystem::copy_options::none);
+            const std::filesystem::path target = artifact_storage_path(
+                staging_directory, manifest, manifest.artifacts.size());
+            std::filesystem::create_directories(windows_file_path(target.parent_path()));
+            std::filesystem::copy_file(windows_file_path(input.source), windows_file_path(target),
+                std::filesystem::copy_options::none);
 
             const std::string actual_hash = sha256_file(target);
             if (input.sha256.has_value() && *input.sha256 != actual_hash) {
@@ -302,6 +305,10 @@ AgentUpdateManifest Controller::publish_agent_update(
     const std::string& version,
     const std::optional<std::string> next_vm_id) const {
     validate_identifier(vm_id, "update VM id");
+    validate_artifact_destinations(plan.artifacts);
+    for (const ArtifactInput& artifact : plan.artifacts) {
+        validate_artifact_destination(artifact.destination);
+    }
     if (find_vm(config_, vm_id) == nullptr) {
         throw Error("Agent update references an unknown VM: " + vm_id);
     }
@@ -340,6 +347,7 @@ AgentUpdateManifest Controller::publish_agent_update(
     const std::filesystem::path updates_root = resolve_under_root(
         config_.transport.state_root,
         std::filesystem::path(L"updates") / path_from_utf8(vm_id));
+        std::filesystem::create_directories(staging_directory / L".artifacts");
     std::filesystem::create_directories(updates_root);
     prepare_agent_update_queue(updates_root, config_.lab_id, vm_id);
     const std::filesystem::path final_directory = resolve_under_root(

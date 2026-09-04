@@ -3,9 +3,12 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstddef>
 #include <cwctype>
 #include <set>
 #include <string_view>
+
+#include <windows.h>
 
 #include <nlohmann/json.hpp>
 
@@ -353,13 +356,7 @@ void validate_plan_uniqueness(const TaskPlan& plan) {
         }
     }
 
-    std::set<std::string> artifact_paths;
-    for (const auto& artifact : plan.artifacts) {
-        const std::string key = artifact.vm + "\n" + path_to_utf8(artifact.destination);
-        if (!artifact_paths.insert(key).second) {
-            throw Error("Duplicate artifact destination: " + path_to_utf8(artifact.destination));
-        }
-    }
+    validate_artifact_destinations(plan.artifacts);
 }
 
 // 验证执行结果的身份与交互 Session 证据一致。
@@ -376,6 +373,58 @@ void validate_execution_identity(const ExecutionResult& result) {
 }
 
 }  // namespace
+
+void validate_artifact_destinations(const std::vector<ArtifactInput>& artifacts) {
+    std::vector<std::pair<std::string, std::wstring>> destinations;
+    for (const ArtifactInput& artifact : artifacts) {
+        validate_relative_path(artifact.destination);
+        auto canonical = artifact.destination.lexically_normal();
+        canonical.make_preferred();
+        const std::wstring key = canonical.native();
+        const auto invalid = [&artifact]() {
+            throw Error("Artifact destination contains a Windows path alias or invalid filename: " +
+                path_to_utf8(artifact.destination));
+        };
+        if (canonical.filename().empty()) invalid();
+        for (const auto& component : canonical) {
+            const std::wstring name = component.native();
+            if (name.empty() || name.back() == L'.' || name.back() == L' ' ||
+                std::any_of(name.begin(), name.end(), [](const wchar_t character) {
+                    return character < 32 || std::wstring_view(L"<>:\"|?*").find(character) !=
+                        std::wstring_view::npos;
+                })) invalid();
+            std::wstring stem = name.substr(0, name.find(L'.'));
+            std::transform(stem.begin(), stem.end(), stem.begin(), [](const wchar_t character) {
+                return static_cast<wchar_t>(
+                    character >= L'a' && character <= L'z' ? character - L'a' + L'A' : character);
+            });
+            if (stem == L"CON" || stem == L"PRN" || stem == L"AUX" || stem == L"NUL" ||
+                stem == L"CLOCK$" || stem == L"CONIN$" || stem == L"CONOUT$") invalid();
+            if (stem.size() == 4 && (stem.starts_with(L"COM") || stem.starts_with(L"LPT")) &&
+                ((stem[3] >= L'1' && stem[3] <= L'9') || stem[3] == L'\u00b9' ||
+                 stem[3] == L'\u00b2' || stem[3] == L'\u00b3')) invalid();
+            const auto tilde = stem.find_last_of(L'~');
+            if (tilde != std::wstring::npos && tilde + 1 < stem.size() &&
+                std::all_of(stem.begin() + static_cast<std::ptrdiff_t>(tilde + 1), stem.end(),
+                    [](const wchar_t character) { return character >= L'0' && character <= L'9'; })) {
+                invalid();
+            }
+        }
+        for (const auto& [vm, existing] : destinations) {
+            if (vm != artifact.vm) continue;
+            const std::size_t common_size = std::min(existing.size(), key.size());
+            if (CompareStringOrdinal(existing.data(), static_cast<int>(common_size),
+                    key.data(), static_cast<int>(common_size), TRUE) != CSTR_EQUAL) continue;
+            if (existing.size() == key.size() ||
+                (existing.size() > common_size && existing[common_size] == L'\\') ||
+                (key.size() > common_size && key[common_size] == L'\\')) {
+                throw Error("Duplicate or overlapping artifact destination for VM " + artifact.vm +
+                    ": " + path_to_utf8(artifact.destination));
+            }
+        }
+        destinations.emplace_back(artifact.vm, key);
+    }
+}
 
 TaskPlan load_task_plan(const std::filesystem::path& path) {
     const nlohmann::json value = load_json(path);

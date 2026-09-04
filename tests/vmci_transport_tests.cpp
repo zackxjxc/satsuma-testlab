@@ -15,6 +15,8 @@
 #include <zmq.hpp>
 
 #include "gateway.hpp"
+#include "controller.hpp"
+#include "artifact_store.hpp"
 #include "satsuma/core/claim.hpp"
 #include "satsuma/core/id.hpp"
 #include "satsuma/core/json_io.hpp"
@@ -32,6 +34,120 @@ void expect(const bool condition, const std::string& message) {
         std::cerr << "FAIL: " << message << '\n';
         ++failures;
     }
+}
+
+// 用实际 Gateway 请求验证物理文件隔离、原协议路径和旧运行兼容性。
+void test_artifact_download_isolation(const std::filesystem::path& root) {
+    satsuma::LabConfig config;
+    config.lab_id = "artifact_download_test";
+    config.transport.state_root = root / L"state";
+    for (const std::string vm : {"vm_01", "vm_02"}) {
+        satsuma::VmConfig item;
+        item.id = vm;
+        config.vms.push_back(item);
+    }
+    satsuma::host::Controller controller(config);
+    satsuma::host::Gateway gateway(config);
+    const auto first = root / L"first.json";
+    const auto second = root / L"second.json";
+    satsuma::write_json_atomic(first, {{"payload", "first"}});
+    satsuma::write_json_atomic(second, {{"payload", "second"}});
+    auto request_for = [&config](const std::string& vm, const std::string& operation) {
+        return nlohmann::json{
+            {"schema_version", 1}, {"lab_id", config.lab_id},
+            {"hardware_id", "hardware_" + vm}, {"vm_id", vm},
+            {"session_id", "session_" + vm}, {"operation", operation},
+        };
+    };
+    auto rejected_download = [&](nlohmann::json request) {
+        try {
+            static_cast<void>(gateway.handle({std::move(request), {}}));
+        } catch (const std::exception&) {
+            return true;
+        }
+        return false;
+    };
+    for (const bool same_content : {true, false}) {
+        satsuma::TaskPlan plan;
+        plan.run_id = same_content ? "same_content" : "different_content";
+        plan.name = "cross VM download";
+        for (const std::string vm : {"vm_01", "vm_02"}) {
+            satsuma::TaskStep step;
+            step.id = "echo_" + vm;
+            step.vm = vm;
+            step.type = "echo";
+            step.run_as = satsuma::TaskRunAs::System;
+            step.message = "download only";
+            plan.steps.push_back(step);
+        }
+        plan.artifacts = {
+            {first, "vm_01", L"artifacts/preflight.json", std::nullopt},
+            {same_content ? first : second, "vm_02", L"artifacts/preflight.json", std::nullopt},
+        };
+        const auto manifest = controller.create_run(plan);
+        const auto run = config.transport.state_root / L"runs" /
+            satsuma::path_from_utf8(manifest.run_id);
+        const std::string logical = "runs/" + manifest.run_id + "/artifacts/preflight.json";
+        for (std::size_t index = 0; index < 2; ++index) {
+            const auto& artifact = manifest.artifacts[index];
+            const auto response = gateway.handle({request_for(artifact.vm, "index"), {}});
+            bool found = false;
+            for (const auto& file : response.metadata.at("files")) {
+                const std::string path = file.at("path");
+                expect(path.find(".artifacts") == std::string::npos,
+                    "gateway exposed a Host physical storage path to the Guest");
+                if (path == logical) {
+                    found = true;
+                    expect(file.at("sha256") == artifact.sha256,
+                        "gateway index used the other VM's Artifact hash");
+                }
+            }
+            expect(found, "gateway index omitted a per-VM logical Artifact path");
+            auto download = request_for(artifact.vm, "download");
+            download["path"] = logical;
+            const auto file = gateway.handle({download, {}});
+            const std::string text(reinterpret_cast<const char*>(file.payload.data()), file.payload.size());
+            expect(file.metadata.at("sha256") == artifact.sha256 &&
+                    nlohmann::json::parse(text) == satsuma::load_json(plan.artifacts[index].source),
+                "gateway returned bytes belonging to another VM's same-name Artifact");
+            download["path"] = "runs/" + manifest.run_id + "/.artifacts/0.bin";
+            expect(rejected_download(download), "Guest read the Host physical Artifact store directly");
+        }
+        auto outsider = request_for("vm_03", "download");
+        outsider["path"] = logical;
+        expect(rejected_download(outsider), "unassigned VM downloaded a private Artifact");
+
+        // 新布局缺件时不能从同名逻辑路径取回其他内容。
+        std::filesystem::remove(satsuma::host::artifact_storage_path(run, manifest, 1));
+        satsuma::write_json_atomic(run / L"artifacts" / L"preflight.json", {{"payload", "decoy"}});
+        auto missing = request_for("vm_02", "download");
+        missing["path"] = logical;
+        expect(rejected_download(missing), "missing isolated Artifact fell back to a shared logical path");
+        std::filesystem::remove_all(run);
+    }
+
+    satsuma::RunManifest legacy;
+    legacy.lab_id = config.lab_id;
+    legacy.run_id = "legacy_layout";
+    legacy.name = "legacy Artifact layout";
+    legacy.created_at = satsuma::utc_timestamp();
+    satsuma::TaskStep step;
+    step.id = "echo";
+    step.vm = "vm_01";
+    step.type = "echo";
+    step.message = "legacy";
+    step.run_as = satsuma::TaskRunAs::System;
+    legacy.steps.push_back(step);
+    legacy.artifacts.push_back({"vm_01", L"artifacts/preflight.json", satsuma::sha256_file(first)});
+    const auto old_run = config.transport.state_root / L"runs" / L"legacy_layout";
+    std::filesystem::create_directories(old_run / L"artifacts");
+    std::filesystem::copy_file(first, old_run / L"artifacts" / L"preflight.json");
+    satsuma::write_json_atomic(old_run / L"task.json", legacy);
+    auto legacy_request = request_for("vm_01", "download");
+    legacy_request["path"] = "runs/legacy_layout/artifacts/preflight.json";
+    const auto legacy_file = gateway.handle({legacy_request, {}});
+    expect(legacy_file.metadata.at("sha256") == legacy.artifacts[0].sha256 &&
+            !legacy_file.payload.empty(), "gateway no longer reads existing legacy runs");
 }
 
 }  // namespace
@@ -97,6 +213,7 @@ int main() {
     const std::filesystem::path test_root =
         std::filesystem::temp_directory_path() /
         satsuma::path_from_utf8(satsuma::make_id("satsuma-vmci-gateway"));
+    test_artifact_download_isolation(test_root / L"artifact-isolation");
     satsuma::LabConfig config;
     config.lab_id = "vmci_test_lab";
     config.transport.state_root = test_root;

@@ -1,5 +1,6 @@
 // Host 常驻 VMCI 网关实现。
 #include "gateway.hpp"
+#include "artifact_store.hpp"
 
 #include <algorithm>
 #include <cstdint>
@@ -126,16 +127,17 @@ void add_file(
     const LabConfig& config,
     const std::filesystem::path& path,
     std::vector<nlohmann::json>& files,
-    const std::string& known_sha256 = {}) {
-    if (!std::filesystem::is_regular_file(path)) {
+    const std::string& known_sha256 = {},
+    const std::string& logical_path = {}) {
+    if (!std::filesystem::is_regular_file(windows_file_path(path))) {
         return;
     }
-    const std::uintmax_t size = std::filesystem::file_size(path);
+    const std::uintmax_t size = std::filesystem::file_size(windows_file_path(path));
     if (size > std::numeric_limits<std::uint64_t>::max()) {
         throw Error("VMCI protocol file size cannot be represented");
     }
     files.push_back({
-        {"path", protocol_relative(config, path)},
+        {"path", logical_path.empty() ? protocol_relative(config, path) : logical_path},
         {"size", static_cast<std::uint64_t>(size)},
         {"sha256", known_sha256.empty() ? sha256_file(path) : known_sha256},
     });
@@ -243,13 +245,15 @@ struct PeerRunState {
             }
             add_file(config, manifest_path, files);
             if (state.pending_work) {
-                for (const ArtifactManifest& artifact : manifest.artifacts) {
+                for (std::size_t index = 0; index < manifest.artifacts.size(); ++index) {
+                    const ArtifactManifest& artifact = manifest.artifacts[index];
                     if (artifact.vm == peer.vm_id) {
                         add_file(
                             config,
-                            resolve_under_root(entry.path(), artifact.path),
+                            artifact_storage_path(entry.path(), manifest, index),
                             files,
-                            artifact.sha256);
+                            artifact.sha256,
+                            protocol_relative(config, entry.path() / artifact.path));
                     }
                 }
                 add_file(config, entry.path() / L"cancel.json", files);
@@ -372,7 +376,8 @@ void validate_claim_request(
 [[nodiscard]] std::optional<nlohmann::json> describe_inbound_file(
     const LabConfig& config,
     const PeerIdentity& peer,
-    const std::string& relative_text) {
+    const std::string& relative_text,
+    std::filesystem::path& source) {
     const std::filesystem::path relative = path_from_utf8(relative_text);
     validate_relative_path(relative);
     std::vector<std::string> components;
@@ -381,6 +386,7 @@ void validate_claim_request(
     }
     std::string known_hash;
     bool allowed = false;
+    source = protocol_path(config, relative_text);
     if (components.size() == 2 && components[0] == "agents") {
         allowed = components[1] == peer.hardware_id + ".binding.json" ||
             components[1] == peer.hardware_id + ".inventory-refresh.json";
@@ -415,6 +421,8 @@ void validate_claim_request(
             if (state.pending_work && artifact != manifest.artifacts.end()) {
                 allowed = true;
                 known_hash = artifact->sha256;
+                source = artifact_storage_path(run, manifest,
+                    static_cast<std::size_t>(std::distance(manifest.artifacts.begin(), artifact)));
             }
         }
     } else if (components.size() == 4 && components[0] == "updates" &&
@@ -437,15 +445,14 @@ void validate_claim_request(
             }
         }
     }
-    const std::filesystem::path path = protocol_path(config, relative_text);
-    if (!allowed || !std::filesystem::is_regular_file(path)) {
+    if (!allowed || !std::filesystem::is_regular_file(windows_file_path(source))) {
         return std::nullopt;
     }
-    const std::uintmax_t size = std::filesystem::file_size(path);
+    const std::uintmax_t size = std::filesystem::file_size(windows_file_path(source));
     return nlohmann::json({
         {"path", relative_text},
         {"size", static_cast<std::uint64_t>(size)},
-        {"sha256", known_hash.empty() ? sha256_file(path) : known_hash},
+        {"sha256", known_hash.empty() ? sha256_file(source) : known_hash},
     });
 }
 
@@ -523,12 +530,12 @@ void validate_claim_request(
     const PeerIdentity& peer,
     const nlohmann::json& request) {
     const std::string relative = require_string(request, "path");
+    std::filesystem::path path;
     const std::optional<nlohmann::json> descriptor =
-        describe_inbound_file(config, peer, relative);
+        describe_inbound_file(config, peer, relative, path);
     if (!descriptor.has_value()) {
         throw Error("VMCI download path is outside the Agent read scope: " + relative);
     }
-    const std::filesystem::path path = protocol_path(config, relative);
     const std::uint64_t total = descriptor->at("size").get<std::uint64_t>();
     const std::uint64_t offset = request.value("offset", std::uint64_t{0});
     if (offset > total) {
@@ -538,7 +545,7 @@ void validate_claim_request(
     const std::size_t count = static_cast<std::size_t>(
         std::min<std::uint64_t>(remaining, transport::kVmciChunkBytes));
     std::vector<std::byte> payload(count);
-    std::ifstream input(path, std::ios::binary);
+    std::ifstream input(std::filesystem::path(windows_file_path(path)), std::ios::binary);
     input.seekg(static_cast<std::streamoff>(offset));
     if (count != 0) {
         input.read(reinterpret_cast<char*>(payload.data()), static_cast<std::streamsize>(count));

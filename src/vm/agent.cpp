@@ -673,7 +673,14 @@ void Agent::deploy_artifacts(
             continue;
         }
 
-        const std::filesystem::path artifact_file = resolve_under_root(run_directory, artifact.path);
+        std::filesystem::path artifact_file = resolve_under_root(run_directory, artifact.path);
+#ifdef SATSUMA_TEST_LOCAL_MIRROR
+        if (use_test_local_mirror() &&
+            std::filesystem::is_directory(windows_file_path(run_directory / L".artifacts"))) {
+            const auto index = static_cast<std::size_t>(&artifact - manifest.artifacts.data());
+            artifact_file = run_directory / L".artifacts" / path_from_utf8(std::to_string(index) + ".bin");
+        }
+#endif
         if (!std::filesystem::is_regular_file(windows_file_path(artifact_file)) ||
             std::filesystem::file_size(windows_file_path(artifact_file)) > kMaxArtifactBytes ||
             sha256_file(artifact_file) != artifact.sha256) {

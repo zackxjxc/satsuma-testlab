@@ -6,6 +6,7 @@
 
 #include "controller.hpp"
 #include "identity.hpp"
+#include "artifact_store.hpp"
 #include "lab_lease.hpp"
 #include "satsuma/core/config.hpp"
 #include "satsuma/core/errors.hpp"
@@ -110,6 +111,83 @@ void test_create_run_precreates_step_result_directories(const std::filesystem::p
 }
 
 // 验证收集文件中的同名 JSON 不会伪造步骤完成数量。
+// Guest 目标按 VM 独立；Host 物化不再把两个目标复制到同一个路径。
+void test_artifact_destinations_are_scoped_to_vm(const std::filesystem::path& root) {
+    satsuma::LabConfig config = make_config(root);
+    satsuma::VmConfig other;
+    other.id = "vm_02";
+    config.vms.push_back(other);
+    const satsuma::host::Controller controller(config);
+    const auto first_source = root / L"first.json";
+    const auto second_source = root / L"second.json";
+    satsuma::write_json_atomic(first_source, {{"vm", 1}});
+    satsuma::write_json_atomic(second_source, {{"vm", 2}});
+    for (const bool same_content : {true, false}) {
+        auto plan = make_plan(same_content ? "same_content" : "different_content");
+        plan.steps[1].vm = "vm_02";
+        plan.artifacts = {
+            {first_source, "vm_01", L"artifacts/preflight.json", std::nullopt},
+            {same_content ? first_source : second_source, "vm_02",
+                L"artifacts/preflight.json", std::nullopt},
+        };
+        const auto manifest = controller.create_run(plan);
+        const auto run = config.transport.state_root / L"runs" /
+            satsuma::path_from_utf8(manifest.run_id);
+        expect(manifest.artifacts.size() == 2 &&
+                manifest.artifacts[0].path == manifest.artifacts[1].path,
+            "cross-VM isolation changed the Guest destination");
+        for (std::size_t index = 0; index < 2; ++index) {
+            const auto stored = satsuma::host::artifact_storage_path(run, manifest, index);
+            expect(stored.parent_path() == run / L".artifacts" &&
+                    satsuma::sha256_file(stored) == satsuma::sha256_file(plan.artifacts[index].source),
+                "cross-VM Artifact was overwritten or reused from the wrong source");
+        }
+        expect(!std::filesystem::exists(run / L"artifacts"),
+            "Host repeated the Guest destination hierarchy in its storage");
+    }
+
+    auto duplicate = make_plan("duplicate_artifacts");
+    duplicate.artifacts = {
+        {first_source, "vm_01", L"artifacts/preflight.json", std::nullopt},
+        {second_source, "vm_01", L"artifacts/preflight.json", std::nullopt},
+    };
+    for (const auto destination : {
+            L"artifacts/preflight.json", L"ARTIFACTS\\PREFLIGHT.JSON",
+            L"artifacts//preflight.json", L"artifacts/preflight.json/child"}) {
+        duplicate.artifacts[1].destination = destination;
+        expect_error([&] { controller.validate_plan(duplicate, false); },
+            "same-VM duplicate or overlapping Artifact destination was accepted");
+    }
+    duplicate.artifacts[0].destination = L"artifacts/\u00c9preuve.json";
+    duplicate.artifacts[1].destination = L"artifacts/\u00e9preuve.json";
+    expect_error([&] { controller.validate_plan(duplicate, false); },
+        "non-ASCII Windows case alias was accepted");
+    duplicate.artifacts.resize(1);
+    for (const auto destination : {
+            L"artifacts/preflight.json.", L"artifacts/preflight.json ",
+            L"artifacts/name:stream", L"artifacts/NUL.json", L"artifacts/COM1",
+            L"artifacts/PREFLI~1.JSON", L"artifacts/dir./file", L"artifacts/file?"}) {
+        duplicate.artifacts[0].destination = destination;
+        expect_error([&] { controller.validate_plan(duplicate, false); },
+            "ambiguous Windows Artifact filename was accepted");
+    }
+
+    const auto plan_path = root / L"duplicate-plan.json";
+    satsuma::write_json_atomic(plan_path, {
+        {"schema_version", 3}, {"name", "duplicate JSON plan"},
+        {"artifacts", {
+            {{"source", satsuma::path_to_utf8(first_source)}, {"vm", "vm_01"},
+                {"destination", "artifacts/preflight.json"}},
+            {{"source", satsuma::path_to_utf8(first_source)}, {"vm", "vm_01"},
+                {"destination", "ARTIFACTS/PREFLIGHT.JSON"}},
+        }},
+        {"steps", {{{"id", "echo"}, {"vm", "vm_01"}, {"type", "echo"},
+            {"message", "validation only"}, {"retry_safe", true}}}},
+    });
+    expect_error([&] { static_cast<void>(satsuma::load_task_plan(plan_path)); },
+        "plan loading did not reject a Windows-equivalent Artifact destination");
+}
+
 void test_report_uses_canonical_result_paths(const std::filesystem::path& root) {
     const satsuma::LabConfig config = make_config(root);
     const satsuma::host::Controller controller(config);
@@ -608,3 +686,4 @@ int main() {
         return 1;
     }
 }
+        test_artifact_destinations_are_scoped_to_vm(root / L"artifact-isolation");
