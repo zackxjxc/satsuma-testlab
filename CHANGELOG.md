@@ -2,16 +2,17 @@
 
 本文件记录项目的重要变化。首个稳定版本发布后，项目将遵循语义化版本规则。
 
-## 0.3.4 - 2026-09-04
+## 0.3.5 - 2026-09-04
 
 ### 新增
 
-- Host 可根据已授权 VMX 和基础快照使用 `init` 生成本地实验室配置；通用 Guest Agent 在连接后由 Host 登记并获得中性 VM 身份，不再预置业务角色。
+- Guest 安装介质收敛为单个 `SatsumaVM.exe`：双击并确认 UAC 即可完成安装、更新或状态检查，并在失败时尝试恢复旧版本、配置和服务。
+- Host 与 Agent 的 `--version --json`、Agent presence 和发行包清单均记录构建号、运行尝试和 Git 提交，支持核对同版本不同构建。
 
 ### 变更
 
-- 发行包按职责提供 `SatsumaHost` 与 `SatsumaGuestAgent-Install` 目录；Guest 仅交付 `SatsumaVM.exe`，双击完成安装、更新或状态检查，不再分发安装脚本。
-- Guest EXE 在没有外部 `agent.json` 时生成通用本机配置；消费者自行启动 Host、完成 `check` 后再执行业务任务。
+- 发行包仅在 `SatsumaGuestAgent-Install` 交付 `SatsumaVM.exe`；安装器在没有外部 `agent.json` 时生成通用本机配置，消费者自行启动 Host、完成 `check` 后再执行业务任务。
+- Artifact 存储按 VM 隔离，并拒绝冲突的目标路径；Guest 证据路径收敛为短路径以兼容传统 Windows 路径长度限制。
 
 ### 修复
 
@@ -22,6 +23,17 @@
 - 修复 `interactive_user` 任务在准备 Artifact 时无法读取 Agent 私有缓存的问题：源文件由 Agent 打开，目标文件仍以已验证的交互用户权限创建和写入，不放宽安装文件或缓存文件的访问权限。
 - 为交互工作路径的父目录增加仅当前用户、不继承的穿越与属性查询权限，修复 PowerShell 5.1 因无法识别父目录而退回 `C:\`、导致结果文件写错位置的问题；不增加枚举、文件读取或写入权限。
 - 补充私有源、受保护目标拒绝写入、空文件覆盖和失败后恢复身份的回归测试，并更正首次配置文档的硬件 UUID 来源说明。
+
+## 0.3.4 - 2026-09-04
+
+### 新增
+
+- Host 可根据已授权 VMX 和基础快照使用 `init` 生成本地实验室配置；通用 Guest Agent 在连接后由 Host 登记并获得中性 VM 身份，不再预置业务角色。
+
+### 变更
+
+- 发行包按职责提供 `SatsumaHost` 与 `SatsumaGuestAgent-Install` 目录；Guest 安装目录直接包含 Agent 和 PS1 安装脚本，不重复分发文件。
+- Guest 安装脚本可在没有外部 `agent.json` 时生成通用本机配置；文档明确消费者自行启动 Host、完成 `check` 后再执行业务任务。
 
 ## 0.3.3 - 2026-09-04
 
