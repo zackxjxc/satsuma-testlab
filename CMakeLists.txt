@@ -70,12 +70,32 @@ endfunction()
 
 set(SATSUMA_BUILD_NUMBER "local" CACHE STRING "CI build number embedded in binaries")
 set(SATSUMA_BUILD_ATTEMPT "0" CACHE STRING "CI build attempt embedded in binaries")
-set(SATSUMA_GIT_COMMIT "unknown" CACHE STRING "Git commit embedded in binaries")
+set(SATSUMA_GIT_COMMIT "auto" CACHE STRING "Expected Git commit, or auto to inspect the checkout")
 foreach(metadata_value SATSUMA_BUILD_NUMBER SATSUMA_BUILD_ATTEMPT SATSUMA_GIT_COMMIT)
     if(NOT "${${metadata_value}}" MATCHES "^[A-Za-z0-9._-]+$")
         message(FATAL_ERROR "${metadata_value} contains unsupported characters")
     endif()
 endforeach()
+
+# Refresh provenance before every build, including incremental builds after an edit or checkout.
+# The generated header is rewritten only when its content changes.
+set(SATSUMA_BUILD_IDENTITY_HEADER "${CMAKE_CURRENT_BINARY_DIR}/generated/satsuma/build_identity.hpp")
+set(SATSUMA_BUILD_IDENTITY_COMMAND
+    "${CMAKE_COMMAND}"
+    "-DSATSUMA_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
+    "-DSATSUMA_IDENTITY_HEADER=${SATSUMA_BUILD_IDENTITY_HEADER}"
+    "-DSATSUMA_IDENTITY_VERSION=${PROJECT_VERSION}"
+    "-DSATSUMA_REQUESTED_BUILD_NUMBER=${SATSUMA_BUILD_NUMBER}"
+    "-DSATSUMA_REQUESTED_BUILD_ATTEMPT=${SATSUMA_BUILD_ATTEMPT}"
+    "-DSATSUMA_REQUESTED_GIT_COMMIT=${SATSUMA_GIT_COMMIT}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/build-identity.cmake"
+)
+execute_process(COMMAND ${SATSUMA_BUILD_IDENTITY_COMMAND} COMMAND_ERROR_IS_FATAL ANY)
+add_custom_target(SatsumaBuildIdentity
+    COMMAND ${SATSUMA_BUILD_IDENTITY_COMMAND}
+    BYPRODUCTS "${SATSUMA_BUILD_IDENTITY_HEADER}"
+    VERBATIM
+)
 
 option(SATSUMA_BUILD_TESTS "Build Satsuma tests" ON)
 option(SATSUMA_ENABLE_REAL_VMWARE_SMOKE "Expose the destructive real VMware smoke target" OFF)
@@ -208,7 +228,8 @@ add_library(SatsumaCore STATIC
     src/core/windows_command_line.cpp
 )
 
-target_include_directories(SatsumaCore PUBLIC include)
+add_dependencies(SatsumaCore SatsumaBuildIdentity)
+target_include_directories(SatsumaCore PUBLIC include "${CMAKE_CURRENT_BINARY_DIR}/generated")
 target_compile_features(SatsumaCore PUBLIC cxx_std_20)
 target_compile_definitions(
     SatsumaCore
@@ -220,9 +241,6 @@ target_compile_definitions(
         _WIN32_WINNT=0x0A00
         WINVER=0x0A00
         SATSUMA_VERSION="${PROJECT_VERSION}"
-        SATSUMA_BUILD_NUMBER="${SATSUMA_BUILD_NUMBER}"
-        SATSUMA_BUILD_ATTEMPT="${SATSUMA_BUILD_ATTEMPT}"
-        SATSUMA_GIT_COMMIT="${SATSUMA_GIT_COMMIT}"
 )
 target_link_libraries(SatsumaCore PUBLIC nlohmann_json::nlohmann_json PRIVATE bcrypt)
 
@@ -416,6 +434,7 @@ install(
         docs/用户指南.md
         docs/协议.md
         docs/开发指南.md
+        docs/短路径存储设计.md
     DESTINATION docs
     COMPONENT SatsumaRuntime
 )

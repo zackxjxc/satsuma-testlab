@@ -5,6 +5,9 @@ Satsuma TestLab 是专为 AI 代理设计的 Windows 虚拟机自动化测试工
 
 本目录是可直接使用的 Windows x64 便携发行包，不需要在 Host 安装，也不需要 CMake。
 
+先查看 [`BUILD-INFO.md`](BUILD-INFO.md) 中的构建 ID、实际提交号及 Host/Guest SHA-256。
+同为 @PROJECT_VERSION@ 的程序可能来自不同构建；`release-manifest.json` 提供完整文件哈希清单。
+
 ## 让 AI 开始工作
 
 把本目录提供给能够读取本地文件并执行终端命令的 AI 代理，然后告诉它：
@@ -60,11 +63,14 @@ SatsumaHost\SatsumaHost.exe orchestrate --config config\lab.local.json --plan ex
 | `docs/` | 用户、配置、架构、协议与开发文档 |
 | `skills/satsuma-testlab/` | 与本版本配套的 AI Skill |
 | `AI-START-HERE.md` | AI 代理入口 |
+| `BUILD-INFO.md` | 构建身份、源码是否含未提交改动及二进制哈希 |
+| `release-manifest.json` | 本包文件的机器可读构建与 SHA-256 清单 |
 
 ## 版本与文档
 
 本发行包中的程序、Schema、示例、文档和 Skill 均对应 Satsuma TestLab @PROJECT_VERSION@。升级程序时应整体
 替换发行目录，并同步更新已经安装到 AI 客户端中的 Skill；不要混用不同发行版本的二进制和 Skill。
+即使版本号相同，也应核对构建与文件哈希；`-dirty` 表示构建包含未提交源码改动。构建身份不改变双击升级的版本优先级规则。
 
 项目的 `master` 分支文档描述正在开发的版本。稳定版本文档以相应 Git Tag 和 GitHub Release 中的副本为准。
 

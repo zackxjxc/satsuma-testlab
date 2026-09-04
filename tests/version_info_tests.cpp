@@ -4,7 +4,10 @@
 #include <iostream>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
+
+#include "satsuma/core/version.hpp"
 
 namespace {
 
@@ -135,6 +138,16 @@ bool verify_executable(
             resource.string_value(L"FileDescription"),
             executable.description
         );
+        for (const auto& [field, expected] : std::array<std::pair<std::wstring_view, std::string_view>, 5>{{
+                 {L"BuildNumber", satsuma::kBuildNumber},
+                 {L"BuildAttempt", satsuma::kBuildAttempt},
+                 {L"GitCommit", satsuma::kGitCommit},
+                 {L"BuildId", satsuma::kBuildId},
+                 {L"Comments", satsuma::kBuildId},
+             }}) {
+            valid &= expect_equal(executable.path, field, resource.string_value(field),
+                std::wstring(expected.begin(), expected.end()));
+        }
         return valid;
     } catch (const std::exception& error) {
         std::wcerr << executable.path << L": " << error.what() << L'\n';

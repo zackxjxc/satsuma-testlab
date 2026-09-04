@@ -50,7 +50,7 @@ add_test(NAME SatsumaCoreTests COMMAND SatsumaCoreTests)
 
 add_executable(SatsumaVersionInfoTests version_info_tests.cpp)
 target_compile_features(SatsumaVersionInfoTests PRIVATE cxx_std_20)
-target_link_libraries(SatsumaVersionInfoTests PRIVATE version)
+target_link_libraries(SatsumaVersionInfoTests PRIVATE SatsumaCore version)
 satsuma_enable_test_warnings(SatsumaVersionInfoTests)
 add_dependencies(SatsumaVersionInfoTests SatsumaHost SatsumaVM)
 add_test(
@@ -62,6 +62,27 @@ add_test(
         "$<TARGET_FILE:SatsumaHost>"
         "$<TARGET_FILE:SatsumaVM>"
 )
+
+add_test(
+    NAME SatsumaPackageReleaseTest
+    COMMAND "${CMAKE_COMMAND}"
+        "-DSOURCE_ROOT=${CMAKE_SOURCE_DIR}"
+        "-DBUILD_ROOT=${CMAKE_BINARY_DIR}"
+        "-DTEST_OUTPUT=${CMAKE_BINARY_DIR}/package-test/$<CONFIG>"
+        "-DCONFIGURATION=$<CONFIG>"
+        "-DVERSION=${PROJECT_VERSION}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/package_release_test.cmake"
+)
+set_tests_properties(SatsumaPackageReleaseTest PROPERTIES TIMEOUT 90)
+
+add_test(
+    NAME SatsumaBuildIdentityTest
+    COMMAND "${CMAKE_COMMAND}"
+        "-DSOURCE_ROOT=${CMAKE_SOURCE_DIR}"
+        "-DTEST_OUTPUT=${CMAKE_BINARY_DIR}/identity-test/$<CONFIG>"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/build_identity_test.cmake"
+)
+set_tests_properties(SatsumaBuildIdentityTest PROPERTIES TIMEOUT 30)
 
 add_executable(SatsumaVmciFileTests vmci_file_tests.cpp)
 target_link_libraries(SatsumaVmciFileTests PRIVATE SatsumaVmTestLib)

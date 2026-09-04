@@ -1,0 +1,7 @@
+// Generated build provenance; semantic version comparison remains unchanged.
+#pragma once
+
+#define SATSUMA_BUILD_NUMBER "@SATSUMA_RESOLVED_BUILD_NUMBER@"
+#define SATSUMA_BUILD_ATTEMPT "@SATSUMA_RESOLVED_BUILD_ATTEMPT@"
+#define SATSUMA_GIT_COMMIT "@SATSUMA_RESOLVED_GIT_COMMIT@"
+#define SATSUMA_BUILD_ID "@SATSUMA_RESOLVED_BUILD_ID@"

@@ -745,6 +745,7 @@ int run_agent_installer(bool elevated_child) {
     int result = 0;
     try {
         std::cout << "Satsuma Agent 安装、更新与状态检查 " << kVersion << "\n" << std::flush;
+        std::cout << "构建标识：" << kBuildId << "\n" << std::flush;
         SID_IDENTIFIER_AUTHORITY authority = SECURITY_NT_AUTHORITY;
         PSID administrators{};
         check(AllocateAndInitializeSid(&authority, 2, SECURITY_BUILTIN_DOMAIN_RID,

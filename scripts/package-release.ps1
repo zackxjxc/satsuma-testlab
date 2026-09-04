@@ -14,7 +14,7 @@ param(
     [string]$Version
 )
 
-Write-Host "AI 编写的发布脚本：生成便携目录和支持 UTF-8 中文文件名的 ZIP。"
+# AI-maintained release packaging: preserve the single-file Guest delivery contract.
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
@@ -59,6 +59,94 @@ function Get-Sha256Hex {
     }
 }
 
+function Get-BinaryIdentity {
+    param([string]$Path, [string]$Component)
+
+    $versionOutput = & $Path --version --json
+    if ($LASTEXITCODE -ne 0) {
+        throw "Cannot read build identity from ${Path}: exit code $LASTEXITCODE"
+    }
+    $identity = ($versionOutput -join "`n") | ConvertFrom-Json
+    if ($identity.component -cne $Component -or $identity.version -cne $Version) {
+        throw "Executable identity does not match this release: $Path"
+    }
+    if ($identity.git_commit -cnotmatch '^[0-9a-f]{40}(-dirty)?$' -or
+        $identity.build_number -cnotmatch '^[0-9A-Za-z._-]+$' -or
+        $identity.build_attempt -cnotmatch '^[0-9A-Za-z._-]+$') {
+        throw "Executable has missing or invalid build provenance; reconfigure and rebuild: $Path"
+    }
+    return $identity
+}
+
+function Write-ReleaseIdentity {
+    param([string]$Directory)
+
+    $guestRelativePath = 'SatsumaGuestAgent-Install/SatsumaVM.exe'
+    $hostRelativePath = 'SatsumaHost/SatsumaHost.exe'
+    $guestPath = Join-Path $Directory $guestRelativePath
+    $hostPath = Join-Path $Directory $hostRelativePath
+    $guestIdentity = Get-BinaryIdentity -Path $guestPath -Component 'SatsumaVM'
+    $hostIdentity = Get-BinaryIdentity -Path $hostPath -Component 'SatsumaHost'
+    foreach ($field in @('version', 'build_number', 'build_attempt', 'git_commit')) {
+        if ($guestIdentity.$field -cne $hostIdentity.$field) {
+            throw "Host and Guest came from different builds ($field); rebuild both before packaging"
+        }
+    }
+    $buildId = "$Version-$($guestIdentity.build_number).$($guestIdentity.build_attempt)-g$($guestIdentity.git_commit)"
+    $guestHash = Get-Sha256Hex -Path $guestPath
+    $hostHash = Get-Sha256Hex -Path $hostPath
+    $sourceDirty = $guestIdentity.git_commit.EndsWith('-dirty', [StringComparison]::Ordinal)
+    $sourceState = if ($sourceDirty) { '包含未提交改动（dirty），不是该提交的原样构建。' } else { '构建时工作区干净。' }
+    $buildInfo = @"
+# Satsuma TestLab $Version 构建信息
+
+- 构建 ID：$buildId
+- 构建号：$($guestIdentity.build_number)，尝试号：$($guestIdentity.build_attempt)
+- Git 提交：$($guestIdentity.git_commit)
+- 源码状态：$sourceState
+- Guest SHA-256：$guestHash
+- Host SHA-256：$hostHash
+
+相同版本号可能对应不同构建。使用同一完整发行包中的 Host 与 Guest；身份检查出现哈希不匹配时，先核对本文件和 release-manifest.json，不要直接把 Guest 自报哈希写入预期配置。
+
+release-manifest.json 记录本包所有文件（清单自身除外）的相对路径、大小及 SHA-256。构建 ID 用于定位源码；SHA-256 才能确认具体文件内容。重新编译相同源码也可能产生不同 EXE，应继续核对哈希。
+
+双击升级仍只按版本优先级和 EXE 哈希判断；构建号不参与版本高低比较。Guest 只需复制 SatsumaVM.exe，无需复制本文件或清单。
+"@
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [IO.File]::WriteAllText((Join-Path $Directory 'BUILD-INFO.md'), $buildInfo.Replace("`r`n", "`n") + "`n", $utf8NoBom)
+    $fileRecords = @(foreach ($file in Get-ChildItem -LiteralPath $Directory -File -Recurse | Sort-Object FullName) {
+        $relativePath = $file.FullName.Substring($Directory.Length).TrimStart([IO.Path]::DirectorySeparatorChar).Replace('\', '/')
+        [ordered]@{
+            path = $relativePath
+            size_bytes = $file.Length
+            sha256 = Get-Sha256Hex -Path $file.FullName
+        }
+    })
+    $manifest = [ordered]@{
+        schema_version = 1
+        product = 'Satsuma TestLab'
+        version = $Version
+        build_id = $buildId
+        build_number = $guestIdentity.build_number
+        build_attempt = $guestIdentity.build_attempt
+        git_commit = $guestIdentity.git_commit
+        working_tree_dirty = $sourceDirty
+        configuration = $Configuration
+        packaged_utc = [DateTime]::UtcNow.ToString('o')
+        binaries = @(
+            [ordered]@{ path = $hostRelativePath; component = 'SatsumaHost'; sha256 = $hostHash },
+            [ordered]@{ path = $guestRelativePath; component = 'SatsumaVM'; sha256 = $guestHash }
+        )
+        excluded_from_file_list = @('release-manifest.json')
+        files = $fileRecords
+    }
+    $manifestJson = $manifest | ConvertTo-Json -Depth 8
+    [IO.File]::WriteAllText((Join-Path $Directory 'release-manifest.json'), $manifestJson.Replace("`r`n", "`n") + "`n", $utf8NoBom)
+    Write-Host "Release build: $buildId"
+    Write-Host "Guest SHA-256: $guestHash"
+}
+
 $buildPath = [IO.Path]::GetFullPath($BuildDirectory)
 if (-not (Test-Path -LiteralPath $buildPath -PathType Container)) {
     throw "Build directory does not exist: $buildPath"
@@ -92,6 +180,7 @@ try {
     if ($LASTEXITCODE -ne 0) {
         throw "CMake install failed with exit code $LASTEXITCODE"
     }
+    Write-ReleaseIdentity -Directory $preparingDirectory
 
     if (Test-Path -LiteralPath $releaseDirectory) {
         Remove-Item -LiteralPath $releaseDirectory -Recurse -Force
@@ -144,6 +233,8 @@ try {
         }
         $expectedDocuments = @(
             "$packageName/README.md",
+            "$packageName/BUILD-INFO.md",
+            "$packageName/release-manifest.json",
             "$packageName/AI-START-HERE.md",
             "$packageName/CHANGELOG.md",
             "$packageName/CODE_OF_CONDUCT.md",
