@@ -34,7 +34,8 @@ public:
         const std::string& lab_id,
         const std::string& run_id,
         const std::filesystem::path& local_work_root = {},
-        const std::string& vm_id = {});
+        const std::string& vm_id = {},
+        const std::filesystem::path& traversal_root = {});
 
     // 返回交互用户本地工作目录。
     [[nodiscard]] const std::filesystem::path& working_directory() const noexcept;
@@ -45,7 +46,7 @@ public:
     // 返回准备阶段绑定的用户 SID。
     [[nodiscard]] const std::string& user_sid() const noexcept;
 
-    // 以交互用户身份把共享 Artifact 部署到工作目录。
+    // 由 Agent 读取私有 Artifact，仅以交互用户权限写入工作目录。
     [[nodiscard]] std::filesystem::path deploy_file(
         const std::filesystem::path& source,
         const std::filesystem::path& relative_destination) const;
@@ -69,6 +70,18 @@ private:
     const std::filesystem::path& request_path);
 
 #ifdef SATSUMA_INTERACTIVE_TESTS
+// 验证父目录元数据授权不会扩大到读取文件、列目录或写入权限。
+void grant_workspace_parent_access_for_test(
+    void* user_token,
+    const std::filesystem::path& directory,
+    const std::filesystem::path& traversal_root);
+
+// 使用受限 Token 验证生产部署函数的源读取与目标写入权限边界。
+void deploy_private_artifact_for_test(
+    void* user_token,
+    const std::filesystem::path& source,
+    const std::filesystem::path& destination);
+
 // 验证无活动 Session 时使用稳定错误且不进入启动流程。
 void validate_interactive_session_id_for_test(std::uint32_t session_id);
 

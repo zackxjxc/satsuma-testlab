@@ -755,7 +755,8 @@ void Agent::execute_step_payload(
             config_.lab_id,
             manifest.run_id,
             config_.local_work_root,
-            config_.vm_id));
+            config_.vm_id,
+            config_.storage_root));
         workspace.local_run_directory = interactive_session->working_directory();
         workspace.local_job_directory = resolve_under_root(
             workspace.local_run_directory,

@@ -10,6 +10,7 @@
 #include <vector>
 
 #include <windows.h>
+#include <sddl.h>
 
 #include "interactive_process.hpp"
 #include "satsuma/core/errors.hpp"
@@ -23,6 +24,154 @@ namespace {
 void expect(const bool condition, const std::string& message) {
     if (!condition) {
         throw std::runtime_error(message);
+    }
+}
+
+// 测试句柄在断言抛异常时也会关闭。
+struct TestHandle {
+    HANDLE value = nullptr;
+    ~TestHandle() {
+        if (value != nullptr && value != INVALID_HANDLE_VALUE) {
+            CloseHandle(value);
+        }
+    }
+};
+
+// 设置仅影响本测试文件的显式 DACL。
+void set_test_dacl(const std::filesystem::path& path, const std::wstring& dacl) {
+    PSECURITY_DESCRIPTOR descriptor = nullptr;
+    expect(ConvertStringSecurityDescriptorToSecurityDescriptorW(
+        dacl.c_str(), SDDL_REVISION_1, &descriptor, nullptr) != FALSE,
+        "cannot create test DACL");
+    const BOOL applied = SetFileSecurityW(path.c_str(),
+        DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION, descriptor);
+    LocalFree(descriptor);
+    expect(applied != FALSE, "cannot apply test DACL");
+}
+
+// 无需管理员或桌面：受限 Token 不能读私有源，也不能借部署函数写受保护目标。
+void test_private_artifact_deployment(const std::filesystem::path& root) {
+    TestHandle caller;
+    expect(OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY | TOKEN_DUPLICATE |
+        TOKEN_ASSIGN_PRIMARY, &caller.value) != FALSE, "cannot open caller Token");
+    DWORD size = 0;
+    GetTokenInformation(caller.value, TokenUser, nullptr, 0, &size);
+    std::vector<BYTE> info(size);
+    expect(GetTokenInformation(caller.value, TokenUser, info.data(), size, &size) != FALSE,
+        "cannot query caller SID");
+    LPWSTR sid_text = nullptr;
+    expect(ConvertSidToStringSidW(reinterpret_cast<TOKEN_USER*>(info.data())->User.Sid,
+        &sid_text) != FALSE, "cannot format caller SID");
+    const std::wstring sid(sid_text);
+    LocalFree(sid_text);
+    BYTE restricted_sid[SECURITY_MAX_SID_SIZE]{};
+    DWORD sid_size = sizeof(restricted_sid);
+    expect(CreateWellKnownSid(WinRestrictedCodeSid, nullptr, restricted_sid, &sid_size) != FALSE,
+        "cannot create restricted SID");
+    SID_AND_ATTRIBUTES restricting{restricted_sid, 0};
+    TestHandle user;
+    expect(CreateRestrictedToken(caller.value, DISABLE_MAX_PRIVILEGE, 0, nullptr,
+        0, nullptr, 1, &restricting, &user.value) != FALSE, "cannot create restricted Token");
+    const auto directory = root / L"private-copy";
+    std::filesystem::create_directories(directory);
+    const std::wstring private_acl = L"D:P(A;OICI;FA;;;" + sid + L")";
+    const std::wstring user_acl = private_acl + L"(A;OICI;FA;;;RC)";
+    set_test_dacl(directory, user_acl);
+    const auto source = directory / L"private.bin";
+    const auto destination = directory / L"user.bin";
+    const auto protected_target = directory / L"protected.bin";
+    const std::string payload(150000, 'x');
+    { std::ofstream file(source, std::ios::binary); file << payload; }
+    { std::ofstream file(protected_target, std::ios::binary); file << "must remain unchanged"; }
+    set_test_dacl(source, private_acl);
+    set_test_dacl(protected_target, private_acl);
+
+    expect(ImpersonateLoggedOnUser(user.value) != FALSE, "cannot impersonate restricted Token");
+    TestHandle denied_source;
+    denied_source.value = CreateFileW(source.c_str(), GENERIC_READ, FILE_SHARE_READ,
+        nullptr, OPEN_EXISTING, 0, nullptr);
+    const DWORD source_error = GetLastError();
+    const BOOL reverted = RevertToSelf();
+    expect(reverted != FALSE, "cannot revert restricted Token");
+    expect(denied_source.value == INVALID_HANDLE_VALUE && source_error == ERROR_ACCESS_DENIED,
+        "regression fixture does not protect the source from the user");
+
+    satsuma::vm::deploy_private_artifact_for_test(user.value, source, destination);
+    expect(satsuma::sha256_file(source) == satsuma::sha256_file(destination),
+        "private multi-buffer Artifact was not copied intact");
+    // 第二次部署覆盖已有文件，空源必须截断旧内容。
+    { std::ofstream file(source, std::ios::binary | std::ios::trunc); }
+    satsuma::vm::deploy_private_artifact_for_test(user.value, source, destination);
+    expect(std::filesystem::file_size(destination) == 0, "empty Artifact did not truncate target");
+    bool denied = false;
+    try {
+        satsuma::vm::deploy_private_artifact_for_test(user.value, source, protected_target);
+    } catch (const satsuma::Error& error) {
+        const std::string message(error.what());
+        denied = message.find("CreateFileW(Artifact destination) failed with Win32 error 5;") !=
+            std::string::npos && message.find("path_length_utf16=") != std::string::npos;
+    }
+    expect(denied, "Artifact deployment used caller privilege to overwrite protected target");
+    std::ifstream original(protected_target, std::ios::binary);
+    const std::string retained{std::istreambuf_iterator<char>(original), {}};
+    expect(retained == "must remain unchanged", "rejected deployment damaged protected target");
+    TestHandle thread_token;
+    expect(OpenThreadToken(GetCurrentThread(), TOKEN_QUERY, TRUE, &thread_token.value) == FALSE &&
+        GetLastError() == ERROR_NO_TOKEN, "failed deployment retained impersonation");
+    expect(ImpersonateLoggedOnUser(user.value) != FALSE, "cannot recheck private source ACL");
+    TestHandle still_private;
+    still_private.value = CreateFileW(source.c_str(), GENERIC_READ, FILE_SHARE_READ,
+        nullptr, OPEN_EXISTING, 0, nullptr);
+    const DWORD final_error = GetLastError();
+    const BOOL final_reverted = RevertToSelf();
+    expect(final_reverted != FALSE && still_private.value == INVALID_HANDLE_VALUE &&
+        final_error == ERROR_ACCESS_DENIED, "deployment widened private source access");
+
+    if (sid != L"S-1-5-18") {
+        const auto boundary = directory / L"metadata";
+        const auto parent = boundary / L"work";
+        const auto workspace = parent / L"run";
+        const auto secret = boundary / L"private.txt";
+        std::filesystem::create_directories(workspace);
+        { std::ofstream file(secret); file << "private"; }
+        // 当前调用方仍是对象所有者，可恢复 DACL，但没有文件数据或目录枚举权限。
+        const auto restore = [&] {
+            set_test_dacl(boundary, private_acl);
+            set_test_dacl(parent, private_acl);
+            set_test_dacl(secret, private_acl);
+        };
+        try {
+            set_test_dacl(secret, L"D:P(A;;FA;;;SY)");
+            set_test_dacl(parent, L"D:P(A;;FA;;;SY)");
+            set_test_dacl(boundary, L"D:P(A;;FA;;;SY)");
+            const auto can_open = [](const std::filesystem::path& path, DWORD access) {
+                TestHandle handle;
+                handle.value = CreateFileW(path.c_str(), access, FILE_SHARE_READ | FILE_SHARE_WRITE |
+                    FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+                    FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED, nullptr);
+                return handle.value != INVALID_HANDLE_VALUE;
+            };
+            expect(GetFileAttributesW(parent.c_str()) == INVALID_FILE_ATTRIBUTES,
+                "parent metadata fixture was accessible");
+            satsuma::vm::grant_workspace_parent_access_for_test(caller.value, workspace, boundary);
+            expect(GetFileAttributesW(parent.c_str()) != INVALID_FILE_ATTRIBUTES &&
+                GetFileAttributesW(boundary.c_str()) != INVALID_FILE_ATTRIBUTES,
+                "workspace ancestors did not become discoverable");
+            expect(!can_open(boundary, FILE_LIST_DIRECTORY) && !can_open(parent, FILE_ADD_FILE) &&
+                !can_open(secret, GENERIC_READ), "ancestor grant exposed private data or write access");
+            bool escaped = false;
+            try {
+                satsuma::vm::grant_workspace_parent_access_for_test(
+                    caller.value, directory / L"outside", boundary);
+            } catch (const std::exception&) {
+                escaped = true;
+            }
+            expect(escaped, "ancestor grant accepted a workspace outside its storage boundary");
+            restore();
+        } catch (...) {
+            restore();
+            throw;
+        }
     }
 }
 
@@ -316,8 +465,9 @@ int main(const int argc, char* argv[]) {
     try {
         test_no_active_session_error();
         test_production_caller_policy();
-        cleanup_abandoned_test_workspaces();
         std::filesystem::create_directories(root);
+        test_private_artifact_deployment(root);
+        cleanup_abandoned_test_workspaces();
         test_interactive_execution(argv[1], argv[2], root);
         std::filesystem::remove_all(root);
         std::cout << "SatsumaVmInteractiveTests passed\n";

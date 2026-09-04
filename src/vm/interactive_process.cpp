@@ -2,6 +2,7 @@
 #include "interactive_process.hpp"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <exception>
@@ -400,10 +401,58 @@ void run_impersonated(
     revert_to_self_or_fail_fast();
 }
 
+// 私有缓存由 Agent 打开；目标始终以用户权限创建，不能替用户执行 SYSTEM 写入。
+void deploy_private_artifact(
+    const HANDLE user_token,
+    const std::filesystem::path& source,
+    const std::filesystem::path& destination) {
+    const auto check_file_io = [](const BOOL success, const char* operation,
+                                 const std::filesystem::path& path) {
+        if (!success) {
+            const DWORD error = GetLastError();
+            throw Error(std::string(operation) + " failed with Win32 error " +
+                std::to_string(error) + "; path_length_utf16=" +
+                std::to_string(path.native().size()) + "; path=" + path_to_utf8(path));
+        }
+    };
+    UniqueHandle input(CreateFileW(
+        windows_file_path(source).c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+        OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, nullptr));
+    check_file_io(static_cast<bool>(input), "CreateFileW(Artifact source)", source);
+    run_impersonated(user_token, [&] {
+        std::filesystem::create_directories(windows_file_path(destination.parent_path()));
+        UniqueHandle output(CreateFileW(
+            windows_file_path(destination).c_str(), GENERIC_WRITE, 0, nullptr,
+            CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr));
+        check_file_io(static_cast<bool>(output), "CreateFileW(Artifact destination)", destination);
+        std::array<char, 64 * 1024> buffer{};
+        for (;;) {
+            DWORD read = 0;
+            check_file_io(ReadFile(input.get(), buffer.data(),
+                static_cast<DWORD>(buffer.size()), &read, nullptr), "ReadFile(Artifact)", source);
+            if (read == 0) {
+                break;
+            }
+            DWORD offset = 0;
+            while (offset < read) {
+                DWORD written = 0;
+                check_file_io(WriteFile(output.get(), buffer.data() + offset,
+                    read - offset, &written, nullptr), "WriteFile(Artifact)", destination);
+                if (written == 0) {
+                    throw Error("WriteFile(Artifact) made no progress: " + path_to_utf8(destination));
+                }
+                offset += written;
+            }
+        }
+    });
+}
+
 // 只给当前已验证用户 SID 增加本次运行目录的可继承权限。
 void grant_run_directory_access(
     const std::filesystem::path& directory,
-    const HANDLE token) {
+    const HANDLE token,
+    const DWORD permissions = GENERIC_READ | GENERIC_WRITE | GENERIC_EXECUTE | DELETE,
+    const DWORD inheritance = SUB_CONTAINERS_AND_OBJECTS_INHERIT) {
     DWORD size = 0;
     GetTokenInformation(token, TokenUser, nullptr, 0, &size);
     if (GetLastError() != ERROR_INSUFFICIENT_BUFFER || size == 0) {
@@ -431,9 +480,9 @@ void grant_run_directory_access(
     }
 
     EXPLICIT_ACCESSW access{};
-    access.grfAccessPermissions = GENERIC_READ | GENERIC_WRITE | GENERIC_EXECUTE | DELETE;
+    access.grfAccessPermissions = permissions;
     access.grfAccessMode = GRANT_ACCESS;
-    access.grfInheritance = SUB_CONTAINERS_AND_OBJECTS_INHERIT;
+    access.grfInheritance = inheritance;
     BuildTrusteeWithSidW(&access.Trustee, user->User.Sid);
     PACL updated_acl = nullptr;
     const DWORD merge_status = SetEntriesInAclW(1, &access, current_acl, &updated_acl);
@@ -453,6 +502,25 @@ void grant_run_directory_access(
     LocalFree(descriptor);
     if (write_status != ERROR_SUCCESS) {
         throw Error("SetNamedSecurityInfoW failed with Win32 error " + std::to_string(write_status));
+    }
+}
+
+// PowerShell 5.1 会查询每层父目录；只在明确存储边界内增加不继承的元数据权限。
+void grant_workspace_parent_access(
+    const HANDLE token,
+    const std::filesystem::path& directory,
+    const std::filesystem::path& traversal_root) {
+    const auto boundary = std::filesystem::absolute(traversal_root).lexically_normal();
+    const auto workspace = std::filesystem::absolute(directory).lexically_normal();
+    const auto relative = workspace.lexically_relative(boundary);
+    if (relative.empty()) {
+        throw Error("Interactive workspace has no storage traversal boundary");
+    }
+    static_cast<void>(resolve_under_root(boundary, relative));
+    for (auto parent = workspace.parent_path(); parent != boundary.parent_path();
+         parent = parent.parent_path()) {
+        grant_run_directory_access(parent, token,
+            FILE_TRAVERSE | FILE_READ_ATTRIBUTES, NO_INHERITANCE);
     }
 }
 
@@ -624,7 +692,8 @@ InteractiveUserSession InteractiveUserSession::acquire(
     const std::string& lab_id,
     const std::string& run_id,
     const std::filesystem::path& local_work_root,
-    const std::string& vm_id) {
+    const std::string& vm_id,
+    const std::filesystem::path& traversal_root) {
     validate_identifier(lab_id, "interactive lab_id");
     validate_identifier(run_id, "interactive run_id");
     if (!local_work_root.empty()) {
@@ -658,6 +727,10 @@ InteractiveUserSession InteractiveUserSession::acquire(
             path_from_utf8(vm_id);
     std::filesystem::create_directories(windows_file_path(state->working_directory));
     grant_run_directory_access(state->working_directory, state->selected_user.token.get());
+    if (!local_work_root.empty()) {
+        grant_workspace_parent_access(state->selected_user.token.get(), state->working_directory,
+            traversal_root.empty() ? local_work_root : traversal_root);
+    }
     return InteractiveUserSession(std::move(state));
 }
 
@@ -682,13 +755,7 @@ std::filesystem::path InteractiveUserSession::deploy_file(
     const std::filesystem::path destination = resolve_under_root(
         state_->working_directory,
         relative_destination);
-    run_impersonated(state_->selected_user.token.get(), [&source, &destination] {
-        std::filesystem::create_directories(windows_file_path(destination.parent_path()));
-        std::filesystem::copy_file(
-            windows_file_path(source),
-            windows_file_path(destination),
-            std::filesystem::copy_options::overwrite_existing);
-    });
+    deploy_private_artifact(state_->selected_user.token.get(), source, destination);
     return destination;
 }
 
@@ -1103,6 +1170,20 @@ int run_interactive_process_helper(
 }
 
 #ifdef SATSUMA_INTERACTIVE_TESTS
+void grant_workspace_parent_access_for_test(
+    void* user_token,
+    const std::filesystem::path& directory,
+    const std::filesystem::path& traversal_root) {
+    grant_workspace_parent_access(user_token, directory, traversal_root);
+}
+
+void deploy_private_artifact_for_test(
+    void* user_token,
+    const std::filesystem::path& source,
+    const std::filesystem::path& destination) {
+    deploy_private_artifact(user_token, source, destination);
+}
+
 void validate_interactive_session_id_for_test(const std::uint32_t session_id) {
     validate_interactive_session_id(session_id);
 }
