@@ -18,9 +18,8 @@ Skill，也可以把整个目录安装到客户端的 Skill 目录。安装位�
 ## 人工开始使用
 
 1. 阅读 [`docs/首次配置.md`](docs/首次配置.md)，用 `SatsumaHost init` 生成本机配置，或填写模板。
-2. 把 `SatsumaGuestAgent-Install` 整个目录复制到 Guest，执行其中的 `install-agent.ps1` 并确认 UAC；所需的 `SatsumaVM.exe` 已在同一目录。
+2. 仅把 `SatsumaGuestAgent-Install/SatsumaVM.exe` 复制到 Guest，双击并确认 UAC；无需参数、脚本或预置 JSON。成功或失败后按 Enter 关闭；再次双击检查版本：已安装版本更高则保留，更低则更新；同版本但 EXE 哈希不同也更新。更新保留配置和身份，失败尝试恢复旧版本。
    无需 AI 提前准备 JSON。安装器生成通用本机配置，Service 等待 Host 登记；安装完成或失败后按 Enter 关闭窗口。
-   自动化调用使用脚本参数 `-NonInteractive`。若脚本启动前被策略拦截，见首次配置文档中的单次启动命令。
    初始化不要求额外开启 Guest Account 通道或共享目录。
 3. 在 Host 的独立终端启动 VMCI 网关：
 
@@ -53,11 +52,11 @@ SatsumaHost\SatsumaHost.exe orchestrate --config config\lab.local.json --plan ex
 
 | 目录或文件 | 用途 |
 |---|---|
-| `bin/` | Host CLI 与 Guest Agent |
+| `SatsumaHost/` | Host CLI |
+| `SatsumaGuestAgent-Install/` | 单文件 Guest 安装入口 `SatsumaVM.exe` |
 | `config/` | 待填写的 Host/Agent 配置模板 |
 | `examples/` | 可校验的任务示例 |
 | `schemas/` | 配置、任务、状态与结果的 JSON Schema |
-| `scripts/` | Guest Agent 安装脚本 |
 | `docs/` | 用户、配置、架构、协议与开发文档 |
 | `skills/satsuma-testlab/` | 与本版本配套的 AI Skill |
 | `AI-START-HERE.md` | AI 代理入口 |

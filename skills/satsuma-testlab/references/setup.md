@@ -41,9 +41,9 @@ Copy-Item config\lab.template.json config\lab.local.json
 ```
 
 Guest 无需外部 JSON。安装程序自动生成本机配置，默认 CID `2`、端口 `42510`，省略实验室/VM 身份。
-特殊部署才提供可选 `agent.json`；不要把旧实验室配置混入通用安装目录。安装器自动选择本地固定磁盘。
+双击安装不读取外部 `agent.json`；不要把旧实验室配置混入通用安装目录。安装器使用本机 ProgramData。
 
-每台 Guest 只需复制发行包的 `SatsumaGuestAgent-Install` 目录，其中已并列放置 `SatsumaVM.exe` 和 `install-agent.ps1`，无需 AI 预处理。
+每台 Guest 只需复制发行包 `SatsumaGuestAgent-Install` 中的单个 `SatsumaVM.exe`，无需 AI 预处理。
 确认 UAC 属于管理员操作；AI 无法完成时应给出准确的人工接管步骤，不能声称安装已经完成。
 
 ## 未初始化 Guest 的人工交接
@@ -52,13 +52,13 @@ Guest 无需外部 JSON。安装程序自动生成本机配置，默认 CID `2`�
 控制通道、VMware Shared Folders、网络共享或其他长期集成机制作为初始化前提。首次引导应采用一次性的人工
 文件交接：AI 先在 Host 上完成所有能够完成的准备工作，再由用户使用自己熟悉的方式把文件复制进 VM 并执行。
 
-若用户要求 AI 准备交接目录，只需放入 `SatsumaVM.exe` 和 `install-agent.ps1`。用户也可自行复制这两个文件。
+若用户要求 AI 准备交接目录，只需放入 `SatsumaVM.exe`。用户也可自行复制这个文件。
 不要要求用户进入 Guest 后再编辑 JSON；没有 BAT 入口。
 
 准备完成后，向用户提供一段可核对的人工操作说明，其中必须明确：
 
 - Host 上待复制目录的准确路径和目录内文件；
-- Guest 中建议放置的本机目录，执行 `./install-agent.ps1` 或右键“使用 PowerShell 运行”，接受 UAC；
+- Guest 中建议放置的本机目录，双击 `SatsumaVM.exe` 并接受 UAC，不输入参数；
 - 用于判断成功的关键输出或状态，例如 Agent 版本、Service 名称、`Running` 状态和 `Auto` 启动类型；
 - 如果结果不一致，应停止在哪一步，并让用户原样返回错误信息；
 - 用户确认成功后，AI 将继续执行的 Host 侧发现、绑定和 `check` 步骤。
@@ -66,9 +66,10 @@ Guest 无需外部 JSON。安装程序自动生成本机配置，默认 CID `2`�
 发出说明后等待用户确认，不要把“文件已准备好”当成“Guest 已初始化”，也不要在用户尚未回报执行结果时继续
 进行依赖 Agent 在线的操作。用户已有便捷复制方式时直接沿用；只有用户明确要求时，才协助配置额外的传输机制。
 
-PS1 默认保留成功/失败窗口。自动化调用加脚本参数 `-NonInteractive`，以免等待键盘输入。
-若启动前被执行策略拦截，给出 `powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install-agent.ps1`。
-PS1 无法在尚未执行时解除策略拦截；不要承诺仅靠脚本自身解决，也不要修改长期执行策略。
+EXE 默认保留成功、已安装或失败的中文结果窗口，按 Enter 关闭。再次双击比较已安装版本：
+更高则保留，更低则更新；相同版本但 EXE 哈希不同也更新。更新保留配置与身份，失败尝试回滚。
+维护命令保留 `--install-service`、`--remove-service`、`--watch` 等；
+`--service` 仅由 Windows 服务管理器启动。未知服务、异常路径和未完成事务需要核实归属后人工处理。
 
 ## 绑定并验收环境
 

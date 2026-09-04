@@ -402,7 +402,6 @@ install(
     DESTINATION examples
     COMPONENT SatsumaRuntime
 )
-install(FILES scripts/install-agent.ps1 DESTINATION SatsumaGuestAgent-Install COMPONENT SatsumaRuntime)
 install(
     DIRECTORY schemas/
     DESTINATION schemas

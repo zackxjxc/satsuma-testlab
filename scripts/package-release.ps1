@@ -177,12 +177,19 @@ try {
             }
         }
         $expectedGuestInstaller = @(
-            "$packageName/SatsumaGuestAgent-Install/SatsumaVM.exe",
-            "$packageName/SatsumaGuestAgent-Install/install-agent.ps1"
+            "$packageName/SatsumaGuestAgent-Install/SatsumaVM.exe"
         )
         foreach ($installerFile in $expectedGuestInstaller) {
             if (-not $entryNames.Contains($installerFile)) {
                 throw "Release archive is missing a Guest installer file: $installerFile"
+            }
+        }
+        foreach ($entryName in $entryNames) {
+            if ($entryName -match '(^|/)install-agent\.ps1$' -or
+                ($entryName.StartsWith("$packageName/SatsumaGuestAgent-Install/") -and
+                 -not $entryName.EndsWith('/') -and
+                 $entryName -ne "$packageName/SatsumaGuestAgent-Install/SatsumaVM.exe")) {
+                throw "Guest delivery must contain only SatsumaVM.exe: $entryName"
             }
         }
         if (-not $entryNames.Contains("$packageName/SatsumaHost/SatsumaHost.exe")) {

@@ -67,7 +67,7 @@ ctest --preset windows-release
 cmake --build --preset windows-release --target SatsumaPackage
 ```
 
-发布目标会在根目录 `output` 同时生成可直接使用的版本目录和同名 ZIP，不会向系统安装文件。Host CLI 位于 `SatsumaHost`；消费者可用 `SatsumaHost\SatsumaHost.exe init` 生成 `config/lab.local.json`。Guest 安装介质集中在 `SatsumaGuestAgent-Install`：将该目录复制到 Guest（可用只读 ISO、VMware 控制台或其他一次性安装介质），再运行其中的 `install-agent.ps1`。安装器自动生成不含实验室身份的本机配置，Agent 使用 SMBIOS UUID 向 Host 登记，不需要为每台 VM 准备不同配置文件。
+发布目标会在根目录 `output` 同时生成可直接使用的版本目录和同名 ZIP，不会向系统安装文件。Host CLI 位于 `SatsumaHost`；消费者可用 `SatsumaHost\SatsumaHost.exe init` 生成 `config/lab.local.json`。Guest 安装介质集中在 `SatsumaGuestAgent-Install`：仅将其中的 `SatsumaVM.exe` 复制到 Guest（可用只读 ISO、VMware 控制台或其他一次性安装介质），双击并确认 UAC 即可安装。再次双击检查已安装版本：高于当前 EXE 则保留，低于则更新；版本相同但 EXE 哈希不同也更新，完全一致则只显示状态。更新保留本机配置与身份，失败尝试恢复旧版本。安装器自动生成不含实验室身份的本机配置，Agent 使用 SMBIOS UUID 向 Host 登记，不需要为每台 VM 准备不同配置文件。
 
 ```powershell
 SatsumaHost\SatsumaHost.exe gateway --config config\lab.local.json

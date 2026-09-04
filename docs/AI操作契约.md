@@ -58,7 +58,7 @@ Skill 不携带二进制、不下载程序，也不保存环境配置、凭据�
 - CLI 参数变化：修改 CLI、帮助输出、测试以及引用该命令的 Skill reference。
 - 任务或结果字段变化：先修改 Schema 和协议实现，再更新示例及相关 Skill 决策。
 - 生命周期或恢复规则变化：修改实现、端到端测试、用户指南和 `references/operations.md`。
-- 首次安装变化：修改安装脚本、首次配置文档和 `references/setup.md`。
+- 首次安装变化：修改 EXE 安装入口、首次配置文档和 `references/setup.md`。
 - 产品版本变化：修改 CMake 项目版本和 Skill metadata；发行入口由构建生成。
 
 发布检查必须确认发行 ZIP 包含 `AI-START-HERE.md`、完整 Skill 目录和全部引用文件，并验证 Host、Agent、Skill

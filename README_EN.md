@@ -67,7 +67,7 @@ ctest --preset windows-release
 cmake --build --preset windows-release --target SatsumaPackage
 ```
 
-The package target creates both a portable version directory and a ZIP file under `output`. The Host CLI is in `SatsumaHost`; use `SatsumaHost/SatsumaHost.exe init` to create `config/lab.local.json`. Copy the complete `SatsumaGuestAgent-Install` directory to a Guest using a read-only ISO, the VMware console, or another one-time installation medium, then run its `install-agent.ps1`. The installer creates an unbound local configuration and the Agent enrolls with the Host using its SMBIOS UUID.
+The package target creates both a portable version directory and a ZIP file under `output`. The Host CLI is in `SatsumaHost`; use `SatsumaHost/SatsumaHost.exe init` to create `config/lab.local.json`. Copy only `SatsumaGuestAgent-Install/SatsumaVM.exe` to a Guest using a read-only ISO, the VMware console, or another one-time installation medium, then double-click it and accept UAC. No arguments, scripts or preconfigured JSON are required. Reopening the EXE keeps a newer installed version, updates an older version, and replaces an equal version when its EXE SHA-256 differs. Identical files are left in place. Local updates preserve configuration and hardware identity, verify service startup without a Host, and attempt rollback on failure. The installer creates an unbound local configuration and the Agent enrolls with the Host using its SMBIOS UUID.
 
 Start the Host gateway in a dedicated terminal:
 
